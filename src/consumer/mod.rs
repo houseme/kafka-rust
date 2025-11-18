@@ -72,9 +72,9 @@ use tracing::debug;
 // public re-exports
 pub use self::builder::Builder;
 use self::state::TopicPartition;
-pub use crate::client::fetch::Message;
 pub use crate::client::FetchOffset;
 pub use crate::client::GroupOffsetStorage;
+pub use crate::client::fetch::Message;
 
 mod assignment;
 mod builder;

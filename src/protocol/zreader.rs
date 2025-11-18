@@ -1,6 +1,6 @@
 use std::str;
 
-use crate::{error::Result, Error};
+use crate::{Error, error::Result};
 use byteorder::{BigEndian, ByteOrder};
 
 static EMPTY_STR: &str = "";

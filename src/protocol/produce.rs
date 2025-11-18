@@ -1,17 +1,17 @@
 use std::io::{Read, Write};
 
 use crate::codecs::{FromByte, ToByte};
+use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy;
-use crate::compression::Compression;
 
 use crate::error::{KafkaCode, Result};
 
 use super::to_crc;
-use super::{HeaderRequest, HeaderResponse};
 use super::{API_KEY_PRODUCE, API_VERSION};
+use super::{HeaderRequest, HeaderResponse};
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
 /// The magic byte (a.k.a version) we use for sent messages.

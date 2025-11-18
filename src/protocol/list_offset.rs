@@ -4,7 +4,7 @@ use crate::codecs::{FromByte, ToByte};
 use crate::error::{KafkaCode, Result};
 use crate::utils::TimestampedPartitionOffset;
 
-use super::{HeaderRequest, HeaderResponse, API_KEY_OFFSET};
+use super::{API_KEY_OFFSET, HeaderRequest, HeaderResponse};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ListOffsetVersion {

@@ -1,13 +1,13 @@
 //! A representation of fetched messages from Kafka.
 
 use super::to_crc;
-use super::{HeaderRequest, API_KEY_FETCH, API_VERSION};
+use super::{API_KEY_FETCH, API_VERSION, HeaderRequest};
 use crate::codecs::ToByte;
+use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy::SnappyReader;
-use crate::compression::Compression;
 use crate::error::KafkaCode;
 use crate::protocol::zreader::ZReader;
 use crate::{Error, Result};
@@ -707,7 +707,7 @@ mod tests {
 
     // Replaces the original bench module to provide "benchmark-like" common tests
     mod benches {
-        use super::{into_messages, FetchRequest, Response};
+        use super::{FetchRequest, Response, into_messages};
 
         fn run_decode_new_fetch_response(data: Vec<u8>, validate_crc: bool) {
             let mut reqs = FetchRequest::new(0, "foo", -1, -1);
