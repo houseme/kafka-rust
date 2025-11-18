@@ -1,15 +1,16 @@
 [package]
 name = "kafka"
-version = "0.10.0"
+version = "0.11.0"
 authors = ["John Ward", "John Ward <john@johnward.net>"]
 categories = ["api-bindings"]
 documentation = "https://docs.rs/kafka/"
-edition = "2021"
+edition = "2024"
 keywords = ["kafka", "queue"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/kafka-rust/kafka-rust"
 description = "Rust client for Apache Kafka"
+rust-version = "1.85.0"
 
 [dependencies]
 byteorder = "1.5"

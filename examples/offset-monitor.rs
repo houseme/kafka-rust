@@ -45,7 +45,7 @@ fn run(cfg: Config) -> Result<()> {
         let ts = client.topics();
         let num_topics = ts.len();
         if num_topics == 0 {
-            return Err(Error::from(anyhow!("no topics available")));
+            return Err(anyhow!("no topics available"));
         }
         let mut names: Vec<&str> = Vec::with_capacity(ts.len());
         names.extend(ts.names());
@@ -55,12 +55,12 @@ fn run(cfg: Config) -> Result<()> {
         for name in names {
             let _ = writeln!(buf, "topic: {}", name);
         }
-        return Err(Error::from(anyhow!("choose a topic")));
+        return Err(anyhow!("choose a topic"));
     }
 
     // ~ otherwise let's loop over the topic partition offsets
     let num_partitions = match client.topics().partitions(&cfg.topic) {
-        None => return Err(Error::from(anyhow!("no such topic: {}", &cfg.topic))),
+        None => return Err(anyhow!("no such topic: {}", &cfg.topic)),
         Some(partitions) => partitions.len(),
     };
     let mut state = State::new(num_partitions, cfg.committed_not_consumed);
@@ -341,7 +341,7 @@ impl Config {
         };
         if m.opt_present("help") {
             let brief = format!("{} [options]", args[0]);
-            return Err(Error::from(anyhow!(opts.usage(&brief))));
+            return Err(anyhow!(opts.usage(&brief)));
         }
         let mut offset_storage = GroupOffsetStorage::Zookeeper;
         if let Some(s) = m.opt_str("storage") {
@@ -350,7 +350,7 @@ impl Config {
             } else if s.eq_ignore_ascii_case("kafka") {
                 offset_storage = GroupOffsetStorage::Kafka;
             } else {
-                return Err(Error::from(anyhow!("unknown offset store: {}", s)));
+                return Err(anyhow!("unknown offset store: {}", s));
             }
         }
         let mut period = Duration::from_secs(5);
@@ -358,10 +358,10 @@ impl Config {
             match s.parse::<u64>() {
                 Ok(n) if n != 0 => period = Duration::from_secs(n),
                 _ => {
-                    return Err(Error::from(anyhow!(
+                    return Err(anyhow!(
                         "not a number greater than zero: {}",
                         s
-                    )))
+                    ))
                 }
             }
         }

@@ -432,7 +432,7 @@ impl<'a> MessageSet<'a> {
                         _ => return Err(Error::UnsupportedCompression),
                     }
                 }
-            };
+            }
         }
         Ok(MessageSet {
             raw_data: Cow::Borrowed(raw_data),
