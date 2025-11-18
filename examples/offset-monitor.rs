@@ -158,6 +158,7 @@ impl State {
 struct Printer<W> {
     out: W,
 
+    #[allow(dead_code)] // Used for formatting output
     timefmt: String,
     fmt_buf: String,
     out_buf: String,

@@ -714,8 +714,8 @@ mod tests {
             reqs.add("my-topic", 0, 0, -1);
 
             let r = Response::from_vec(data, Some(&reqs), validate_crc).unwrap();
-            let v = into_messages(&r);
-            assert!(v.len() >= 0);
+            let _v = into_messages(&r);
+            // Successfully decoded the response
         }
 
         #[test]

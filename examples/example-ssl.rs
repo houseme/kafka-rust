@@ -62,9 +62,10 @@ mod example {
         let connector = builder.build();
 
         // ~ instantiate KafkaClient with the previous OpenSSL setup
+        #[allow(deprecated)]
         let mut client = KafkaClient::new_secure(
             cfg.brokers,
-            SecurityConfig::new(connector).with_hostname_verification(cfg.verify_hostname),
+            SecurityConfig::new_openssl(connector).with_hostname_verification(cfg.verify_hostname),
         );
 
         // ~ communicate with the brokers
@@ -79,7 +80,7 @@ mod example {
                 // metadata via a secured connection to one of the
                 // specified brokers
 
-                if client.topics().len() == 0 {
+                if client.topics().is_empty() {
                     println!("No topics available!");
                 } else {
                     // ~ now let's communicate with all the brokers in

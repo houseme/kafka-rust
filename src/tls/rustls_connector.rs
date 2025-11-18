@@ -71,7 +71,7 @@ pub struct RustlsConnector {
 
 impl RustlsConnector {
     /// Create a new rustls connector with the given configuration
-    pub fn new(tls_config: TlsConfig) -> io::Result<Self> {
+    pub fn new(tls_config: &TlsConfig) -> io::Result<Self> {
         let mut root_store = RootCertStore::empty();
 
         // Load CA certificates

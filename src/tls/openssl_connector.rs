@@ -67,6 +67,7 @@ impl Write for OpenSslStream {
 /// OpenSSL-based TLS connector
 ///
 /// ⚠️ **DEPRECATED**: Use `RustlsConnector` instead.
+#[allow(dead_code)] // May not be used when both backends are enabled
 #[deprecated(
     since = "0.10.0",
     note = "OpenSSL backend is deprecated. Use rustls backend instead (enabled by default)."
@@ -78,7 +79,8 @@ pub struct OpenSslConnector {
 
 impl OpenSslConnector {
     /// Create a new OpenSSL connector with the given configuration
-    pub fn new(tls_config: TlsConfig) -> io::Result<Self> {
+    #[allow(dead_code)] // May not be used when both backends are enabled
+    pub fn new(tls_config: &TlsConfig) -> io::Result<Self> {
         let mut builder = SslConnector::builder(SslMethod::tls())
             .map_err(|e| io::Error::other(format!("Failed to create SSL connector: {e}")))?;
 
@@ -139,6 +141,7 @@ impl OpenSslConnector {
     }
 
     /// Connect to a server using TLS
+    #[allow(dead_code)] // May not be used when both backends are enabled
     pub fn connect(&self, domain: &str, tcp_stream: TcpStream) -> io::Result<Box<dyn TlsStream>> {
         let mut connector_config = self
             .connector
