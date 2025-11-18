@@ -3,11 +3,10 @@ use std::time::Duration;
 use std::{env, process};
 //use std::ascii::AsciiExt;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
 
 use tracing::{error, info};
-use tracing_subscriber;
 
 /// This is a very simple command line application reading from a
 /// specific kafka topic and dumping the messages to standard output.

@@ -29,6 +29,46 @@ To build kafka-rust the usual `cargo build` should suffice. The crate
 supports various features which can be turned off at compile time.
 See kafka-rust's `Cargo.toml` and [cargo's documentation](http://doc.crates.io/manifest.html#the-features-section).
 
+### TLS Support
+
+**kafka-rust** now uses **rustls** as the default TLS backend, providing a pure-Rust, secure, and portable TLS implementation.
+
+#### Using rustls (Default, Recommended)
+
+rustls is enabled by default and requires no additional system dependencies:
+
+```toml
+[dependencies]
+kafka = { version = "0.10", features = ["security"] }
+```
+
+Benefits of rustls:
+- ✅ Pure Rust implementation - no native dependencies
+- ✅ Better cross-compilation support (musl, alpine, etc.)
+- ✅ Modern TLS 1.2+ only
+- ✅ Simpler builds - no OpenSSL development libraries required
+- ✅ Consistent behavior across platforms
+
+#### Using OpenSSL (Deprecated)
+
+For backward compatibility, OpenSSL support is still available but deprecated:
+
+```toml
+[dependencies]
+kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-openssl"] }
+```
+
+**⚠️ Note:** OpenSSL backend will be removed in the next major version. Please migrate to rustls.
+
+#### Disabling TLS
+
+To build without any TLS support:
+
+```toml
+[dependencies]
+kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip"] }
+```
+
 ## Supported Kafka version
 
 `kafka-rust` is tested for compatibility with a select few Kafka versions from 0.8.2 to 3.1.0. However,

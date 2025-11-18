@@ -142,12 +142,8 @@ macro_rules! dec_helper {
     }};
 }
 macro_rules! decode {
-    ($src:expr, $dest:expr) => {{
-        dec_helper!($src.read_i8(), $dest)
-    }};
-    ($src:expr, $method:ident, $dest:expr) => {{
-        dec_helper!($src.$method::<BigEndian>(), $dest)
-    }};
+    ($src:expr, $dest:expr) => {{ dec_helper!($src.read_i8(), $dest) }};
+    ($src:expr, $method:ident, $dest:expr) => {{ dec_helper!($src.$method::<BigEndian>(), $dest) }};
 }
 
 impl FromByte for i8 {
@@ -380,7 +376,9 @@ fn codec_as_strings() {
             AsStrings(&orig).encode(&mut buf).unwrap();
             assert_eq!(
                 buf,
-                [0, 0, 0, 2, 0, 3, b'a', b'b', b'c', 0, 4, b'd', b'e', b'f', b'g']
+                [
+                    0, 0, 0, 2, 0, 3, b'a', b'b', b'c', 0, 4, b'd', b'e', b'f', b'g'
+                ]
             );
 
             // Decode from buffer into existing value

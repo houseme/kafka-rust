@@ -4,7 +4,7 @@ use crate::codecs::{FromByte, ToByte};
 use crate::error::{KafkaCode, Result};
 use crate::utils::TimestampedPartitionOffset;
 
-use super::{HeaderRequest, HeaderResponse, API_KEY_OFFSET};
+use super::{API_KEY_OFFSET, HeaderRequest, HeaderResponse};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ListOffsetVersion {
@@ -12,8 +12,7 @@ pub enum ListOffsetVersion {
     V1 = 1,
 }
 
-
-/// https://kafka.apache.org/protocol.html#The_Messages_ListOffsets
+/// <https://kafka.apache.org/protocol.html#The_Messages_ListOffsets>
 #[derive(Debug)]
 pub struct ListOffsetsRequest<'a> {
     pub header: HeaderRequest<'a>,
@@ -78,7 +77,7 @@ impl PartitionListOffsetsRequest {
     }
 }
 
-impl<'a> ToByte for ListOffsetsRequest<'a> {
+impl ToByte for ListOffsetsRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
@@ -88,7 +87,7 @@ impl<'a> ToByte for ListOffsetsRequest<'a> {
     }
 }
 
-impl<'a> ToByte for TopicListOffsetsRequest<'a> {
+impl ToByte for TopicListOffsetsRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         try_multi!(self.topic.encode(buffer), self.partitions.encode(buffer))
     }

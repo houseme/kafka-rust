@@ -61,20 +61,20 @@
 //! group configured, it will behave as if it had one, only that
 //! committing consumed message offsets resolves into a void operation.
 
-use std::collections::hash_map::{Entry, HashMap};
-use std::slice;
-
 use crate::client::fetch;
 use crate::client::{CommitOffset, FetchPartition, KafkaClient};
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
+use std::collections::hash_map::{Entry, HashMap};
+use std::slice;
+use tracing::debug;
 
 // public re-exports
 pub use self::builder::Builder;
 use self::state::TopicPartition;
-pub use crate::client::fetch::Message;
 pub use crate::client::FetchOffset;
 pub use crate::client::GroupOffsetStorage;
+pub use crate::client::fetch::Message;
 
 mod assignment;
 mod builder;
@@ -182,30 +182,32 @@ impl Consumer {
 
     /// Convenient method to allow consumer to manually reposition to a set of
     /// topic, partition and offset.
-    /// let mut client: KafkaClient = KafkaClient::new(vec!["kafka.test.fio.drw:9092".to_string()]);
+    ///
     /// # Examples
     ///
     /// ```no_run
+    /// use kafka::client::{KafkaClient, FetchOffset};
+    /// use kafka::consumer::{Consumer, FetchOffset as ConsumerFetchOffset, GroupOffsetStorage};
+    /// use kafka::error::Result;
     ///
-    /// let mut consumer: Consumer = Consumer::from_hosts(vec!["localhost:9092".to_string()])
+    /// let mut consumer = Consumer::from_hosts(vec!["localhost:9092".to_string()])
     ///     .with_topic("test-topic".to_string())
-    ///     .with_fallback_offset(FetchOffset::Latest)
+    ///     .with_fallback_offset(ConsumerFetchOffset::Latest)
     ///     .with_offset_storage(Some(GroupOffsetStorage::Kafka))
     ///     .create()
     ///     .unwrap();
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
-    /// let tpos = client.list_offsets(&s, FetchOffset::ByTime(1698425676797)).unwrap();
-    /// let seek_results: Vec<Result<(), Error>> = res
-    ///     .unwrap()
-    ///     .into_iter()
-    ///     .flat_map(|topic, partition_offsets) {
-    ///         partition_offsets.into_iter()
-    ///             .map(move |po| topic.clone(), po.partition, po.offset))
-    ///     })
-    ///     .map(|topic, partition, offset| consumer.seek(topic.as_str(), partition, offset))
-    ///     .collect()
+    /// let topics = vec!["test-topic".to_string()];
+    /// let tpos = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797)).unwrap();
+    ///
+    /// // Seek to the offsets
+    /// for (topic, partition_offsets) in tpos {
+    ///     for po in partition_offsets {
+    ///         consumer.seek(&topic, po.partition, po.offset).unwrap();
+    ///     }
+    /// }
     /// ```
     ///
     /// This makes the consumer resets its fetch offsets to the nearest offsets after the

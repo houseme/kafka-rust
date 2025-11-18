@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::time::Duration;
-
 use crate::client::{self, FetchOffset, GroupOffsetStorage, KafkaClient};
 use crate::error::{Error, Result};
+use std::collections::HashMap;
+use std::time::Duration;
+use tracing::debug;
 
 use super::assignment;
 use super::config::Config;

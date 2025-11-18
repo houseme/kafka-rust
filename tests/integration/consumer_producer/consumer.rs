@@ -79,7 +79,7 @@ fn test_consumer_commit_messageset() {
         for ms in consumer.poll().unwrap().iter() {
             let messages = ms.messages();
             num_messages += messages.len();
-            consumer.consume_messageset(ms).unwrap();
+            consumer.consume_messageset(&ms).unwrap();
         }
 
         consumer.commit_consumed().unwrap();

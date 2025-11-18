@@ -16,5 +16,5 @@ pub struct PartitionOffset {
 pub struct TimestampedPartitionOffset {
     pub offset: i64,
     pub partition: i32,
-    pub time: i64
+    pub time: i64,
 }

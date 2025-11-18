@@ -3,11 +3,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::hash::BuildHasherDefault;
 
-use fnv::FnvHasher;
-
 use crate::client::metadata::Topics;
 use crate::client::{FetchGroupOffset, FetchOffset, KafkaClient};
 use crate::error::{Error, KafkaCode, Result};
+use fnv::FnvHasher;
+use tracing::debug;
 
 use super::assignment::{Assignment, AssignmentRef, Assignments};
 use super::config::Config;
@@ -19,7 +19,7 @@ pub type PartitionHasher = BuildHasherDefault<FnvHasher>;
 pub struct FetchState {
     /// ~ specifies the offset which to fetch from
     pub offset: i64,
-    /// ~ specifies the `max_bytes` to be fetched 
+    /// ~ specifies the `max_bytes` to be fetched
     pub max_bytes: i32,
 }
 
@@ -176,7 +176,7 @@ fn determine_partitions<'a>(
                     return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
                 }
                 Some(_) => ps.push(p),
-            };
+            }
         }
         ps
     };
@@ -377,7 +377,7 @@ struct TopicPartitionsDebug<'a> {
     tps: &'a VecDeque<TopicPartition>,
 }
 
-impl<'a> fmt::Debug for TopicPartitionsDebug<'a> {
+impl fmt::Debug for TopicPartitionsDebug<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[")?;
         for (i, tp) in self.tps.iter().enumerate() {

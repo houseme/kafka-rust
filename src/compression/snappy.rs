@@ -98,7 +98,7 @@ pub struct SnappyReader<'a> {
     uncompressed_chunk: Vec<u8>,
 }
 
-impl<'a> SnappyReader<'a> {
+impl SnappyReader<'_> {
     pub fn new(mut stream: &[u8]) -> Result<SnappyReader<'_>> {
         stream = validate_stream(stream)?;
         Ok(SnappyReader {
@@ -184,7 +184,7 @@ macro_rules! to_io_error {
     };
 }
 
-impl<'a> Read for SnappyReader<'a> {
+impl Read for SnappyReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         to_io_error!(self._read(buf))
     }
@@ -201,13 +201,13 @@ mod tests {
     use std::io::Read;
     use std::str;
 
-    use super::{compress, uncompress_to, SnappyReader};
+    use super::{SnappyReader, compress, uncompress_to};
     use crate::error::{Error, Result};
 
     fn uncompress(src: &[u8]) -> Result<Vec<u8>> {
         let mut v = Vec::new();
         match uncompress_to(src, &mut v) {
-            Ok(_) => Ok(v),
+            Ok(()) => Ok(v),
             Err(e) => Err(e),
         }
     }

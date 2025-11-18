@@ -1,26 +1,23 @@
 //! A representation of fetched messages from Kafka.
 
+use super::to_crc;
+use super::{API_KEY_FETCH, API_VERSION, HeaderRequest};
+use crate::codecs::ToByte;
+use crate::compression::Compression;
+#[cfg(feature = "gzip")]
+use crate::compression::gzip;
+#[cfg(feature = "snappy")]
+use crate::compression::snappy::SnappyReader;
+use crate::error::KafkaCode;
+use crate::protocol::zreader::ZReader;
+use crate::{Error, Result};
+use fnv::FnvHasher;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::io::Write;
 use std::sync::Arc;
 use std::{mem, result};
-
-use fnv::FnvHasher;
-
-use crate::codecs::ToByte;
-#[cfg(feature = "gzip")]
-use crate::compression::gzip;
-#[cfg(feature = "snappy")]
-use crate::compression::snappy::SnappyReader;
-use crate::compression::Compression;
-use crate::error::KafkaCode;
-use crate::{Error, Result};
-
-use super::to_crc;
-use super::zreader::ZReader;
-use super::{HeaderRequest, API_KEY_FETCH, API_VERSION};
 
 pub type PartitionHasher = BuildHasherDefault<FnvHasher>;
 
@@ -97,7 +94,7 @@ impl PartitionFetchRequest {
     }
 }
 
-impl<'a, 'b> ToByte for FetchRequest<'a, 'b> {
+impl ToByte for FetchRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         self.header.encode(buffer)?;
         self.replica.encode(buffer)?;
@@ -141,7 +138,7 @@ pub struct ResponseParser<'a, 'b, 'c> {
     pub requests: Option<&'c FetchRequest<'a, 'b>>,
 }
 
-impl<'a, 'b, 'c> super::ResponseParser for ResponseParser<'a, 'b, 'c> {
+impl super::ResponseParser for ResponseParser<'_, '_, '_> {
     type T = Response;
     fn parse(&self, response: Vec<u8>) -> Result<Self::T> {
         Response::from_vec(response, self.requests, self.validate_crc)
@@ -381,10 +378,10 @@ impl<'a> MessageSet<'a> {
             req_offset,
             validate_crc,
         )?;
-        return Ok(MessageSet {
+        Ok(MessageSet {
             raw_data: Cow::Owned(data),
             messages: ms.messages,
-        });
+        })
     }
 
     fn from_slice(raw_data: &[u8], req_offset: i64, validate_crc: bool) -> Result<MessageSet<'_>> {
@@ -432,7 +429,7 @@ impl<'a> MessageSet<'a> {
                         _ => return Err(Error::UnsupportedCompression),
                     }
                 }
-            };
+            }
         }
         Ok(MessageSet {
             raw_data: Cow::Borrowed(raw_data),
@@ -457,7 +454,7 @@ struct ProtocolMessage<'a> {
     value: &'a [u8],
 }
 
-impl<'a> ProtocolMessage<'a> {
+impl ProtocolMessage<'_> {
     /// Parses a raw message from the given byte slice.  Does _not_
     /// handle any compression.
     fn from_slice(raw_data: &[u8], validate_crc: bool) -> Result<ProtocolMessage<'_>> {
@@ -490,6 +487,7 @@ impl<'a> ProtocolMessage<'a> {
 
 // tests --------------------------------------------------------------
 
+// Rust
 #[cfg(test)]
 mod tests {
     use std::str;
@@ -527,7 +525,7 @@ mod tests {
     static FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900: &[u8] =
         include_bytes!("../../test-data/fetch2.mytopic.nocompression.invalid_crc.kafka.0900");
 
-    fn into_messages(r: &Response) -> Vec<&Message<'_>> {
+    pub(crate) fn into_messages(r: &Response) -> Vec<&Message<'_>> {
         let mut all_msgs = Vec::new();
         for t in r.topics() {
             for p in t.partitions() {
@@ -557,8 +555,6 @@ mod tests {
         assert_eq!(1, resp.topics[0].partitions.len());
         // ~ the first partition
         assert_eq!(0, resp.topics[0].partitions[0].partition);
-        // ~ no error
-        // assert!(resp.topics[0].partitions[0].data.is_ok());
 
         let msgs = into_messages(&resp);
         assert_eq!(original.len(), msgs.len());
@@ -570,7 +566,7 @@ mod tests {
     fn skip_lines(mut lines: &str, mut n: usize) -> &str {
         while n > 0 {
             n -= 1;
-            lines = &lines[lines.find('\n').map(|i| i + 1).unwrap_or(0)..];
+            lines = &lines[lines.find('\n').map_or(0, |i| i + 1)..];
         }
         lines
     }
@@ -599,8 +595,6 @@ mod tests {
         );
     }
 
-    // verify we don't crash but cleanly fail and report we don't
-    // support the compression
     #[cfg(not(feature = "snappy"))]
     #[test]
     fn test_unsupported_compression_snappy() {
@@ -611,10 +605,7 @@ mod tests {
             Some(&req),
             false,
         );
-        assert!(match r {
-            return Err(Error::UnsupportedCompression) => true,
-            _ => false,
-        });
+        assert!(matches!(r, Err(Error::UnsupportedCompression)));
     }
 
     #[cfg(feature = "snappy")]
@@ -696,18 +687,13 @@ mod tests {
             true,
         );
 
-        // now test the same message but with an invalid crc checksum
-        // (modified by hand)
-        // 1) without checking the crc ... since only the crc field is
-        // artificially falsified ... we expect the rest of the
-        // message to be parsed correctly
         test_decode_new_fetch_response(
             FETCH2_TXT,
             FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900.to_owned(),
             None,
             false,
         );
-        // 2) with checking the crc ... parsing should fail immediately
+
         match Response::from_vec(
             FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900.to_owned(),
             None,
@@ -715,105 +701,88 @@ mod tests {
         ) {
             Ok(_) => panic!("Expected error, but got successful response!"),
             Err(Error::Kafka(KafkaCode::CorruptMessage)) => {}
-            Err(e) => panic!("Expected KafkaCode::CorruptMessage error, but got: {:?}", e),
+            Err(e) => panic!("Expected KafkaCode::CorruptMessage error, but got: {e:?}"),
         }
     }
 
-    #[cfg(feature = "nightly")]
+    // Replaces the original bench module to provide "benchmark-like" common tests
     mod benches {
-        use test::{black_box, Bencher};
+        use super::{FetchRequest, Response, into_messages};
 
-        use super::super::{FetchRequest, Response};
-        use super::into_messages;
-
-        fn bench_decode_new_fetch_response(b: &mut Bencher, data: Vec<u8>, validate_crc: bool) {
+        fn run_decode_new_fetch_response(data: Vec<u8>, validate_crc: bool) {
             let mut reqs = FetchRequest::new(0, "foo", -1, -1);
             reqs.add("my-topic", 0, 0, -1);
-            b.bytes = data.len() as u64;
-            b.iter(|| {
-                let data = data.clone();
-                let r = black_box(Response::from_vec(data, Some(&reqs), validate_crc).unwrap());
-                let v = black_box(into_messages(&r));
-                v.len()
-            });
+
+            let r = Response::from_vec(data, Some(&reqs), validate_crc).unwrap();
+            let _v = into_messages(&r);
+            // Successfully decoded the response
         }
 
-        #[bench]
-        fn bench_decode_new_fetch_response_nocompression_k0821(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_nocompression_k0821() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_NOCOMPRESSION_K0821.to_owned(),
                 false,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0821(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0821() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
                 false,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0822(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0822() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0822.to_owned(),
                 false,
-            )
+            );
         }
 
         #[cfg(feature = "gzip")]
-        #[bench]
-        fn bench_decode_new_fetch_response_gzip_k0821(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_gzip_k0821() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(),
                 false,
-            )
+            );
         }
 
-        #[bench]
-        fn bench_decode_new_fetch_response_nocompression_k0821_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_nocompression_k0821_validate_crc() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_NOCOMPRESSION_K0821.to_owned(),
                 true,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0821_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0821_validate_crc() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
                 true,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0822_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0822_validate_crc() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0822.to_owned(),
                 true,
-            )
+            );
         }
 
         #[cfg(feature = "gzip")]
-        #[bench]
-        fn bench_decode_new_fetch_response_gzip_k0821_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
-                super::FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(),
-                true,
-            )
+        #[test]
+        fn bench_like_decode_new_fetch_response_gzip_k0821_validate_crc() {
+            run_decode_new_fetch_response(super::FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(), true);
         }
     }
 }
