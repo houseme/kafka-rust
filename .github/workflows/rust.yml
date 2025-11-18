@@ -85,6 +85,8 @@ jobs:
   tls-backends:
     name: Test TLS Backends
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -129,6 +131,8 @@ jobs:
   musl-build:
     name: Test musl build (OpenSSL-free)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       
