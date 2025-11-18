@@ -2,22 +2,15 @@ fn main() {
     example::main();
 }
 
-/// ⚠️ **DEPRECATED**: This example uses the OpenSSL backend which is deprecated.
-/// Please see `example-rustls.rs` for the recommended rustls-based approach.
-/// 
-/// This example will be removed in the next major version.
-#[cfg(feature = "security-openssl")]
+#[cfg(feature = "security-rustls")]
 mod example {
     use kafka;
-    use openssl;
     use tracing::info;
 
     use std::env;
     use std::process;
 
     use self::kafka::client::{FetchOffset, KafkaClient, SecurityConfig};
-
-    use self::openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslVerifyMode};
 
     pub fn main() {
         tracing_subscriber::fmt::init();
@@ -31,41 +24,26 @@ mod example {
             }
         };
 
-        // ~ OpenSSL offers a variety of complex configurations. Here is an example:
-        let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
-        builder.set_cipher_list("DEFAULT").unwrap();
-        builder.set_verify(SslVerifyMode::PEER);
-        if let (Some(ccert), Some(ckey)) = (cfg.client_cert, cfg.client_key) {
-            info!("loading cert-file={}, key-file={}", ccert, ckey);
+        // ~ Create SecurityConfig with rustls
+        let mut security_config = SecurityConfig::new();
 
-            builder
-                .set_certificate_file(ccert, SslFiletype::PEM)
-                .unwrap();
-            builder
-                .set_private_key_file(ckey, SslFiletype::PEM)
-                .unwrap();
-            builder.check_private_key().unwrap();
-        }
+        // Set hostname verification (default is true)
+        security_config = security_config.with_hostname_verification(cfg.verify_hostname);
 
+        // Load CA certificate if provided
         if let Some(ca_cert) = cfg.ca_cert {
             info!("loading ca-file={}", ca_cert);
-
-            builder.set_ca_file(ca_cert).unwrap();
-        } else {
-            // ~ allow client specify the CAs through the default paths:
-            // "These locations are read from the SSL_CERT_FILE and
-            // SSL_CERT_DIR environment variables if present, or defaults
-            // specified at OpenSSL build time otherwise."
-            builder.set_default_verify_paths().unwrap();
+            security_config = security_config.with_ca_cert(ca_cert);
         }
 
-        let connector = builder.build();
+        // Load client certificate and key if provided
+        if let (Some(client_cert), Some(client_key)) = (cfg.client_cert, cfg.client_key) {
+            info!("loading cert-file={}, key-file={}", client_cert, client_key);
+            security_config = security_config.with_client_cert(client_cert, client_key);
+        }
 
-        // ~ instantiate KafkaClient with the previous OpenSSL setup
-        let mut client = KafkaClient::new_secure(
-            cfg.brokers,
-            SecurityConfig::new(connector).with_hostname_verification(cfg.verify_hostname),
-        );
+        // ~ instantiate KafkaClient with rustls TLS support
+        let mut client = KafkaClient::new_secure(cfg.brokers, security_config);
 
         // ~ communicate with the brokers
         match client.load_metadata_all() {
@@ -159,7 +137,7 @@ mod example {
                         .filter(|s| !s.is_empty())
                         .collect()
                 })
-                .unwrap_or_else(|| vec!["localhost:9092".into()]);
+                .unwrap_or_else(|| vec!["localhost:9093".into()]);
             if brokers.is_empty() {
                 return Err("Invalid --brokers specified!".to_owned());
             }
@@ -175,17 +153,13 @@ mod example {
     }
 }
 
-#[cfg(not(feature = "security-openssl"))]
+#[cfg(not(feature = "security-rustls"))]
 mod example {
     use std::process;
 
     pub fn main() {
-        println!("⚠️ This example uses the deprecated OpenSSL backend!");
-        println!("For new code, please use the rustls example instead:");
-        println!("  cargo run --example example-rustls");
-        println!();
-        println!("To run this deprecated example:");
-        println!("  cargo run --example example-ssl --no-default-features --features=security-openssl");
+        println!("example relevant only with the \"security-rustls\" feature enabled!");
+        println!("Try: cargo run --example example-rustls --features=security-rustls");
         process::exit(1);
     }
 }

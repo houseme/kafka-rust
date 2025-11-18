@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- **rustls TLS backend (default)**: kafka-rust now uses rustls as the default TLS implementation, providing a pure-Rust, secure, and portable solution for TLS connections.
+  - New `security-rustls` feature flag (enabled by default via `security` feature)
+  - Support for webpki-roots and rustls-native-certs for certificate validation
+  - Support for custom CA certificates, client certificates, and hostname verification control
+  - Works out-of-the-box on musl, alpine, and other cross-compilation targets without native dependencies
+
+### Changed
+
+- **BREAKING (Minor)**: The `security` feature now maps to `security-rustls` instead of directly depending on OpenSSL.
+  - Default TLS backend is now rustls (pure Rust)
+  - Existing code using `SecurityConfig::new()` will automatically use rustls
+  - No API changes required for most users
+
+### Deprecated
+
+- **OpenSSL backend**: The OpenSSL-based TLS implementation is now deprecated and will be removed in the next major version.
+  - Use `security-openssl` feature flag to continue using OpenSSL temporarily
+  - Migrate to rustls by using the default `security` feature
+  - See `examples/example-rustls.rs` for rustls usage examples
+
+### Migration Guide
+
+For most users, no changes are required. The default build will now use rustls instead of OpenSSL.
+
+If you explicitly need OpenSSL (not recommended):
+```toml
+kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-openssl"] }
+```
+
+To use rustls explicitly (recommended):
+```toml
+kafka = { version = "0.10", features = ["security"] }
+# or
+kafka = { version = "0.10", features = ["security-rustls"] }
+```
+
+Benefits of migrating to rustls:
+- No native OpenSSL dependencies required
+- Better cross-compilation support
+- Consistent TLS behavior across platforms
+- Modern TLS 1.2+ only
+- Pure Rust implementation
+
 ## [0.9.0] 2022-04-29
 
 - Updated to support Rust 2021
