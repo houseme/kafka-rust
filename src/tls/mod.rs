@@ -78,13 +78,13 @@ impl TlsConfig {
 pub trait TlsStream: io::Read + io::Write + Send {
     /// Returns true if this is a secured (TLS) connection
     fn is_secured(&self) -> bool;
-    
+
     /// Set the read timeout
     fn set_read_timeout(&mut self, dur: Option<std::time::Duration>) -> io::Result<()>;
-    
+
     /// Set the write timeout
     fn set_write_timeout(&mut self, dur: Option<std::time::Duration>) -> io::Result<()>;
-    
+
     /// Shutdown the connection
     fn shutdown(&mut self) -> io::Result<()>;
 }

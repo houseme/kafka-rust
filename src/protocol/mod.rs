@@ -15,10 +15,10 @@ macro_rules! try_multi {
 }
 
 pub mod consumer;
+pub mod list_offset;
 pub mod metadata;
 pub mod offset;
 pub mod produce;
-pub mod list_offset;
 
 pub mod fetch;
 mod zreader;
@@ -30,10 +30,10 @@ pub use self::consumer::{
     OffsetCommitVersion, OffsetFetchRequest, OffsetFetchResponse, OffsetFetchVersion,
 };
 pub use self::fetch::FetchRequest;
+pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
 pub use self::metadata::{MetadataRequest, MetadataResponse};
 pub use self::offset::{OffsetRequest, OffsetResponse};
 pub use self::produce::{ProduceRequest, ProduceResponse};
-pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
 
 // --------------------------------------------------------------------
 

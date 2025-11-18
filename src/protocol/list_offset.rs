@@ -12,7 +12,6 @@ pub enum ListOffsetVersion {
     V1 = 1,
 }
 
-
 /// https://kafka.apache.org/protocol.html#The_Messages_ListOffsets
 #[derive(Debug)]
 pub struct ListOffsetsRequest<'a> {

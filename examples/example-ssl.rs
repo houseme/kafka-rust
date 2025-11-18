@@ -4,7 +4,7 @@ fn main() {
 
 /// ⚠️ **DEPRECATED**: This example uses the OpenSSL backend which is deprecated.
 /// Please see `example-rustls.rs` for the recommended rustls-based approach.
-/// 
+///
 /// This example will be removed in the next major version.
 #[cfg(feature = "security-openssl")]
 mod example {
@@ -185,7 +185,9 @@ mod example {
         println!("  cargo run --example example-rustls");
         println!();
         println!("To run this deprecated example:");
-        println!("  cargo run --example example-ssl --no-default-features --features=security-openssl");
+        println!(
+            "  cargo run --example example-ssl --no-default-features --features=security-openssl"
+        );
         process::exit(1);
     }
 }

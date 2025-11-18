@@ -84,7 +84,7 @@ impl RustlsConnector {
                 )
             })?;
             let mut ca_reader = BufReader::new(ca_file);
-            
+
             let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut ca_reader)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| {
@@ -93,7 +93,7 @@ impl RustlsConnector {
                         format!("Failed to parse CA cert: {}", e),
                     )
                 })?;
-            
+
             for cert in certs {
                 root_store.add(cert).map_err(|e| {
                     io::Error::new(
@@ -112,12 +112,14 @@ impl RustlsConnector {
                 let _ = root_store.add(cert);
             }
             if let Some(e) = native_certs.errors.first() {
-                debug!("Failed to load some native certs (using webpki-roots as fallback): {}", e);
+                debug!(
+                    "Failed to load some native certs (using webpki-roots as fallback): {}",
+                    e
+                );
             }
         }
 
-        let config_builder = ClientConfig::builder()
-            .with_root_certificates(root_store);
+        let config_builder = ClientConfig::builder().with_root_certificates(root_store);
 
         let config = if let (Some(cert_path), Some(key_path)) =
             (&tls_config.client_cert_path, &tls_config.client_key_path)
@@ -130,7 +132,7 @@ impl RustlsConnector {
                 )
             })?;
             let mut cert_reader = BufReader::new(cert_file);
-            
+
             let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut cert_reader)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| {
@@ -147,7 +149,7 @@ impl RustlsConnector {
                 )
             })?;
             let mut key_reader = BufReader::new(key_file);
-            
+
             // Try to parse as different key types
             let key = rustls_pemfile::private_key(&mut key_reader)
                 .map_err(|e| {
@@ -156,7 +158,9 @@ impl RustlsConnector {
                         format!("Failed to parse private key: {}", e),
                     )
                 })?
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "No private key found"))?;
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "No private key found")
+                })?;
 
             config_builder
                 .with_client_auth_cert(certs, key)

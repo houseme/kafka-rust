@@ -467,7 +467,7 @@ impl KafkaConnection {
         tls_config: Option<&TlsConfig>,
     ) -> Result<KafkaConnection> {
         let tcp_stream = TcpStream::connect(host)?;
-        
+
         let stream = match tls_config {
             Some(config) => {
                 // Extract domain from host:port
@@ -483,7 +483,7 @@ impl KafkaConnection {
                     let tls_stream = connector.connect(domain, tcp_stream)?;
                     KafkaStream::Tls(tls_stream)
                 }
-                
+
                 #[cfg(all(feature = "security-openssl", not(feature = "security-rustls")))]
                 {
                     #[allow(deprecated)]
@@ -497,7 +497,7 @@ impl KafkaConnection {
                 KafkaStream::Plain(tcp_stream)
             }
         };
-        
+
         KafkaConnection::from_stream(stream, id, host, rw_timeout)
     }
 }

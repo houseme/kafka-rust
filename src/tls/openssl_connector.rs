@@ -9,7 +9,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
-use openssl::ssl::{SslConnector, SslMethod, SslStream, SslVerifyMode, SslFiletype};
+use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMode};
 
 use super::{TlsConfig, TlsStream};
 
