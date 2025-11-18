@@ -25,7 +25,7 @@ pub use crate::protocol::produce::ProducerTimestamp;
 #[cfg(not(feature = "producer_timestamp"))]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
 pub use self::network::SecurityConfig;
 
 use crate::codecs::{FromByte, ToByte};
@@ -472,7 +472,7 @@ impl KafkaClient {
     /// and [openssl_verify](https://crates.io/crates/openssl-verify),
     /// as well as
     /// [Kafka's documentation](https://kafka.apache.org/documentation.html#security_ssl).
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
     #[must_use]
     pub fn new_secure(hosts: Vec<String>, security: SecurityConfig) -> KafkaClient {
         KafkaClient {

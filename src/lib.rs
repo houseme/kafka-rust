@@ -31,4 +31,7 @@ pub mod producer;
 mod protocol;
 mod utils;
 
+#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+mod tls;
+
 pub use self::error::{Error, Result};

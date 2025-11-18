@@ -26,6 +26,12 @@ chrono = {version = "0.4", optional = true}
 thiserror = "1.0"
 tracing = "0.1"
 
+# rustls TLS backend (pure Rust, default)
+rustls = { version = "0.21", optional = true }
+webpki-roots = { version = "0.25", optional = true }
+rustls-pemfile = { version = "1.0", optional = true }
+rustls-native-certs = { version = "0.6", optional = true }
+
 [dev-dependencies]
 getopts = "0.2.21"
 tracing-subscriber = "0.3"
@@ -38,7 +44,14 @@ anyhow = "1.0"
 default = ["snappy", "gzip", "security"]
 snappy = ["snap"]
 gzip = ["flate2"]
-security = ["openssl", "openssl-sys"]
+
+# TLS/Security features
+# The 'security' feature now defaults to rustls (pure Rust, recommended)
+security = ["security-rustls"]
+security-rustls = ["rustls", "webpki-roots", "rustls-pemfile", "rustls-native-certs"]
+# Deprecated: OpenSSL backend (will be removed in next major version)
+security-openssl = ["openssl", "openssl-sys"]
+
 producer_timestamp = ["chrono"]
 nightly = []
 integration_tests = []
