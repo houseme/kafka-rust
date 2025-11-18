@@ -15,12 +15,10 @@ description = "Rust client for Apache Kafka"
 byteorder = "1.5"
 crc = "3.2"
 fnv = "1.0.7"
-ref_slice = "1.2.1"
 twox-hash = "1.6.3"
 
 flate2 = { version = "1.0", optional = true }
 openssl = { version = "0.10", optional = true }
-openssl-sys = { version = "0.9", optional = true }
 snap = { version = "1.1", optional = true }
 chrono = { version = "0.4", optional = true }
 thiserror = "1.0"
@@ -35,7 +33,6 @@ rustls-native-certs = { version = "0.8", optional = true }
 [dev-dependencies]
 getopts = "0.2.21"
 tracing-subscriber = "0.3"
-time = "0.3"
 rand = "0.8.5"
 lazy_static = "1.5"
 anyhow = "1.0"
@@ -50,7 +47,7 @@ gzip = ["flate2"]
 security = ["security-rustls"]
 security-rustls = ["rustls", "webpki-roots", "rustls-pemfile", "rustls-native-certs"]
 # Deprecated: OpenSSL backend (will be removed in next major version)
-security-openssl = ["openssl", "openssl-sys"]
+security-openssl = ["openssl"]
 
 producer_timestamp = ["chrono"]
 nightly = []
