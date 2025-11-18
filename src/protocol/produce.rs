@@ -152,7 +152,7 @@ impl<'a> PartitionProduceRequest<'a> {
     }
 }
 
-impl<'a, 'b> ToByte for ProduceRequest<'a, 'b> {
+impl ToByte for ProduceRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
@@ -163,7 +163,7 @@ impl<'a, 'b> ToByte for ProduceRequest<'a, 'b> {
     }
 }
 
-impl<'a> ToByte for TopicPartitionProduceRequest<'a> {
+impl ToByte for TopicPartitionProduceRequest<'_> {
     // render: TopicName [Partition MessageSetSize MessageSet]
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         self.topic.encode(buffer)?;
@@ -176,7 +176,7 @@ impl<'a> ToByte for TopicPartitionProduceRequest<'a> {
             {
                 match self.timestamp {
                     Some(timestamp) => {
-                        e._encode_with_timestamp(buffer, self.compression, timestamp)?
+                        e._encode_with_timestamp(buffer, self.compression, timestamp)?;
                     }
                     None => e._encode(buffer, self.compression)?,
                 }
@@ -186,7 +186,7 @@ impl<'a> ToByte for TopicPartitionProduceRequest<'a> {
     }
 }
 
-impl<'a> PartitionProduceRequest<'a> {
+impl PartitionProduceRequest<'_> {
     // render: Partition MessageSetSize MessageSet
     //
     // MessetSet => [Offset MessageSize Message]
@@ -291,7 +291,7 @@ fn render_compressed_with_timestamp(
     )
 }
 
-impl<'a> MessageProduceRequest<'a> {
+impl MessageProduceRequest<'_> {
     fn new<'b>(key: Option<&'b [u8]>, value: Option<&'b [u8]>) -> MessageProduceRequest<'b> {
         MessageProduceRequest { key, value }
     }
@@ -382,7 +382,7 @@ impl<'a> MessageProduceRequest<'a> {
     }
 }
 
-impl<'a> ToByte for Option<&'a [u8]> {
+impl ToByte for Option<&[u8]> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         match *self {
             Some(xs) => xs.encode(buffer),

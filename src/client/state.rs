@@ -516,16 +516,16 @@ mod tests {
         );
         assert_eq!(3, state.num_topics());
 
-        assert_eq!(true, state.contains_topic("tee-one"));
+        assert!(state.contains_topic("tee-one"));
         assert!(state.partitions_for("tee-one").is_some());
 
-        assert_eq!(true, state.contains_topic("tee-two"));
+        assert!(state.contains_topic("tee-two"));
         assert!(state.partitions_for("tee-two").is_some());
 
-        assert_eq!(true, state.contains_topic("tee-three"));
+        assert!(state.contains_topic("tee-three"));
         assert!(state.partitions_for("tee-three").is_some());
 
-        assert_eq!(false, state.contains_topic("foobar"));
+        assert!(!state.contains_topic("foobar"));
         assert!(state.partitions_for("foobar").is_none());
 
         assert_partitions(
@@ -597,16 +597,16 @@ mod tests {
         );
         assert_eq!(3, state.num_topics());
 
-        assert_eq!(true, state.contains_topic("tee-one"));
+        assert!(state.contains_topic("tee-one"));
         assert!(state.partitions_for("tee-one").is_some());
 
-        assert_eq!(true, state.contains_topic("tee-two"));
+        assert!(state.contains_topic("tee-two"));
         assert!(state.partitions_for("tee-two").is_some());
 
-        assert_eq!(true, state.contains_topic("tee-three"));
+        assert!(state.contains_topic("tee-three"));
         assert!(state.partitions_for("tee-three").is_some());
 
-        assert_eq!(false, state.contains_topic("foobar"));
+        assert!(!state.contains_topic("foobar"));
         assert!(state.partitions_for("foobar").is_none());
 
         assert_partitions(

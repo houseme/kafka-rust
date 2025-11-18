@@ -134,7 +134,7 @@ impl<'a> HeaderRequest<'a> {
     }
 }
 
-impl<'a> ToByte for HeaderRequest<'a> {
+impl ToByte for HeaderRequest<'_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(
             self.api_key.encode(buffer),
@@ -188,20 +188,20 @@ fn test_to_millis_i32() {
     fn assert_invalid(d: Duration) {
         match to_millis_i32(d) {
             Err(Error::InvalidDuration) => {}
-            other => panic!("Expected Err(InvalidDuration) but got {:?}", other),
+            other => panic!("Expected Err(InvalidDuration) but got {other:?}"),
         }
     }
     fn assert_valid(d: Duration, expected_millis: i32) {
         let r = to_millis_i32(d);
         match r {
             Ok(m) => assert_eq!(expected_millis, m),
-            Err(e) => panic!("Expected Ok({}) but got Err({:?})", expected_millis, e),
+            Err(e) => panic!("Expected Ok({expected_millis}) but got Err({e:?})"),
         }
     }
     assert_valid(Duration::from_millis(1_234), 1_234);
     assert_valid(Duration::new(540, 123_456_789), 540_123);
     assert_invalid(Duration::from_millis(u64::MAX));
-    assert_invalid(Duration::from_millis(u32::MAX as u64));
+    assert_invalid(Duration::from_millis(u64::from(u32::MAX)));
     assert_invalid(Duration::from_millis(i32::MAX as u64 + 1));
     assert_valid(Duration::from_millis(i32::MAX as u64 - 1), i32::MAX - 1);
 }

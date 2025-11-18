@@ -436,33 +436,15 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// extern crate openssl;
-    /// extern crate kafka;
-    ///
-    /// use openssl::ssl::{SslConnector, SslMethod, SslFiletype, SslVerifyMode};
     /// use kafka::client::{KafkaClient, SecurityConfig};
     ///
-    /// fn main() {
-    ///     let (key, cert) = ("client.key".to_string(), "client.crt".to_string());
-    ///
-    ///     // OpenSSL offers a variety of complex configurations. Here is an example:
-    ///     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
-    ///     builder.set_cipher_list("DEFAULT").unwrap();
-    ///     builder
-    ///         .set_certificate_file(cert, SslFiletype::PEM)
-    ///         .unwrap();
-    ///     builder
-    ///         .set_private_key_file(key, SslFiletype::PEM)
-    ///         .unwrap();
-    ///     builder.check_private_key().unwrap();
-    ///     builder.set_default_verify_paths().unwrap();
-    ///     builder.set_verify(SslVerifyMode::PEER);
-    ///     let connector = builder.build();
-    ///
-    ///     let mut client = KafkaClient::new_secure(vec!("localhost:9092".to_owned()),
-    ///                                              SecurityConfig::new(connector));
-    ///     client.load_metadata_all().unwrap();
-    /// }
+    /// let mut client = KafkaClient::new_secure(
+    ///     vec!["localhost:9093".to_owned()],
+    ///     SecurityConfig::new()
+    ///         .with_ca_cert("ca.pem".to_owned())
+    ///         .with_client_cert("client.crt".to_owned(), "client.key".to_owned())
+    /// );
+    /// client.load_metadata_all().unwrap();
     /// ```
     /// See also `SecurityConfig#with_hostname_verification` to disable hostname verification.
     ///
@@ -889,6 +871,7 @@ impl KafkaClient {
     ///
     /// Returns a mapping of topic name to `PartitionOffset`s for each
     /// currently available partition of the corresponding topic.
+    #[allow(clippy::similar_names)]
     pub fn fetch_offsets<T: AsRef<str>>(
         &mut self,
         topics: &[T],
@@ -976,20 +959,21 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use kafka::client::{KafkaClient, FetchOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
     /// let topics = vec!["test-topic".to_string()];
-    /// let offsets = client.list_offsets(&s, FetchOffset::ByTime(1698425676797));
+    /// let offsets = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797));
     /// ```
     ///
     /// Returns a mapping of topic name to `TimestampedPartitionOffset`s.
     /// Each entry in the vector represents the timestamp, and the corresponding offset,
     /// that Kafka finds to be the first message with timestamp *later* than the passed in
-    /// FetchOffset parameter.
-    /// example: Ok({"test-topic": [TimestampedPartitionOffset { offset: 20, partition: 0, time: 1698425676798 } ]
+    /// `FetchOffset` parameter.
+    /// example: Ok({"test-topic": [`TimestampedPartitionOffset` { offset: 20, partition: 0, time: 1698425676798 } ]
     /// Note that the message might not be exactly at the given timestamp.
+    #[allow(clippy::similar_names)]
     pub fn list_offsets<T: AsRef<str>>(
         &mut self,
         topics: &[T],
@@ -1075,7 +1059,7 @@ impl KafkaClient {
         Ok(res)
     }
 
-    /// Takes ownership back from the given HashMap Entry.
+    /// Takes ownership back from the given `HashMap` Entry.
     fn get_key_from_entry<'a, K: 'a, V: 'a>(entry: hash_map::Entry<'a, K, V>) -> K {
         match entry {
             hash_map::Entry::Occupied(e) => e.remove_entry().0,
@@ -1265,10 +1249,8 @@ impl KafkaClient {
     ///
     /// The return value will contain a vector of topic, partition,
     /// offset and error if any OR error:Error.
-
     // XXX rework signaling an error; note that we need to either return the
     // messages which kafka failed to accept or otherwise tell the client about them
-
     pub fn produce_messages<'a, 'b, I, J>(
         &mut self,
         acks: RequiredAcks,
@@ -1697,6 +1679,7 @@ fn __fetch_group_offsets(
 }
 
 /// ~ carries out the given fetch requests and returns the response
+#[allow(clippy::similar_names)]
 fn __fetch_messages(
     conn_pool: &mut network::Connections,
     config: &ClientConfig,
@@ -1715,6 +1698,7 @@ fn __fetch_messages(
 }
 
 /// ~ carries out the given produce requests and returns the response
+#[allow(clippy::similar_names)]
 fn __produce_messages(
     conn_pool: &mut network::Connections,
     reqs: HashMap<&str, protocol::ProduceRequest<'_, '_>>,

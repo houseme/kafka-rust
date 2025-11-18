@@ -37,7 +37,7 @@ fn test_uncompress() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
 fn test_uncompress_panic() {
     use std::io::Cursor;
     let msg: Vec<u8> = vec![

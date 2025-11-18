@@ -176,7 +176,7 @@ fn determine_partitions<'a>(
                     return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
                 }
                 Some(_) => ps.push(p),
-            };
+            }
         }
         ps
     };
@@ -377,7 +377,7 @@ struct TopicPartitionsDebug<'a> {
     tps: &'a VecDeque<TopicPartition>,
 }
 
-impl<'a> fmt::Debug for TopicPartitionsDebug<'a> {
+impl fmt::Debug for TopicPartitionsDebug<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[")?;
         for (i, tp) in self.tps.iter().enumerate() {

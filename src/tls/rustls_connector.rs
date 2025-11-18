@@ -80,7 +80,7 @@ impl RustlsConnector {
             let ca_file = File::open(ca_cert_path).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Failed to open CA cert file: {}", e),
+                    format!("Failed to open CA cert file: {e}"),
                 )
             })?;
             let mut ca_reader = BufReader::new(ca_file);
@@ -90,7 +90,7 @@ impl RustlsConnector {
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to parse CA cert: {}", e),
+                        format!("Failed to parse CA cert: {e}"),
                     )
                 })?;
 
@@ -98,7 +98,7 @@ impl RustlsConnector {
                 root_store.add(cert).map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to add CA cert: {}", e),
+                        format!("Failed to add CA cert: {e}"),
                     )
                 })?;
             }
@@ -128,7 +128,7 @@ impl RustlsConnector {
             let cert_file = File::open(cert_path).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Failed to open client cert file: {}", e),
+                    format!("Failed to open client cert file: {e}"),
                 )
             })?;
             let mut cert_reader = BufReader::new(cert_file);
@@ -138,14 +138,14 @@ impl RustlsConnector {
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to parse client cert: {}", e),
+                        format!("Failed to parse client cert: {e}"),
                     )
                 })?;
 
             let key_file = File::open(key_path).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Failed to open client key file: {}", e),
+                    format!("Failed to open client key file: {e}"),
                 )
             })?;
             let mut key_reader = BufReader::new(key_file);
@@ -155,7 +155,7 @@ impl RustlsConnector {
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to parse private key: {}", e),
+                        format!("Failed to parse private key: {e}"),
                     )
                 })?
                 .ok_or_else(|| {
@@ -167,7 +167,7 @@ impl RustlsConnector {
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to set client auth: {}", e),
+                        format!("Failed to set client auth: {e}"),
                     )
                 })?
         } else {
@@ -186,14 +186,13 @@ impl RustlsConnector {
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Invalid DNS name: {}", domain),
+                    format!("Invalid DNS name: {domain}"),
                 )
             })?
             .to_owned();
 
-        let conn = ClientConnection::new(self.config.clone(), server_name).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("TLS connection error: {}", e))
-        })?;
+        let conn = ClientConnection::new(self.config.clone(), server_name)
+            .map_err(|e| io::Error::other(format!("TLS connection error: {e}")))?;
 
         // Disable hostname verification if requested (insecure!)
         if !self.verify_hostname {
@@ -207,9 +206,10 @@ impl RustlsConnector {
         let mut stream = StreamOwned::new(conn, tcp_stream);
 
         // Complete the TLS handshake
-        stream.conn.complete_io(&mut stream.sock).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("TLS handshake failed: {}", e))
-        })?;
+        stream
+            .conn
+            .complete_io(&mut stream.sock)
+            .map_err(|e| io::Error::other(format!("TLS handshake failed: {e}")))?;
 
         Ok(Box::new(RustlsStream::new(stream)))
     }

@@ -11,6 +11,7 @@
 #![cfg_attr(feature = "nightly", feature(test))]
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
+#![allow(deprecated)] // Allow deprecated items (e.g., OpenSSL backend)
 
 #[macro_use]
 extern crate tracing;

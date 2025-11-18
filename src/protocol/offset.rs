@@ -73,7 +73,7 @@ impl PartitionOffsetRequest {
     }
 }
 
-impl<'a> ToByte for OffsetRequest<'a> {
+impl ToByte for OffsetRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
@@ -83,7 +83,7 @@ impl<'a> ToByte for OffsetRequest<'a> {
     }
 }
 
-impl<'a> ToByte for TopicPartitionOffsetRequest<'a> {
+impl ToByte for TopicPartitionOffsetRequest<'_> {
     fn encode<T: Write>(&self, buffer: &mut T) -> Result<()> {
         try_multi!(self.topic.encode(buffer), self.partitions.encode(buffer))
     }

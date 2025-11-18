@@ -33,7 +33,7 @@ impl<'a, 'b> GroupCoordinatorRequest<'a, 'b> {
     }
 }
 
-impl<'a, 'b> ToByte for GroupCoordinatorRequest<'a, 'b> {
+impl ToByte for GroupCoordinatorRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(self.header.encode(buffer), self.group.encode(buffer))
     }
@@ -152,7 +152,7 @@ impl PartitionOffsetFetchRequest {
     }
 }
 
-impl<'a, 'b, 'c> ToByte for OffsetFetchRequest<'a, 'b, 'c> {
+impl ToByte for OffsetFetchRequest<'_, '_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(
             self.header.encode(buffer),
@@ -162,7 +162,7 @@ impl<'a, 'b, 'c> ToByte for OffsetFetchRequest<'a, 'b, 'c> {
     }
 }
 
-impl<'a> ToByte for TopicPartitionOffsetFetchRequest<'a> {
+impl ToByte for TopicPartitionOffsetFetchRequest<'_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         try_multi!(self.topic.encode(buffer), self.partitions.encode(buffer))
     }
@@ -351,7 +351,7 @@ impl<'a> PartitionOffsetCommitRequest<'a> {
     }
 }
 
-impl<'a, 'b> ToByte for OffsetCommitRequest<'a, 'b> {
+impl ToByte for OffsetCommitRequest<'_, '_> {
     fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
         let v = OffsetCommitVersion::from_protocol(self.header.api_version);
         self.header.encode(buffer)?;

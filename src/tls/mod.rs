@@ -15,7 +15,7 @@ pub use rustls_connector::RustlsConnector;
 
 #[cfg(feature = "security-openssl")]
 pub mod openssl_connector;
-#[cfg(feature = "security-openssl")]
+#[cfg(all(feature = "security-openssl", not(feature = "security-rustls")))]
 pub use openssl_connector::OpenSslConnector;
 
 /// Configuration for TLS connections
@@ -75,6 +75,7 @@ impl TlsConfig {
 ///
 /// This trait abstracts over different TLS backends (rustls, OpenSSL)
 /// and plain TCP streams.
+#[allow(dead_code)] // Methods may not be used in all configurations
 pub trait TlsStream: io::Read + io::Write + Send {
     /// Returns true if this is a secured (TLS) connection
     fn is_secured(&self) -> bool;
@@ -89,11 +90,13 @@ pub trait TlsStream: io::Read + io::Write + Send {
     fn shutdown(&mut self) -> io::Result<()>;
 }
 
-/// Plain TCP stream wrapper implementing TlsStream
+/// Plain TCP stream wrapper implementing `TlsStream`
+#[allow(dead_code)] // May not be used in all configurations
 pub struct PlainStream {
     inner: TcpStream,
 }
 
+#[allow(dead_code)] // May not be used in all configurations
 impl PlainStream {
     pub fn new(stream: TcpStream) -> Self {
         PlainStream { inner: stream }

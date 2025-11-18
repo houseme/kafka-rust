@@ -283,7 +283,7 @@ fn to_number<N: FromStr>(s: Option<String>, _default: N) -> Result<N> {
         None => Ok(_default),
         Some(s) => match s.parse::<N>() {
             Ok(n) => Ok(n),
-            Err(_) => return Err(anyhow!("{:?}", format!("Not a number: {}", s))),
+            Err(_) => Err(anyhow!("{:?}", format!("Not a number: {}", s))),
         },
     }
 }

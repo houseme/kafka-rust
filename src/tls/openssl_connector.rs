@@ -14,10 +14,12 @@ use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMod
 use super::{TlsConfig, TlsStream};
 
 /// OpenSSL-based TLS stream
+#[allow(dead_code)] // May not be used when rustls is the default
 pub struct OpenSslStream {
     inner: SslStream<TcpStream>,
 }
 
+#[allow(dead_code)] // May not be used when rustls is the default
 impl OpenSslStream {
     fn new(stream: SslStream<TcpStream>) -> Self {
         OpenSslStream { inner: stream }
@@ -77,19 +79,12 @@ pub struct OpenSslConnector {
 impl OpenSslConnector {
     /// Create a new OpenSSL connector with the given configuration
     pub fn new(tls_config: TlsConfig) -> io::Result<Self> {
-        let mut builder = SslConnector::builder(SslMethod::tls()).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to create SSL connector: {}", e),
-            )
-        })?;
+        let mut builder = SslConnector::builder(SslMethod::tls())
+            .map_err(|e| io::Error::other(format!("Failed to create SSL connector: {e}")))?;
 
-        builder.set_cipher_list("DEFAULT").map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to set cipher list: {}", e),
-            )
-        })?;
+        builder
+            .set_cipher_list("DEFAULT")
+            .map_err(|e| io::Error::other(format!("Failed to set cipher list: {e}")))?;
 
         builder.set_verify(SslVerifyMode::PEER);
 
@@ -102,7 +97,7 @@ impl OpenSslConnector {
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to load client cert: {}", e),
+                        format!("Failed to load client cert: {e}"),
                     )
                 })?;
 
@@ -111,14 +106,14 @@ impl OpenSslConnector {
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to load client key: {}", e),
+                        format!("Failed to load client key: {e}"),
                     )
                 })?;
 
             builder.check_private_key().map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("Private key check failed: {}", e),
+                    format!("Private key check failed: {e}"),
                 )
             })?;
         }
@@ -128,15 +123,12 @@ impl OpenSslConnector {
             builder.set_ca_file(ca_cert_path).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("Failed to load CA cert: {}", e),
+                    format!("Failed to load CA cert: {e}"),
                 )
             })?;
         } else {
             builder.set_default_verify_paths().map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to set default verify paths: {}", e),
-                )
+                io::Error::other(format!("Failed to set default verify paths: {e}"))
             })?;
         }
 
@@ -148,24 +140,19 @@ impl OpenSslConnector {
 
     /// Connect to a server using TLS
     pub fn connect(&self, domain: &str, tcp_stream: TcpStream) -> io::Result<Box<dyn TlsStream>> {
-        let mut connector_config = self.connector.configure().map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to configure SSL: {}", e),
-            )
-        })?;
+        let mut connector_config = self
+            .connector
+            .configure()
+            .map_err(|e| io::Error::other(format!("Failed to configure SSL: {e}")))?;
 
         if !self.verify_hostname {
             warn!("Hostname verification is disabled! This is insecure and should only be used for testing.");
             connector_config.set_verify_hostname(false);
         }
 
-        let stream = connector_config.connect(domain, tcp_stream).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("SSL connection failed: {}", e),
-            )
-        })?;
+        let stream = connector_config
+            .connect(domain, tcp_stream)
+            .map_err(|e| io::Error::other(format!("SSL connection failed: {e}")))?;
 
         Ok(Box::new(OpenSslStream::new(stream)))
     }

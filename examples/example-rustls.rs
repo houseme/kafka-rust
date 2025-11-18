@@ -57,7 +57,7 @@ mod example {
                 // metadata via a secured connection to one of the
                 // specified brokers
 
-                if client.topics().len() == 0 {
+                if client.topics().is_empty() {
                     println!("No topics available!");
                 } else {
                     // ~ now let's communicate with all the brokers in

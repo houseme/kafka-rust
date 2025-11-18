@@ -20,7 +20,7 @@ use crate::tls::{TlsConfig, TlsStream};
 #[cfg(feature = "security-rustls")]
 use crate::tls::RustlsConnector;
 
-#[cfg(feature = "security-openssl")]
+#[cfg(all(feature = "security-openssl", not(feature = "security-rustls")))]
 use crate::tls::OpenSslConnector;
 
 // --------------------------------------------------------------------
@@ -36,7 +36,7 @@ pub struct SecurityConfig {
 
 #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
 impl SecurityConfig {
-    /// Create a new SecurityConfig with default TLS settings.
+    /// Create a new `SecurityConfig` with default TLS settings.
     ///
     /// By default, this will:
     /// - Verify hostnames
@@ -49,7 +49,7 @@ impl SecurityConfig {
         }
     }
 
-    /// Create a SecurityConfig from a TlsConfig
+    /// Create a `SecurityConfig` from a `TlsConfig`
     #[must_use]
     pub fn from_tls_config(tls_config: TlsConfig) -> Self {
         SecurityConfig { tls_config }
@@ -81,7 +81,7 @@ impl SecurityConfig {
 // Backward compatibility: Support OpenSSL SslConnector
 #[cfg(feature = "security-openssl")]
 impl SecurityConfig {
-    /// Create SecurityConfig from an OpenSSL SslConnector (deprecated)
+    /// Create `SecurityConfig` from an OpenSSL `SslConnector` (deprecated)
     ///
     /// ⚠️ **DEPRECATED**: This method exists for backward compatibility only.
     /// The OpenSSL backend will be removed in the next major version.
@@ -91,7 +91,7 @@ impl SecurityConfig {
         note = "OpenSSL backend is deprecated. Use SecurityConfig::new() with rustls instead."
     )]
     #[must_use]
-    pub fn new_openssl(connector: openssl::ssl::SslConnector) -> Self {
+    pub fn new_openssl(_connector: openssl::ssl::SslConnector) -> Self {
         // We can't directly use the SslConnector with our abstraction
         // For backward compatibility, we'll store it as TlsConfig
         // and handle it specially in the connection logic

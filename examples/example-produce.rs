@@ -19,11 +19,7 @@ fn main() {
     }
 }
 
-fn produce_message<'a, 'b>(
-    data: &'a [u8],
-    topic: &'b str,
-    brokers: Vec<String>,
-) -> Result<(), KafkaError> {
+fn produce_message(data: &[u8], topic: &str, brokers: Vec<String>) -> Result<(), KafkaError> {
     println!("About to publish a message at {:?} to: {}", brokers, topic);
 
     // ~ create a producer. this is a relatively costly operation, so
