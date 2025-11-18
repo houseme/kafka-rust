@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 - **rustls TLS backend (default)**: kafka-rust now uses rustls as the default TLS implementation, providing a pure-Rust, secure, and portable solution for TLS connections.
   - New `security-rustls` feature flag (enabled by default via `security` feature)
-  - Support for webpki-roots and rustls-native-certs for certificate validation
+  - **Updated to rustls 0.23.35** with latest improvements and optimizations
+  - Support for webpki-roots 1.0 and rustls-native-certs 0.8 for certificate validation
   - Support for custom CA certificates, client certificates, and hostname verification control
   - Works out-of-the-box on musl, alpine, and other cross-compilation targets without native dependencies
 
@@ -21,6 +22,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   - Default TLS backend is now rustls (pure Rust)
   - Existing code using `SecurityConfig::new()` will automatically use rustls
   - No API changes required for most users
+- **Updated rustls dependencies**:
+  - rustls: 0.21 → 0.23.35 (latest stable with performance improvements)
+  - webpki-roots: 0.25 → 1.0
+  - rustls-pemfile: 1.0 → 2.2
+  - rustls-native-certs: 0.6 → 0.8
 
 ### Deprecated
 

@@ -4,12 +4,13 @@
 //! It is the default and recommended TLS backend for kafka-rust.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerName, StreamOwned};
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use super::{TlsConfig, TlsStream};
 
@@ -84,48 +85,38 @@ impl RustlsConnector {
             })?;
             let mut ca_reader = BufReader::new(ca_file);
             
-            let certs = rustls_pemfile::certs(&mut ca_reader).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to parse CA cert: {}", e),
-                )
-            })?;
+            let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut ca_reader)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to parse CA cert: {}", e),
+                    )
+                })?;
             
             for cert in certs {
-                root_store
-                    .add(&rustls::Certificate(cert))
-                    .map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("Failed to add CA cert: {}", e),
-                        )
-                    })?;
+                root_store.add(cert).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to add CA cert: {}", e),
+                    )
+                })?;
             }
         } else {
             // Use webpki-roots for default trusted CAs
-            root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }));
+            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
             // Also try to load system certificates
-            match rustls_native_certs::load_native_certs() {
-                Ok(certs) => {
-                    for cert in certs {
-                        let _ = root_store.add(&rustls::Certificate(cert.0));
-                    }
-                }
-                Err(e) => {
-                    debug!("Failed to load native certs (using webpki-roots as fallback): {}", e);
-                }
+            let native_certs = rustls_native_certs::load_native_certs();
+            for cert in native_certs.certs {
+                let _ = root_store.add(cert);
+            }
+            if let Some(e) = native_certs.errors.first() {
+                debug!("Failed to load some native certs (using webpki-roots as fallback): {}", e);
             }
         }
 
         let config_builder = ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(root_store);
 
         let config = if let (Some(cert_path), Some(key_path)) =
@@ -140,16 +131,14 @@ impl RustlsConnector {
             })?;
             let mut cert_reader = BufReader::new(cert_file);
             
-            let certs = rustls_pemfile::certs(&mut cert_reader)
+            let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut cert_reader)
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("Failed to parse client cert: {}", e),
                     )
-                })?
-                .into_iter()
-                .map(rustls::Certificate)
-                .collect();
+                })?;
 
             let key_file = File::open(key_path).map_err(|e| {
                 io::Error::new(
@@ -160,31 +149,17 @@ impl RustlsConnector {
             let mut key_reader = BufReader::new(key_file);
             
             // Try to parse as different key types
-            let mut keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to parse private key: {}", e),
-                )
-            })?;
-
-            if keys.is_empty() {
-                // Try RSA keys
-                key_reader.get_mut().seek(io::SeekFrom::Start(0))?;
-                keys = rustls_pemfile::rsa_private_keys(&mut key_reader).map_err(|e| {
+            let key = rustls_pemfile::private_key(&mut key_reader)
+                .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Failed to parse RSA private key: {}", e),
+                        format!("Failed to parse private key: {}", e),
                     )
-                })?;
-            }
-
-            let key = keys
-                .into_iter()
-                .next()
+                })?
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "No private key found"))?;
 
             config_builder
-                .with_client_auth_cert(certs, rustls::PrivateKey(key))
+                .with_client_auth_cert(certs, key)
                 .map_err(|e| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -203,12 +178,14 @@ impl RustlsConnector {
 
     /// Connect to a server using TLS
     pub fn connect(&self, domain: &str, tcp_stream: TcpStream) -> io::Result<Box<dyn TlsStream>> {
-        let server_name = ServerName::try_from(domain).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Invalid DNS name: {}", domain),
-            )
-        })?;
+        let server_name = ServerName::try_from(domain)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid DNS name: {}", domain),
+                )
+            })?
+            .to_owned();
 
         let conn = ClientConnection::new(self.config.clone(), server_name).map_err(|e| {
             io::Error::new(io::ErrorKind::Other, format!("TLS connection error: {}", e))
