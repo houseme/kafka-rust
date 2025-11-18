@@ -9,10 +9,10 @@ use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::{TlsConfig, TlsStream};
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-
-use super::{TlsConfig, TlsStream};
+use tracing::{debug, warn};
 
 /// rustls-based TLS stream
 pub struct RustlsStream {
@@ -196,7 +196,9 @@ impl RustlsConnector {
 
         // Disable hostname verification if requested (insecure!)
         if !self.verify_hostname {
-            warn!("Hostname verification is disabled! This is insecure and should only be used for testing.");
+            warn!(
+                "Hostname verification is disabled! This is insecure and should only be used for testing."
+            );
             // Note: rustls doesn't provide a direct way to disable hostname verification
             // after ClientConnection is created. The verification happens during
             // ServerName creation, so we've already validated it above.

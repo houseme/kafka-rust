@@ -5,11 +5,11 @@
 //!
 //! This module provides TLS support using OpenSSL for backward compatibility.
 
+use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMode};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
-
-use openssl::ssl::{SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMode};
+use tracing::warn;
 
 use super::{TlsConfig, TlsStream};
 
@@ -146,7 +146,9 @@ impl OpenSslConnector {
             .map_err(|e| io::Error::other(format!("Failed to configure SSL: {e}")))?;
 
         if !self.verify_hostname {
-            warn!("Hostname verification is disabled! This is insecure and should only be used for testing.");
+            warn!(
+                "Hostname verification is disabled! This is insecure and should only be used for testing."
+            );
             connector_config.set_verify_hostname(false);
         }
 

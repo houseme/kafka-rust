@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 
 use crate::error::Result;
 

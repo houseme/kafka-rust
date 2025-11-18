@@ -3,8 +3,8 @@ use std::io::{Read, Write};
 use crate::codecs::{AsStrings, FromByte, ToByte};
 use crate::error::Result;
 
-use super::{HeaderRequest, HeaderResponse};
 use super::{API_KEY_METADATA, API_VERSION};
+use super::{HeaderRequest, HeaderResponse};
 
 #[derive(Debug)]
 pub struct MetadataRequest<'a, T> {

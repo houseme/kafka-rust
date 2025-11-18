@@ -4,8 +4,8 @@
 use std::collections::hash_map;
 use std::fmt;
 
-use super::state::{ClientState, TopicPartition, TopicPartitionIter, TopicPartitions};
 use super::KafkaClient;
+use super::state::{ClientState, TopicPartition, TopicPartitionIter, TopicPartitions};
 
 // public re-export
 pub use super::state::Broker;

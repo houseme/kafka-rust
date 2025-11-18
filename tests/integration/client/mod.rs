@@ -101,15 +101,19 @@ fn test_produce_fetch_messages() {
         assert!(confirm.topic == TEST_TOPIC_NAME || confirm.topic == TEST_TOPIC_NAME_2);
         assert_eq!(2, confirm.partition_confirms.len());
 
-        assert!(confirm
-            .partition_confirms
-            .iter()
-            .any(|part_confirm| { part_confirm.partition == 0 && part_confirm.offset.is_ok() }));
+        assert!(
+            confirm
+                .partition_confirms
+                .iter()
+                .any(|part_confirm| { part_confirm.partition == 0 && part_confirm.offset.is_ok() })
+        );
 
-        assert!(confirm
-            .partition_confirms
-            .iter()
-            .any(|part_confirm| { part_confirm.partition == 1 && part_confirm.offset.is_ok() }));
+        assert!(
+            confirm
+                .partition_confirms
+                .iter()
+                .any(|part_confirm| { part_confirm.partition == 1 && part_confirm.offset.is_ok() })
+        );
 
         for part_confirm in confirm.partition_confirms.iter() {
             fetches.push(FetchPartition::new(
@@ -132,9 +136,11 @@ fn test_produce_fetch_messages() {
         (TEST_TOPIC_NAME_2, 1, "d".as_bytes()),
     ];
 
-    assert!(correct_messages
-        .into_iter()
-        .all(|c_msg| { messages.contains(&c_msg) }));
+    assert!(
+        correct_messages
+            .into_iter()
+            .all(|c_msg| { messages.contains(&c_msg) })
+    );
 
     let end_latest_offsets = client.fetch_offsets(&topics, FetchOffset::Latest).unwrap();
 

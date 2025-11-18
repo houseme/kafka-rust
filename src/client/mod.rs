@@ -4,6 +4,11 @@
 //! The entry point into this module is `KafkaClient` obtained by a
 //! call to `KafkaClient::new()`.
 
+// pub re-export
+pub use crate::compression::Compression;
+use crate::protocol::list_offset::ListOffsetVersion;
+pub use crate::utils::PartitionOffset;
+use crate::utils::TimestampedPartitionOffset;
 use std;
 use std::collections::hash_map;
 use std::collections::hash_map::HashMap;
@@ -12,12 +17,7 @@ use std::iter::Iterator;
 use std::mem;
 use std::thread;
 use std::time::{Duration, Instant};
-
-// pub re-export
-pub use crate::compression::Compression;
-use crate::protocol::list_offset::ListOffsetVersion;
-pub use crate::utils::PartitionOffset;
-use crate::utils::TimestampedPartitionOffset;
+use tracing::{debug, trace};
 
 #[cfg(feature = "producer_timestamp")]
 pub use crate::protocol::produce::ProducerTimestamp;

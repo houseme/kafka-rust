@@ -12,13 +12,6 @@
 #![warn(clippy::pedantic)]
 #![allow(deprecated)] // Allow deprecated items (e.g., OpenSSL backend)
 
-#[cfg(feature = "snappy")]
-extern crate snap;
-#[cfg(all(test, feature = "nightly"))]
-extern crate test;
-#[macro_use]
-extern crate tracing;
-
 pub mod client;
 mod client_internals;
 mod codecs;

@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
-use super::{HeaderRequest, HeaderResponse};
 use super::{API_KEY_OFFSET, API_VERSION};
+use super::{HeaderRequest, HeaderResponse};
 use crate::codecs::{FromByte, ToByte};
 use crate::error::{KafkaCode, Result};
 use crate::utils::PartitionOffset;

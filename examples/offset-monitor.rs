@@ -1,13 +1,13 @@
 use std::cmp;
 use std::env;
-use std::io::{stderr, stdout, BufWriter, Write};
+use std::io::{BufWriter, Write, stderr, stdout};
 use std::process;
 use std::thread;
 //use std::time as stdtime;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use kafka::client::{FetchOffset, GroupOffsetStorage, KafkaClient};
 
 /// A very simple offset monitor for a particular topic able to show
@@ -357,12 +357,7 @@ impl Config {
         if let Some(s) = m.opt_str("sleep") {
             match s.parse::<u64>() {
                 Ok(n) if n != 0 => period = Duration::from_secs(n),
-                _ => {
-                    return Err(anyhow!(
-                        "not a number greater than zero: {}",
-                        s
-                    ))
-                }
+                _ => return Err(anyhow!("not a number greater than zero: {}", s)),
             }
         }
         Ok(Config {

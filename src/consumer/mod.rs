@@ -61,13 +61,13 @@
 //! group configured, it will behave as if it had one, only that
 //! committing consumed message offsets resolves into a void operation.
 
-use std::collections::hash_map::{Entry, HashMap};
-use std::slice;
-
 use crate::client::fetch;
 use crate::client::{CommitOffset, FetchPartition, KafkaClient};
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
+use std::collections::hash_map::{Entry, HashMap};
+use std::slice;
+use tracing::debug;
 
 // public re-exports
 pub use self::builder::Builder;

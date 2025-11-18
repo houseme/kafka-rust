@@ -4,14 +4,14 @@
 //! through re-exports of individual items from within
 //! `kafka::client`.
 
+use crate::error::Result;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::mem;
 use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
-
-use crate::error::Result;
+use tracing::{debug, trace, warn};
 
 // Import TLS types based on enabled features
 #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
@@ -245,7 +245,7 @@ impl Connections {
         self.config.idle_timeout
     }
 
-    pub fn get_conn<'a>(&'a mut self, host: &str, now: Instant) -> Result<&'a mut KafkaConnection> {
+    pub fn get_conn<'a>(&mut self, host: &str, now: Instant) -> Result<&mut KafkaConnection> {
         if let Some(conn) = self.conns.get_mut(host) {
             if now.duration_since(conn.last_checkout) >= self.config.idle_timeout {
                 debug!("Idle timeout reached: {:?}", conn.item);

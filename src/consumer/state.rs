@@ -3,11 +3,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::hash::BuildHasherDefault;
 
-use fnv::FnvHasher;
-
 use crate::client::metadata::Topics;
 use crate::client::{FetchGroupOffset, FetchOffset, KafkaClient};
 use crate::error::{Error, KafkaCode, Result};
+use fnv::FnvHasher;
+use tracing::debug;
 
 use super::assignment::{Assignment, AssignmentRef, Assignments};
 use super::config::Config;

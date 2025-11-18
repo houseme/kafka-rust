@@ -1,14 +1,7 @@
 //! A representation of fetched messages from Kafka.
 
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
-use std::io::Write;
-use std::sync::Arc;
-use std::{mem, result};
-
-use fnv::FnvHasher;
-
+use super::to_crc;
+use super::{HeaderRequest, API_KEY_FETCH, API_VERSION};
 use crate::codecs::ToByte;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
@@ -16,11 +9,15 @@ use crate::compression::gzip;
 use crate::compression::snappy::SnappyReader;
 use crate::compression::Compression;
 use crate::error::KafkaCode;
+use crate::protocol::zreader::ZReader;
 use crate::{Error, Result};
-
-use super::to_crc;
-use super::zreader::ZReader;
-use super::{HeaderRequest, API_KEY_FETCH, API_VERSION};
+use fnv::FnvHasher;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
+use std::io::Write;
+use std::sync::Arc;
+use std::{mem, result};
 
 pub type PartitionHasher = BuildHasherDefault<FnvHasher>;
 
@@ -490,6 +487,7 @@ impl ProtocolMessage<'_> {
 
 // tests --------------------------------------------------------------
 
+// Rust
 #[cfg(test)]
 mod tests {
     use std::str;
@@ -527,7 +525,7 @@ mod tests {
     static FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900: &[u8] =
         include_bytes!("../../test-data/fetch2.mytopic.nocompression.invalid_crc.kafka.0900");
 
-    fn into_messages(r: &Response) -> Vec<&Message<'_>> {
+    pub(crate) fn into_messages(r: &Response) -> Vec<&Message<'_>> {
         let mut all_msgs = Vec::new();
         for t in r.topics() {
             for p in t.partitions() {
@@ -557,8 +555,6 @@ mod tests {
         assert_eq!(1, resp.topics[0].partitions.len());
         // ~ the first partition
         assert_eq!(0, resp.topics[0].partitions[0].partition);
-        // ~ no error
-        // assert!(resp.topics[0].partitions[0].data.is_ok());
 
         let msgs = into_messages(&resp);
         assert_eq!(original.len(), msgs.len());
@@ -599,8 +595,6 @@ mod tests {
         );
     }
 
-    // verify we don't crash but cleanly fail and report we don't
-    // support the compression
     #[cfg(not(feature = "snappy"))]
     #[test]
     fn test_unsupported_compression_snappy() {
@@ -611,10 +605,7 @@ mod tests {
             Some(&req),
             false,
         );
-        assert!(match r {
-            return Err(Error::UnsupportedCompression) => true,
-            _ => false,
-        });
+        assert!(matches!(r, Err(Error::UnsupportedCompression)));
     }
 
     #[cfg(feature = "snappy")]
@@ -696,18 +687,13 @@ mod tests {
             true,
         );
 
-        // now test the same message but with an invalid crc checksum
-        // (modified by hand)
-        // 1) without checking the crc ... since only the crc field is
-        // artificially falsified ... we expect the rest of the
-        // message to be parsed correctly
         test_decode_new_fetch_response(
             FETCH2_TXT,
             FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900.to_owned(),
             None,
             false,
         );
-        // 2) with checking the crc ... parsing should fail immediately
+
         match Response::from_vec(
             FETCH2_FETCH_RESPONSE_NOCOMPRESSION_INVALID_CRC_K0900.to_owned(),
             None,
@@ -719,101 +705,84 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "nightly")]
+    // Replaces the original bench module to provide "benchmark-like" common tests
     mod benches {
-        use test::{black_box, Bencher};
+        use super::{into_messages, FetchRequest, Response};
 
-        use super::super::{FetchRequest, Response};
-        use super::into_messages;
-
-        fn bench_decode_new_fetch_response(b: &mut Bencher, data: Vec<u8>, validate_crc: bool) {
+        fn run_decode_new_fetch_response(data: Vec<u8>, validate_crc: bool) {
             let mut reqs = FetchRequest::new(0, "foo", -1, -1);
             reqs.add("my-topic", 0, 0, -1);
-            b.bytes = data.len() as u64;
-            b.iter(|| {
-                let data = data.clone();
-                let r = black_box(Response::from_vec(data, Some(&reqs), validate_crc).unwrap());
-                let v = black_box(into_messages(&r));
-                v.len()
-            });
+
+            let r = Response::from_vec(data, Some(&reqs), validate_crc).unwrap();
+            let v = into_messages(&r);
+            assert!(v.len() >= 0);
         }
 
-        #[bench]
-        fn bench_decode_new_fetch_response_nocompression_k0821(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_nocompression_k0821() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_NOCOMPRESSION_K0821.to_owned(),
                 false,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0821(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0821() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
                 false,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0822(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0822() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0822.to_owned(),
                 false,
-            )
+            );
         }
 
         #[cfg(feature = "gzip")]
-        #[bench]
-        fn bench_decode_new_fetch_response_gzip_k0821(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_gzip_k0821() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(),
                 false,
-            )
+            );
         }
 
-        #[bench]
-        fn bench_decode_new_fetch_response_nocompression_k0821_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_nocompression_k0821_validate_crc() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_NOCOMPRESSION_K0821.to_owned(),
                 true,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0821_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0821_validate_crc() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0821.to_owned(),
                 true,
-            )
+            );
         }
 
         #[cfg(feature = "snappy")]
-        #[bench]
-        fn bench_decode_new_fetch_response_snappy_k0822_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
+        #[test]
+        fn bench_like_decode_new_fetch_response_snappy_k0822_validate_crc() {
+            run_decode_new_fetch_response(
                 super::FETCH1_FETCH_RESPONSE_SNAPPY_K0822.to_owned(),
                 true,
-            )
+            );
         }
 
         #[cfg(feature = "gzip")]
-        #[bench]
-        fn bench_decode_new_fetch_response_gzip_k0821_validate_crc(b: &mut Bencher) {
-            bench_decode_new_fetch_response(
-                b,
-                super::FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(),
-                true,
-            )
+        #[test]
+        fn bench_like_decode_new_fetch_response_gzip_k0821_validate_crc() {
+            run_decode_new_fetch_response(super::FETCH1_FETCH_RESPONSE_GZIP_K0821.to_owned(), true);
         }
     }
 }
