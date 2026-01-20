@@ -26,7 +26,7 @@ use crate::tls::RustlsConnector;
 
 #[cfg(all(
     feature = "security-openssl",
-    not(any(feature = "security-rustls-default", feature = "security-openssl"))
+    not(any(feature = "security-rustls-default", feature = "security-rustls-ring"))
 ))]
 use crate::tls::OpenSslConnector;
 
