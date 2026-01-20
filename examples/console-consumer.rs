@@ -45,7 +45,7 @@ fn process(cfg: Config) -> Result<()> {
         for topic in cfg.topics {
             cb = cb.with_topic(topic);
         }
-        cb.create().unwrap()
+        cb.create()?
     };
 
     let stdout = io::stdout();
@@ -53,7 +53,7 @@ fn process(cfg: Config) -> Result<()> {
     let mut buf = Vec::with_capacity(1024);
 
     loop {
-        for ms in c.poll().unwrap().into_iter() {
+        for ms in c.poll()?.into_iter() {
             for m in ms.messages() {
                 // ~ clear the output buffer
                 unsafe { buf.set_len(0) };

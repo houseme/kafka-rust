@@ -9,24 +9,29 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
-- **rustls TLS backend (default)**: kafka-rust now uses rustls as the default TLS implementation, providing a pure-Rust, secure, and portable solution for TLS connections.
-  - New `security-rustls` feature flag (enabled by default via `security` feature)
-  - **Updated to rustls 0.23.35** with latest improvements and optimizations
-  - Support for webpki-roots 1.0 and rustls-native-certs 0.8 for certificate validation
-  - Support for custom CA certificates, client certificates, and hostname verification control
-  - Works out-of-the-box on musl, alpine, and other cross-compilation targets without native dependencies
+- **rustls 0.23 TLS backend (Default)**:
+  - Replaced OpenSSL with `rustls` 0.23 as the default TLS implementation.
+  - Enabled `prefer-post-quantum` feature by default for future-proof security.
+  - Enabled `tls12` feature for broad compatibility (TLS 1.2 and 1.3 supported).
+- **Flexible Crypto Providers**:
+  - `security-rustls-default`: Uses `aws-lc-rs` (via `rustls/aws-lc-rs`).
+  - `security-rustls-ring`: Uses `ring` (via `rustls/ring`).
+- **Certificate Handling**:
+  - Integrated `rustls-pki-types` (v1.0) with PEM support for robust certificate parsing.
+  - Integrated `rustls-native-certs` (v0.8) for loading system certificates.
+  - Integrated `webpki-roots` (v1.0) as the fallback root certificate store.
 
 ### Changed
 
-- **BREAKING (Minor)**: The `security` feature now maps to `security-rustls` instead of directly depending on OpenSSL.
-  - Default TLS backend is now rustls (pure Rust)
+- **BREAKING (Minor)**: The `security` feature now maps to `security-rustls-default` instead of directly depending on OpenSSL.
+  - Default TLS backend is now rustls (pure Rust) with `aws-lc-rs`
   - Existing code using `SecurityConfig::new()` will automatically use rustls
   - No API changes required for most users
-- **Updated rustls dependencies**:
-  - rustls: 0.21 → 0.23.35 (latest stable with performance improvements)
-  - webpki-roots: 0.25 → 1.0
-  - rustls-pemfile: 1.0 → 2.2
-  - rustls-native-certs: 0.6 → 0.8
+- **Updated Dependencies**:
+  - `rustls`: 0.21 → 0.23 (latest stable)
+  - `webpki-roots`: 0.25 → 1.0
+  - `rustls-native-certs`: 0.6 → 0.8
+  - Replaced `rustls-pemfile` with `rustls-pki-types` (feature `pem`) for type definitions and parsing.
 
 ### Deprecated
 
@@ -48,8 +53,16 @@ To use rustls explicitly (recommended):
 ```toml
 kafka = { version = "0.10", features = ["security"] }
 # or
-kafka = { version = "0.10", features = ["security-rustls"] }
+kafka = { version = "0.10", features = ["security-rustls-default"] }
 ```
+
+To use rustls with `ring` crypto provider:
+```toml
+kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-rustls-ring"] }
+```
+
+**Migrating from `rustls-pemfile` to `rustls-pki-types`**:
+Internal implementation now uses `rustls-pki-types` for PEM parsing. If you were using `rustls-pemfile` directly in conjunction with this crate's internals, please update to `rustls-pki-types`.
 
 Benefits of migrating to rustls:
 - No native OpenSSL dependencies required

@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/kafka-rust/kafka-rust"
 description = "Rust client for Apache Kafka"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 
 [dependencies]
 byteorder = "1.5"
@@ -26,9 +26,9 @@ thiserror = "1.0"
 tracing = "0.1"
 
 # rustls TLS backend (pure Rust, default)
-rustls = { version = "0.23", optional = true }
+rustls = { version = "0.23", optional = true, default-features = true, features = ["logging", "prefer-post-quantum", "std", "tls12"] }
 webpki-roots = { version = "1.0", optional = true }
-rustls-pemfile = { version = "2.2", optional = true }
+rustls-pki-types = { version = "1.0", optional = true, features = ["std"] }
 rustls-native-certs = { version = "0.8", optional = true }
 
 [dev-dependencies]
@@ -45,8 +45,10 @@ gzip = ["flate2"]
 
 # TLS/Security features
 # The 'security' feature now defaults to rustls (pure Rust, recommended)
-security = ["security-rustls"]
-security-rustls = ["rustls", "webpki-roots", "rustls-pemfile", "rustls-native-certs"]
+security = ["security-rustls-default"]
+_security-rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs"]
+security-rustls-default = ["_security-rustls", "rustls?/aws-lc-rs"]
+security-rustls-ring = ["_security-rustls", "rustls?/ring"]
 # Deprecated: OpenSSL backend (will be removed in next major version)
 security-openssl = ["openssl"]
 

@@ -14,13 +14,20 @@ use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
 // Import TLS types based on enabled features
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 use crate::tls::{TlsConfig, TlsStream};
 
-#[cfg(feature = "security-rustls")]
+#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
 use crate::tls::RustlsConnector;
 
-#[cfg(all(feature = "security-openssl", not(feature = "security-rustls")))]
+#[cfg(all(
+    feature = "security-openssl",
+    not(any(feature = "security-rustls-default", feature = "security-openssl"))
+))]
 use crate::tls::OpenSslConnector;
 
 // --------------------------------------------------------------------
@@ -29,12 +36,20 @@ use crate::tls::OpenSslConnector;
 ///
 /// This configuration is now backend-agnostic and works with both
 /// rustls (default) and OpenSSL (deprecated) TLS implementations.
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 pub struct SecurityConfig {
     tls_config: TlsConfig,
 }
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 impl SecurityConfig {
     /// Create a new `SecurityConfig` with default TLS settings.
     ///
@@ -102,14 +117,22 @@ impl SecurityConfig {
     }
 }
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 impl fmt::Debug for SecurityConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -150,12 +173,20 @@ impl<T: fmt::Debug> fmt::Debug for Pooled<T> {
 pub struct Config {
     rw_timeout: Option<Duration>,
     idle_timeout: Duration,
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     security_config: Option<SecurityConfig>,
 }
 
 impl Config {
-    #[cfg(not(any(feature = "security-rustls", feature = "security-openssl")))]
+    #[cfg(not(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    )))]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         KafkaConnection::new(id, host, self.rw_timeout).map(|c| {
             debug!("Established: {:?}", c);
@@ -163,7 +194,11 @@ impl Config {
         })
     }
 
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         KafkaConnection::new(
             id,
@@ -203,7 +238,11 @@ pub struct Connections {
 }
 
 impl Connections {
-    #[cfg(not(any(feature = "security-rustls", feature = "security-openssl")))]
+    #[cfg(not(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    )))]
     pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
         Connections {
             conns: HashMap::new(),
@@ -215,12 +254,20 @@ impl Connections {
         }
     }
 
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
         Self::new_with_security(rw_timeout, idle_timeout, None)
     }
 
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     pub fn new_with_security(
         rw_timeout: Option<Duration>,
         idle_timeout: Duration,
@@ -297,10 +344,18 @@ impl Connections {
 // --------------------------------------------------------------------
 
 // Abstraction for stream types based on security features
-#[cfg(not(any(feature = "security-rustls", feature = "security-openssl")))]
+#[cfg(not(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+)))]
 type KafkaStream = TcpStream;
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 enum KafkaStream {
     Plain(TcpStream),
     Tls(Box<dyn TlsStream>),
@@ -314,7 +369,11 @@ trait StreamOps {
     fn shutdown(&mut self, how: Shutdown) -> std::io::Result<()>;
 }
 
-#[cfg(not(any(feature = "security-rustls", feature = "security-openssl")))]
+#[cfg(not(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+)))]
 impl StreamOps for KafkaStream {
     fn is_secured(&self) -> bool {
         false
@@ -333,7 +392,11 @@ impl StreamOps for KafkaStream {
     }
 }
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 impl StreamOps for KafkaStream {
     fn is_secured(&self) -> bool {
         match self {
@@ -364,7 +427,11 @@ impl StreamOps for KafkaStream {
     }
 }
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 impl Read for KafkaStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -374,7 +441,11 @@ impl Read for KafkaStream {
     }
 }
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 impl Write for KafkaStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
@@ -454,12 +525,20 @@ impl KafkaConnection {
         })
     }
 
-    #[cfg(not(any(feature = "security-rustls", feature = "security-openssl")))]
+    #[cfg(not(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    )))]
     fn new(id: u32, host: &str, rw_timeout: Option<Duration>) -> Result<KafkaConnection> {
         KafkaConnection::from_stream(TcpStream::connect(host)?, id, host, rw_timeout)
     }
 
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     fn new(
         id: u32,
         host: &str,
@@ -477,14 +556,20 @@ impl KafkaConnection {
                 };
 
                 // Create appropriate TLS connector based on enabled features
-                #[cfg(feature = "security-rustls")]
+                #[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
                 {
                     let connector = RustlsConnector::new(config)?;
                     let tls_stream = connector.connect(domain, tcp_stream)?;
                     KafkaStream::Tls(tls_stream)
                 }
 
-                #[cfg(all(feature = "security-openssl", not(feature = "security-rustls")))]
+                #[cfg(all(
+                    feature = "security-openssl",
+                    not(any(
+                        feature = "security-rustls-default",
+                        feature = "security-rustls-ring"
+                    ))
+                ))]
                 {
                     #[allow(deprecated)]
                     let connector = OpenSslConnector::new(config)?;

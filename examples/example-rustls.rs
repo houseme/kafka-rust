@@ -2,7 +2,7 @@ fn main() {
     example::main();
 }
 
-#[cfg(feature = "security-rustls")]
+#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
 mod example {
     use kafka;
     use tracing::info;
@@ -153,7 +153,7 @@ mod example {
     }
 }
 
-#[cfg(not(feature = "security-rustls"))]
+#[cfg(not(any(feature = "security-rustls-default", feature = "security-rustls-ring")))]
 mod example {
     use std::process;
 

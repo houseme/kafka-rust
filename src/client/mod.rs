@@ -7,6 +7,8 @@
 // pub re-export
 pub use crate::compression::Compression;
 use crate::protocol::list_offset::ListOffsetVersion;
+#[cfg(feature = "producer_timestamp")]
+pub use crate::protocol::produce::ProducerTimestamp;
 pub use crate::utils::PartitionOffset;
 use crate::utils::TimestampedPartitionOffset;
 use std;
@@ -19,13 +21,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, trace};
 
-#[cfg(feature = "producer_timestamp")]
-pub use crate::protocol::produce::ProducerTimestamp;
-
 #[cfg(not(feature = "producer_timestamp"))]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 pub use self::network::SecurityConfig;
 
 use crate::codecs::{FromByte, ToByte};
@@ -454,7 +457,11 @@ impl KafkaClient {
     /// and [openssl_verify](https://crates.io/crates/openssl-verify),
     /// as well as
     /// [Kafka's documentation](https://kafka.apache.org/documentation.html#security_ssl).
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     #[must_use]
     pub fn new_secure(hosts: Vec<String>, security: SecurityConfig) -> KafkaClient {
         KafkaClient {

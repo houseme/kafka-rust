@@ -33,6 +33,15 @@ See kafka-rust's `Cargo.toml` and [cargo's documentation](http://doc.crates.io/m
 
 **kafka-rust** now uses **rustls** as the default TLS backend, providing a pure-Rust, secure, and portable TLS implementation.
 
+#### Available Security Features
+
+The crate supports the following security features:
+- `security-rustls-default`: Uses `rustls` with `aws-lc-rs` as the crypto provider (Default).
+- `security-rustls-ring`: Uses `rustls` with `ring` as the crypto provider.
+- `security-openssl`: Uses `openssl` (Deprecated).
+
+The default `security` feature is an alias for `security-rustls-default`.
+
 #### Using rustls (Default, Recommended)
 
 rustls is enabled by default and requires no additional system dependencies:
@@ -42,12 +51,36 @@ rustls is enabled by default and requires no additional system dependencies:
 kafka = { version = "0.10", features = ["security"] }
 ```
 
+To use `ring` instead of `aws-lc-rs`:
+
+```toml
+[dependencies]
+kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-rustls-ring"] }
+```
+
 Benefits of rustls:
 - ✅ Pure Rust implementation - no native dependencies
 - ✅ Better cross-compilation support (musl, alpine, etc.)
 - ✅ Modern TLS 1.2+ only
 - ✅ Simpler builds - no OpenSSL development libraries required
 - ✅ Consistent behavior across platforms
+
+**Note:** rustls requires TLS 1.2+. Legacy TLS 1.0/1.1 not supported.
+
+#### Migrating from OpenSSL to rustls (v0.10+)
+
+Before (OpenSSL):
+```rust
+let connector = SslConnector::builder(SslMethod::tls()).unwrap().build();
+let security = SecurityConfig::new_openssl(connector); // Deprecated!
+```
+
+After (rustls):
+```rust
+let security = SecurityConfig::new()
+    .with_ca_cert(ca_path)
+    .with_client_cert(cert_path, key_path);
+```
 
 #### Using OpenSSL (Deprecated)
 

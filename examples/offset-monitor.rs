@@ -233,7 +233,7 @@ impl<W: Write> Printer<W> {
             use std::fmt::Write;
 
             self.fmt_buf.clear();
-            let _ = write!(self.fmt_buf, "{}", time.elapsed().unwrap().as_secs());
+            let _ = write!(self.fmt_buf, "{}", time.elapsed()?.as_secs());
             let _ = write!(self.out_buf, "{1:<0$}", self.time_width, self.fmt_buf);
             if self.print_summary {
                 let mut prev_latest = 0;

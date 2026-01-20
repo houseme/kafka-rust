@@ -10,7 +10,7 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
 
-    #[cfg(feature = "security-rustls")]
+    #[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
     #[error("TLS Error: {0}")]
     Rustls(String),
 
@@ -20,7 +20,7 @@ pub enum Error {
 
     #[cfg(feature = "snappy")]
     #[error(transparent)]
-    InvalidSnappy(#[from] ::snap::Error),
+    InvalidSnappy(#[from] snap::Error),
 
     /// An error as reported by a remote Kafka server
     #[error("Kafka Error ({0:?})")]

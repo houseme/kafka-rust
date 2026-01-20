@@ -8,14 +8,17 @@ use std::io;
 use std::net::TcpStream;
 
 // Re-export the appropriate connector based on enabled features
-#[cfg(feature = "security-rustls")]
+#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
 pub mod rustls_connector;
-#[cfg(feature = "security-rustls")]
+#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
 pub use rustls_connector::RustlsConnector;
 
 #[cfg(feature = "security-openssl")]
 pub mod openssl_connector;
-#[cfg(all(feature = "security-openssl", not(feature = "security-rustls")))]
+#[cfg(all(
+    feature = "security-openssl",
+    not(any(feature = "security-rustls-default", feature = "security-rustls-ring"))
+))]
 pub use openssl_connector::OpenSslConnector;
 
 /// Configuration for TLS connections

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{TlsConfig, TlsStream};
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use tracing::{debug, warn};
 
@@ -72,6 +73,44 @@ pub struct RustlsConnector {
 impl RustlsConnector {
     /// Create a new rustls connector with the given configuration
     pub fn new(tls_config: &TlsConfig) -> io::Result<Self> {
+        let root_store = Self::load_root_store(tls_config)?;
+
+        let provider = {
+            #[cfg(feature = "security-rustls-ring")]
+            {
+                rustls::crypto::ring::default_provider()
+            }
+            #[cfg(not(feature = "security-rustls-ring"))]
+            {
+                rustls::crypto::aws_lc_rs::default_provider()
+            }
+        };
+
+        let config_builder = ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to set protocol versions: {e}"),
+                )
+            })?
+            .with_root_certificates(root_store);
+
+        let config = if let (Some(cert_path), Some(key_path)) =
+            (&tls_config.client_cert_path, &tls_config.client_key_path)
+        {
+            Self::load_client_auth(config_builder, cert_path, key_path)?
+        } else {
+            config_builder.with_no_client_auth()
+        };
+
+        Ok(RustlsConnector {
+            config: Arc::new(config),
+            verify_hostname: tls_config.verify_hostname,
+        })
+    }
+
+    fn load_root_store(tls_config: &TlsConfig) -> io::Result<RootCertStore> {
         let mut root_store = RootCertStore::empty();
 
         // Load CA certificates
@@ -85,7 +124,7 @@ impl RustlsConnector {
             })?;
             let mut ca_reader = BufReader::new(ca_file);
 
-            let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut ca_reader)
+            let certs: Vec<CertificateDer> = CertificateDer::pem_reader_iter(&mut ca_reader)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| {
                     io::Error::new(
@@ -118,65 +157,53 @@ impl RustlsConnector {
                 );
             }
         }
+        Ok(root_store)
+    }
 
-        let config_builder = ClientConfig::builder().with_root_certificates(root_store);
+    fn load_client_auth(
+        builder: rustls::ConfigBuilder<ClientConfig, rustls::client::WantsClientCert>,
+        cert_path: &str,
+        key_path: &str,
+    ) -> io::Result<ClientConfig> {
+        // Load client certificate if provided
+        let cert_file = File::open(cert_path).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Failed to open client cert file: {e}"),
+            )
+        })?;
+        let mut cert_reader = BufReader::new(cert_file);
 
-        let config = if let (Some(cert_path), Some(key_path)) =
-            (&tls_config.client_cert_path, &tls_config.client_key_path)
-        {
-            // Load client certificate if provided
-            let cert_file = File::open(cert_path).map_err(|e| {
+        let certs: Vec<CertificateDer> = CertificateDer::pem_reader_iter(&mut cert_reader)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
                 io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Failed to open client cert file: {e}"),
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to parse client cert: {e}"),
                 )
             })?;
-            let mut cert_reader = BufReader::new(cert_file);
 
-            let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut cert_reader)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to parse client cert: {e}"),
-                    )
-                })?;
+        let key_file = File::open(key_path).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Failed to open client key file: {e}"),
+            )
+        })?;
+        let mut key_reader = BufReader::new(key_file);
 
-            let key_file = File::open(key_path).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Failed to open client key file: {e}"),
-                )
-            })?;
-            let mut key_reader = BufReader::new(key_file);
+        // Try to parse as different key types
+        let key = PrivateKeyDer::from_pem_reader(&mut key_reader).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse private key: {e}"),
+            )
+        })?;
 
-            // Try to parse as different key types
-            let key = rustls_pemfile::private_key(&mut key_reader)
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to parse private key: {e}"),
-                    )
-                })?
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "No private key found")
-                })?;
-
-            config_builder
-                .with_client_auth_cert(certs, key)
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("Failed to set client auth: {e}"),
-                    )
-                })?
-        } else {
-            config_builder.with_no_client_auth()
-        };
-
-        Ok(RustlsConnector {
-            config: Arc::new(config),
-            verify_hostname: tls_config.verify_hostname,
+        builder.with_client_auth_cert(certs, key).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to set client auth: {e}"),
+            )
         })
     }
 
