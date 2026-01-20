@@ -40,7 +40,7 @@ fn main() {
                             Err(ref e) => {
                                 println!("partition error: {}:{}: {}", t.topic(), p.partition(), e)
                             }
-                            Ok(ref data) => {
+                            Ok(data) => {
                                 println!(
                                     "topic: {} / partition: {} / latest available message \
                                           offset: {}",

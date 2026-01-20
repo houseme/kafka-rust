@@ -120,12 +120,12 @@ impl AsBytes for Vec<u8> {
     }
 }
 
-impl<'a> AsBytes for &'a [u8] {
+impl AsBytes for &[u8] {
     fn as_bytes(&self) -> &[u8] {
         self
     }
 }
-impl<'a> AsBytes for &'a str {
+impl AsBytes for &str {
     fn as_bytes(&self) -> &[u8] {
         str::as_bytes(self)
     }
@@ -191,7 +191,7 @@ impl<'a, V> Record<'a, (), V> {
     }
 }
 
-impl<'a, K: fmt::Debug, V: fmt::Debug> fmt::Debug for Record<'a, K, V> {
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Record<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -319,11 +319,7 @@ impl<P: Partitioner> Producer<P> {
 }
 
 fn to_option(data: &[u8]) -> Option<&[u8]> {
-    if data.is_empty() {
-        None
-    } else {
-        Some(data)
-    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 // --------------------------------------------------------------------
@@ -792,7 +788,7 @@ mod default_partitioner_tests {
             self.0
         }
         fn write(&mut self, bytes: &[u8]) {
-            self.0 = bytes[0] as u64;
+            self.0 = u64::from(bytes[0]);
         }
     }
 

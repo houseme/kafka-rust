@@ -4,8 +4,8 @@
 use std::collections::hash_map;
 use std::fmt;
 
-use super::state::{ClientState, TopicPartition, TopicPartitionIter, TopicPartitions};
 use super::KafkaClient;
+use super::state::{ClientState, TopicPartition, TopicPartitionIter, TopicPartitions};
 
 // public re-export
 pub use super::state::Broker;
@@ -73,7 +73,7 @@ impl<'a> Topics<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Topics<'a> {
+impl fmt::Debug for Topics<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Topics {{ topics: [")?;
         let mut ts = self.iter();
@@ -159,7 +159,7 @@ impl<'a> Topic<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Topic<'a> {
+impl fmt::Debug for Topic<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -220,7 +220,7 @@ impl<'a> Partitions<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Partitions<'a> {
+impl fmt::Debug for Partitions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Partitions {{ [")?;
         let mut ps = self.iter();
@@ -325,7 +325,7 @@ impl<'a> Partition<'a> {
     }
 }
 
-impl<'a> fmt::Debug for Partition<'a> {
+impl fmt::Debug for Partition<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

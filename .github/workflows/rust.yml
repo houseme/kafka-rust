@@ -55,28 +55,123 @@ jobs:
             COMPRESSIONS: GZIP
             SECURES: secure
     steps:
-    - uses: actions/checkout@v4
-    - name: Login to Docker Hub
-      run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USER }}" --password-stdin
+      - uses: actions/checkout@v5
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USER }}" --password-stdin
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
-    - name: Build
-      run: cargo build
-      
-    - name: Make the test script executable
-      run: chmod +x ./tests/run-all-tests
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
 
-    - name: Run tests
-      run: ./tests/run-all-tests ${{ matrix.KAFKA_VER }}
-      env:
-        KAFKA_VER: ${{ matrix.KAFKA_VER }}
-        COMPRESSIONS: ${{ matrix.COMPRESSIONS }}
-        SECURES: ${{ matrix.SECURES }}
+      - name: Run tests
+        run: |
+          cargo nextest run --all --exclude e2e_test
+          cargo test --all --doc
 
-    - name: Generate documentation
-      run: cargo doc
+      - name: Check code formatting
+        run: cargo fmt --all --check
+
+      - name: Run clippy lints
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Make the test script executable
+        run: chmod +x ./tests/run-all-tests
+
+      - name: Run tests
+        run: ./tests/run-all-tests ${{ matrix.KAFKA_VER }}
+        env:
+          KAFKA_VER: ${{ matrix.KAFKA_VER }}
+          COMPRESSIONS: ${{ matrix.COMPRESSIONS }}
+          SECURES: ${{ matrix.SECURES }}
+
+      - name: Generate documentation
+        run: cargo doc
+
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Typos check with custom config file
+        uses: crate-ci/typos@master
+
+  # Test different TLS backend configurations
+  tls-backends:
+    name: Test TLS Backends
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - name: "Default (rustls)"
+            features: ""
+            extra_args: ""
+          - name: "Explicit rustls"
+            features: "security-rustls"
+            extra_args: "--no-default-features --features=snappy,gzip,security-rustls"
+          - name: "OpenSSL (deprecated)"
+            features: "security-openssl"
+            extra_args: "--no-default-features --features=snappy,gzip,security-openssl"
+          - name: "No security"
+            features: "no-security"
+            extra_args: "--no-default-features --features=snappy,gzip"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build - ${{ matrix.name }}
+        run: |
+          if [ -z "${{ matrix.extra_args }}" ]; then
+            cargo build --verbose
+          else
+            cargo build --verbose ${{ matrix.extra_args }}
+          fi
+
+      - name: Test - ${{ matrix.name }}
+        run: |
+          if [ -z "${{ matrix.extra_args }}" ]; then
+            cargo test --verbose
+          else
+            cargo test --verbose ${{ matrix.extra_args }}
+          fi
+
+  # Test musl build to verify no OpenSSL dependency with rustls
+  musl-build:
+    name: Test musl build (OpenSSL-free)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build for musl with rustls
+        run: cargo build --target x86_64-unknown-linux-musl --features=security-rustls --verbose
+
+      - name: Verify no OpenSSL dependency
+        run: |
+          if ldd target/x86_64-unknown-linux-musl/debug/libkafka.* 2>/dev/null | grep -i openssl; then
+            echo "ERROR: musl build should not depend on OpenSSL!"
+            exit 1
+          else
+            echo "✓ musl build is OpenSSL-free (as expected with rustls)"
+          fi
