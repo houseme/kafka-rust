@@ -404,9 +404,10 @@ impl ClientState {
             });
         }
         if let Some(br) = self.group_coordinators.get_mut(group)
-            && br._index != broker_ref._index {
-                br._index = broker_ref._index;
-            }
+            && br._index != broker_ref._index
+        {
+            br._index = broker_ref._index;
+        }
         self.group_coordinators.insert(group.to_owned(), broker_ref);
         &self.brokers[broker_ref.index()].host
     }

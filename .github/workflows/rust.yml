@@ -55,7 +55,7 @@ jobs:
             COMPRESSIONS: GZIP
             SECURES: secure
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Login to Docker Hub
         run: echo "${{ secrets.DOCKER_HUB_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USER }}" --password-stdin
 
@@ -69,7 +69,7 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo nextest run --all --exclude e2e_test
+          cargo nextest run --all
           cargo test --all --doc
 
       - name: Check code formatting
@@ -98,7 +98,7 @@ jobs:
     name: Typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Typos check with custom config file
         uses: crate-ci/typos@master
@@ -115,9 +115,12 @@ jobs:
           - name: "Default (rustls)"
             features: ""
             extra_args: ""
-          - name: "Explicit rustls"
-            features: "security-rustls"
-            extra_args: "--no-default-features --features=snappy,gzip,security-rustls"
+          - name: "Explicit rustls (aws-lc-rs)"
+            features: "security-rustls-default"
+            extra_args: "--no-default-features --features=snappy,gzip,security-rustls-default"
+          - name: "Explicit rustls (ring)"
+            features: "security-rustls-ring"
+            extra_args: "--no-default-features --features=snappy,gzip,security-rustls-ring"
           - name: "OpenSSL (deprecated)"
             features: "security-openssl"
             extra_args: "--no-default-features --features=snappy,gzip,security-openssl"
@@ -125,7 +128,7 @@ jobs:
             features: "no-security"
             extra_args: "--no-default-features --features=snappy,gzip"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -153,7 +156,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -165,13 +168,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build for musl with rustls
-        run: cargo build --target x86_64-unknown-linux-musl --features=security-rustls --verbose
+        run: cargo build --target x86_64-unknown-linux-musl --features=security-rustls-default --verbose
 
       - name: Verify no OpenSSL dependency
         run: |
-          if ldd target/x86_64-unknown-linux-musl/debug/libkafka.* 2>/dev/null | grep -i openssl; then
-            echo "ERROR: musl build should not depend on OpenSSL!"
-            exit 1
+          # Check if the library file exists (it might be a .rlib or similar for a library crate)
+          # For a library crate, we might not produce a binary to ldd.
+          # Instead, we can check if the build succeeded without openssl-sys
+          if cargo tree --target x86_64-unknown-linux-musl --features=security-rustls-default | grep openssl-sys; then
+             echo "ERROR: musl build dependency tree contains openssl-sys!"
+             exit 1
           else
-            echo "✓ musl build is OpenSSL-free (as expected with rustls)"
+             echo "✓ musl build dependency tree is free of openssl-sys"
           fi
