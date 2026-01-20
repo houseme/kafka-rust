@@ -13,7 +13,10 @@ pub mod rustls_connector;
 #[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
 pub use rustls_connector::RustlsConnector;
 
-#[cfg(feature = "security-openssl")]
+#[cfg(all(
+    feature = "security-openssl",
+    not(any(feature = "security-rustls-default", feature = "security-rustls-ring"))
+))]
 pub mod openssl_connector;
 #[cfg(all(
     feature = "security-openssl",

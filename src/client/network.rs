@@ -302,7 +302,7 @@ impl Connections {
             }
             conn.last_checkout = now;
             let kconn: &mut KafkaConnection = &mut conn.item;
-            // ~ decouple the lifetimes to make the borrowck happy;
+            // ~ decouple the lifetimes to make the borrow-ck happy;
             // this is safe since we're immediately returning the
             // reference and the rest of the code in this method is
             // not affected
@@ -493,7 +493,7 @@ impl KafkaConnection {
     }
 
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
-        let r = (self.stream).read_exact(buf).map_err(From::from);
+        let r = self.stream.read_exact(buf).map_err(From::from);
         trace!("Read {} bytes from: {:?} => {:?}", buf.len(), self, r);
         r
     }

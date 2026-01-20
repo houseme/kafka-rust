@@ -14,7 +14,7 @@ use super::config::Config;
 
 pub type PartitionHasher = BuildHasherDefault<FnvHasher>;
 
-// The "fetch state" for a particular topci partition.
+// The "fetch state" for a particular topic partition.
 #[derive(Debug)]
 pub struct FetchState {
     /// ~ specifies the offset which to fetch from
@@ -35,7 +35,7 @@ pub struct TopicPartition {
 pub struct ConsumedOffset {
     /// ~ the consumed offset
     pub offset: i64,
-    /// ~ true if the consumed offset is chnaged but not committed to
+    /// ~ true if the consumed offset is changed but not committed to
     /// kafka yet
     pub dirty: bool,
 }
@@ -203,7 +203,7 @@ fn load_consumed_offsets(
         return Ok(offs);
     }
     // ~ otherwise try load them for the group
-    let tpos = client.fetch_group_offsets(
+    let typos = client.fetch_group_offsets(
         group,
         subscriptions.iter().flat_map(|s| {
             let topic = s.assignment.topic();
@@ -212,7 +212,7 @@ fn load_consumed_offsets(
                 .map(move |&p| FetchGroupOffset::new(topic, p))
         }),
     )?;
-    for (topic, pos) in tpos {
+    for (topic, pos) in typos {
         for po in pos {
             if po.offset != -1 {
                 offs.insert(
@@ -253,11 +253,11 @@ fn load_fetch_states(
     ) -> Result<HashMap<String, HashMap<i32, i64, PartitionHasher>>> {
         let toffs = client.fetch_offsets(topics, offset)?;
         let mut m = HashMap::with_capacity(toffs.len());
-        for (topic, poffs) in toffs {
+        for (topic, offs) in toffs {
             let mut pidx =
-                HashMap::with_capacity_and_hasher(poffs.len(), PartitionHasher::default());
+                HashMap::with_capacity_and_hasher(offs.len(), PartitionHasher::default());
 
-            for poff in poffs {
+            for poff in offs {
                 pidx.insert(poff.partition, poff.offset);
             }
 
