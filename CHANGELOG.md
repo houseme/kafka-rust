@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - **Updated Dependencies**:
     - `rustls`: 0.21 → 0.23 (latest stable)
     - `webpki-roots`: 0.25 → 1.0
+    - `rand`: 0.8 → 0.9
     - `rustls-native-certs`: 0.6 → 0.8
     - Replaced `rustls-pemfile` with `rustls-pki-types` (feature `pem`) for type definitions and parsing.
     - Replaced `lazy_static` with `std::sync::LazyLock` (requires Rust 1.80+).
