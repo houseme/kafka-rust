@@ -35,7 +35,6 @@ rustls-native-certs = { version = "0.8", optional = true }
 getopts = "0.2.24"
 tracing-subscriber = "0.3"
 rand = "0.9.2"
-lazy_static = "1.5"
 anyhow = "1.0"
 
 [features]

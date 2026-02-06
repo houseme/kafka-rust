@@ -285,7 +285,6 @@ dependencies = [
  "flate2",
  "fnv",
  "getopts",
- "lazy_static",
  "openssl",
  "rand",
  "rustls",
