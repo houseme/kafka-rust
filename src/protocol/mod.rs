@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use crate::codecs::{FromByte, ToByte};
 use crate::error::{Error, KafkaCode, Result};
-use crc::Crc;
 
 /// Macro to return Result<()> from multiple statements
 macro_rules! try_multi {
@@ -164,12 +163,16 @@ impl FromByte for HeaderResponse {
 // --------------------------------------------------------------------
 
 pub fn to_crc(data: &[u8]) -> u32 {
-    Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(data)
+    to_crc_u64(data) as u32
+}
+
+pub fn to_crc_u64(data: &[u8]) -> u64 {
+    crc_fast::checksum(crc_fast::CrcAlgorithm::Crc32IsoHdlc, data)
 }
 
 // --------------------------------------------------------------------
 
-/// Safely converts a Duration into the number of milliseconds as a
+/// Safely converts a Duration into the number of milliseconds as an
 /// i32 as often required in the kafka protocol.
 pub fn to_millis_i32(d: Duration) -> Result<i32> {
     let m = d

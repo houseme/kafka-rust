@@ -309,7 +309,7 @@ impl MessageProduceRequest<'_> {
     //
     // note: the rendered data corresponds to a single MessageSet in the kafka protocol
     fn _encode_to_buf(&self, buffer: &mut Vec<u8>, magic: i8, attributes: i8) -> Result<()> {
-        (0i64).encode(buffer)?; // offset in the response request can be anything
+        0i64.encode(buffer)?; // offset in the response request can be anything
 
         let size_pos = buffer.len();
         let mut size: i32 = 0;

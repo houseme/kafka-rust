@@ -14,7 +14,7 @@ rust-version = "1.89.0"
 
 [dependencies]
 byteorder = "1.5"
-crc = "3.3"
+crc-fast = "=1.9.0"
 fnv = "1.0.7"
 twox-hash = "2.1.2"
 
