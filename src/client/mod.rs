@@ -1309,6 +1309,63 @@ impl KafkaClient {
         self.internal_produce_messages(acks as i16, protocol::to_millis_i32(ack_timeout)?, messages)
     }
 
+    /// Produces messages using the kafka-protocol adapter (protocol version 3).
+    /// This is the new path that will eventually replace `produce_messages`.
+    pub fn produce_messages_kp<'a, 'b, I, J>(
+        &mut self,
+        acks: RequiredAcks,
+        ack_timeout: Duration,
+        messages: I,
+    ) -> Result<Vec<ProduceConfirm>>
+    where
+        J: AsRef<ProduceMessage<'a, 'b>>,
+        I: IntoIterator<Item = J>,
+    {
+        self.internal_produce_messages_kp(acks as i16, protocol::to_millis_i32(ack_timeout)?, messages)
+    }
+
+    fn internal_produce_messages_kp<'a, 'b, I, J>(
+        &mut self,
+        required_acks: i16,
+        ack_timeout_ms: i32,
+        messages: I,
+    ) -> Result<Vec<ProduceConfirm>>
+    where
+        J: AsRef<ProduceMessage<'a, 'b>>,
+        I: IntoIterator<Item = J>,
+    {
+        let state = &mut self.state;
+        let correlation = state.next_correlation_id();
+        let config = &self.config;
+
+        // ~ map topic and partition to the corresponding brokers
+        let mut broker_msgs: HashMap<&str, Vec<(&str, i32, Option<&'b [u8]>, Option<&'b [u8]>)>> =
+            HashMap::new();
+        for msg in messages {
+            let msg = msg.as_ref();
+            match state.find_broker(msg.topic, msg.partition) {
+                None => return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition)),
+                Some(broker) => {
+                    broker_msgs
+                        .entry(broker)
+                        .or_default()
+                        .push((msg.topic, msg.partition, msg.key, msg.value));
+                }
+            }
+        }
+
+        __produce_messages_kp(
+            &mut self.conn_pool,
+            correlation,
+            &config.client_id,
+            required_acks,
+            ack_timeout_ms,
+            config.compression,
+            broker_msgs,
+            required_acks == 0,
+        )
+    }
+
     /// Commit offset for a topic partitions on behalf of a consumer group.
     ///
     /// # Examples
@@ -1744,6 +1801,57 @@ fn __fetch_messages(
 
 /// ~ carries out the given produce requests and returns the response
 #[allow(clippy::similar_names)]
+fn __produce_messages_kp(
+    conn_pool: &mut network::Connections,
+    correlation_id: i32,
+    client_id: &str,
+    required_acks: i16,
+    ack_timeout_ms: i32,
+    compression: Compression,
+    broker_msgs: HashMap<&str, Vec<(&str, i32, Option<&[u8]>, Option<&[u8]>)>>,
+    no_acks: bool,
+) -> Result<Vec<ProduceConfirm>> {
+    let now = Instant::now();
+    if no_acks {
+        for (host, msgs) in broker_msgs {
+            let conn = conn_pool.get_conn(host, now)?;
+            let (header, request) = crate::protocol2::produce::build_produce_request(
+                correlation_id,
+                client_id,
+                required_acks,
+                ack_timeout_ms,
+                compression,
+                &msgs,
+            );
+            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_PRODUCE)?;
+        }
+        Ok(vec![])
+    } else {
+        let mut res: Vec<ProduceConfirm> = vec![];
+        for (host, msgs) in broker_msgs {
+            let conn = conn_pool.get_conn(host, now)?;
+            let (header, request) = crate::protocol2::produce::build_produce_request(
+                correlation_id,
+                client_id,
+                required_acks,
+                ack_timeout_ms,
+                compression,
+                &msgs,
+            );
+            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_PRODUCE)?;
+            let kp_resp = __kp_get_response::<kafka_protocol::messages::ProduceResponse>(
+                conn,
+                crate::protocol2::API_VERSION_PRODUCE,
+            )?;
+            let our_resp = crate::protocol2::produce::convert_produce_response(kp_resp, correlation_id);
+            for tpo in our_resp.get_response() {
+                res.push(tpo);
+            }
+        }
+        Ok(res)
+    }
+}
+
 fn __produce_messages(
     conn_pool: &mut network::Connections,
     reqs: HashMap<&str, protocol::ProduceRequest<'_, '_>>,
