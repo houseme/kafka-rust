@@ -59,7 +59,7 @@ fn process(cfg: Config) -> Result<()> {
                 unsafe { buf.set_len(0) };
                 // ~ format the message for output
                 let _ = writeln!(buf, "{}:{}@{}:", ms.topic(), ms.partition(), m.offset);
-                buf.extend_from_slice(m.value);
+                buf.extend_from_slice(&m.value);
                 buf.push(b'\n');
                 // ~ write to output channel
                 stdout.write_all(&buf)?;
