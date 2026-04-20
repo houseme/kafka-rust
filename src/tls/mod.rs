@@ -1,28 +1,14 @@
 //! TLS abstraction layer for Kafka connections.
 //!
-//! This module provides a backend-agnostic interface for TLS connections,
-//! supporting both rustls (default, pure-Rust) and OpenSSL (deprecated)
-//! backends.
+//! This module provides TLS connections via rustls (pure-Rust).
 
 use std::io;
 use std::net::TcpStream;
 
-// Re-export the appropriate connector based on enabled features
-#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
+#[cfg(feature = "security")]
 pub mod rustls_connector;
-#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
+#[cfg(feature = "security")]
 pub use rustls_connector::RustlsConnector;
-
-#[cfg(all(
-    feature = "security-openssl",
-    not(any(feature = "security-rustls-default", feature = "security-rustls-ring"))
-))]
-pub mod openssl_connector;
-#[cfg(all(
-    feature = "security-openssl",
-    not(any(feature = "security-rustls-default", feature = "security-rustls-ring"))
-))]
-pub use openssl_connector::OpenSslConnector;
 
 /// Configuration for TLS connections
 #[derive(Debug, Clone)]
@@ -78,9 +64,6 @@ impl TlsConfig {
 }
 
 /// Trait for TLS stream implementations
-///
-/// This trait abstracts over different TLS backends (rustls, OpenSSL)
-/// and plain TCP streams.
 #[allow(dead_code)] // Methods may not be used in all configurations
 pub trait TlsStream: io::Read + io::Write + Send {
     /// Returns true if this is a secured (TLS) connection

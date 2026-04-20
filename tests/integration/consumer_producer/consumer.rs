@@ -1,7 +1,7 @@
 use super::*;
 
-use kafka::error;
-use kafka::producer::Record;
+use rustfs_kafka::error;
+use rustfs_kafka::producer::Record;
 
 /// Tests that consuming one message works
 #[test]

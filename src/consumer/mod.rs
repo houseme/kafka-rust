@@ -9,7 +9,7 @@
 //!
 //! # Example
 //! ```no_run
-//! use kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+//! use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
 //!
 //! let mut consumer =
 //!    Consumer::from_hosts(vec!("localhost:9092".to_owned()))
@@ -185,9 +185,9 @@ impl Consumer {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchOffset};
-    /// use kafka::consumer::{Consumer, FetchOffset as ConsumerFetchOffset, GroupOffsetStorage};
-    /// use kafka::error::Result;
+    /// use rustfs_kafka::client::{KafkaClient, FetchOffset};
+    /// use rustfs_kafka::consumer::{Consumer, FetchOffset as ConsumerFetchOffset, GroupOffsetStorage};
+    /// use rustfs_kafka::error::Result;
     ///
     /// let mut consumer = Consumer::from_hosts(vec!["localhost:9092".to_string()])
     ///     .with_topic("test-topic".to_string())
@@ -437,7 +437,7 @@ impl Consumer {
         let topic_ref = self
             .state
             .topic_ref(topic)
-            .ok_or_else(|| Error::Kafka(KafkaCode::UnknownTopicOrPartition))?;
+            .ok_or(Error::Kafka(KafkaCode::UnknownTopicOrPartition))?;
 
         let tp = TopicPartition {
             topic_ref,

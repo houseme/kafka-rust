@@ -15,7 +15,7 @@
 //! ```no_run
 //! use std::fmt::Write;
 //! use std::time::Duration;
-//! use kafka::producer::{Producer, Record, RequiredAcks};
+//! use rustfs_kafka::producer::{Producer, Record, RequiredAcks};
 //!
 //! let mut producer =
 //!     Producer::from_hosts(vec!("localhost:9092".to_owned()))
@@ -71,18 +71,10 @@ use twox_hash::XxHash32;
 #[cfg(feature = "producer_timestamp")]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(any(
-    feature = "security-rustls-default",
-    feature = "security-rustls-ring",
-    feature = "security-openssl"
-))]
+#[cfg(feature = "security")]
 use crate::client::SecurityConfig;
 
-#[cfg(not(any(
-    feature = "security-rustls-default",
-    feature = "security-rustls-ring",
-    feature = "security-openssl"
-)))]
+#[cfg(not(feature = "security"))]
 type SecurityConfig = ();
 
 use crate::client_internals::KafkaClientInternals;
@@ -398,11 +390,7 @@ impl Builder {
 
     /// Specifies the security config to use.
     /// See `KafkaClient::new_secure` for more info.
-    #[cfg(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    ))]
+    #[cfg(feature = "security")]
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig) -> Self {
         self.security_config = Some(security);
@@ -484,20 +472,12 @@ impl<P> Builder<P> {
         }
     }
 
-    #[cfg(not(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    )))]
+    #[cfg(not(feature = "security"))]
     fn new_kafka_client(hosts: Vec<String>, _: Option<SecurityConfig>) -> KafkaClient {
         KafkaClient::new(hosts)
     }
 
-    #[cfg(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    ))]
+    #[cfg(feature = "security")]
     fn new_kafka_client(hosts: Vec<String>, security: Option<SecurityConfig>) -> KafkaClient {
         if let Some(security) = security {
             KafkaClient::new_secure(hosts, security)

@@ -10,13 +10,9 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
 
-    #[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
+    #[cfg(feature = "security")]
     #[error("TLS Error: {0}")]
     Rustls(String),
-
-    #[cfg(feature = "security-openssl")]
-    #[error(transparent)]
-    Ssl(#[from] openssl::ssl::Error),
 
     #[cfg(feature = "snappy")]
     #[error(transparent)]

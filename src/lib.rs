@@ -1,9 +1,9 @@
 //! Clients for communicating with a [Kafka](http://kafka.apache.org/)
 //! cluster.  These are:
 //!
-//! - `kafka::producer::Producer` - for sending message to Kafka
-//! - `kafka::consumer::Consumer` - for retrieving/consuming messages from Kafka
-//! - `kafka::client::KafkaClient` - a lower-level, general purpose client leaving
+//! - `rustfs_kafka::producer::Producer` - for sending message to Kafka
+//! - `rustfs_kafka::consumer::Consumer` - for retrieving/consuming messages from Kafka
+//! - `rustfs_kafka::client::KafkaClient` - a lower-level, general purpose client leaving
 //!   you with more power but also more responsibility
 //!
 //! See module level documentation corresponding to each client individually.
@@ -44,11 +44,7 @@ pub mod producer;
 mod protocol;
 mod utils;
 
-#[cfg(any(
-    feature = "security-rustls-default",
-    feature = "security-rustls-ring",
-    feature = "security-openssl"
-))]
+#[cfg(feature = "security")]
 mod tls;
 
 pub use self::error::{Error, Result};

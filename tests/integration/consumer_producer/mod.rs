@@ -3,12 +3,12 @@ pub use super::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use kafka::client::{FetchOffset, KafkaClient, PartitionOffset};
-use kafka::consumer::Consumer;
-use kafka::producer::Record;
-use kafka::producer::{Producer, RequiredAcks};
+use rustfs_kafka::client::{FetchOffset, KafkaClient, PartitionOffset};
+use rustfs_kafka::consumer::Consumer;
+use rustfs_kafka::producer::Record;
+use rustfs_kafka::producer::{Producer, RequiredAcks};
 
-use rand::RngCore;
+use rand::Rng;
 use tracing::debug;
 
 const RANDOM_MESSAGE_SIZE: usize = 32;
@@ -31,13 +31,13 @@ macro_rules! test_consumer_config {
     ( $x:expr ) => {
         $x.with_topic_partitions(TEST_TOPIC_NAME.to_owned(), &TEST_TOPIC_PARTITIONS)
             .with_group(TEST_GROUP_NAME.to_owned())
-            .with_fallback_offset(kafka::consumer::FetchOffset::Latest)
-            .with_offset_storage(Some(kafka::consumer::GroupOffsetStorage::Kafka))
+            .with_fallback_offset(rustfs_kafka::consumer::FetchOffset::Latest)
+            .with_offset_storage(Some(rustfs_kafka::consumer::GroupOffsetStorage::Kafka))
     };
 }
 
 /// Return a Consumer builder with some defaults
-pub fn test_consumer_builder() -> kafka::consumer::Builder {
+pub fn test_consumer_builder() -> rustfs_kafka::consumer::Builder {
     test_consumer_config!(Consumer::from_client(new_ready_kafka_client()))
 }
 

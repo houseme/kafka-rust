@@ -1,4 +1,4 @@
-use kafka::client::{FetchPartition, KafkaClient};
+use rustfs_kafka::client::{FetchPartition, KafkaClient};
 
 /// This program demonstrates the low level api for fetching messages.
 /// Please look at examles/consume.rs for an easier to use API.

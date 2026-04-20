@@ -8,10 +8,10 @@ use std::{env, process};
 
 use anyhow::anyhow;
 
-use kafka::client::{
+use rustfs_kafka::client::{
     Compression, DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS, KafkaClient, RequiredAcks,
 };
-use kafka::producer::{AsBytes, DEFAULT_ACK_TIMEOUT_MILLIS, Producer, Record};
+use rustfs_kafka::producer::{AsBytes, DEFAULT_ACK_TIMEOUT_MILLIS, Producer, Record};
 
 /// This is a very simple command line application sending every
 /// non-empty line of standard input to a specified kafka topic; one

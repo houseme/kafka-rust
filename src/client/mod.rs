@@ -24,11 +24,7 @@ use tracing::{debug, trace};
 #[cfg(not(feature = "producer_timestamp"))]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(any(
-    feature = "security-rustls-default",
-    feature = "security-rustls-ring",
-    feature = "security-openssl"
-))]
+#[cfg(feature = "security")]
 pub use self::network::SecurityConfig;
 
 use crate::codecs::{FromByte, ToByte};
@@ -403,7 +399,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// let mut client = kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// let mut client = rustfs_kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
     /// ```
     #[must_use]
@@ -439,7 +435,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, SecurityConfig};
+    /// use rustfs_kafka::client::{KafkaClient, SecurityConfig};
     ///
     /// let mut client = KafkaClient::new_secure(
     ///     vec!["localhost:9093".to_owned()],
@@ -452,16 +448,9 @@ impl KafkaClient {
     /// See also `SecurityConfig#with_hostname_verification` to disable hostname verification.
     ///
     /// See also `KafkaClient::load_metadatata_all` and
-    /// `KafkaClient::load_metadata` methods, the creates
-    /// [openssl](https://crates.io/crates/openssl)
-    /// and [openssl_verify](https://crates.io/crates/openssl-verify),
-    /// as well as
+    /// `KafkaClient::load_metadata` methods, as well as
     /// [Kafka's documentation](https://kafka.apache.org/documentation.html#security_ssl).
-    #[cfg(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    ))]
+    #[cfg(feature = "security")]
     #[must_use]
     pub fn new_secure(hosts: Vec<String>, security: SecurityConfig) -> KafkaClient {
         KafkaClient {
@@ -520,7 +509,7 @@ impl KafkaClient {
     /// # Example
     ///
     /// ```no_run
-    /// use kafka::client::{Compression, KafkaClient};
+    /// use rustfs_kafka::client::{Compression, KafkaClient};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -572,7 +561,7 @@ impl KafkaClient {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use kafka::client::{KafkaClient, FetchPartition};
+    /// use rustfs_kafka::client::{KafkaClient, FetchPartition};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -731,7 +720,7 @@ impl KafkaClient {
     /// # Example
     ///
     /// ```no_run
-    /// use kafka::client::{Compression, KafkaClient};
+    /// use rustfs_kafka::client::{Compression, KafkaClient};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -754,8 +743,8 @@ impl KafkaClient {
     ///
     /// # Examples
     /// ```no_run
-    /// use kafka::client::KafkaClient;
-    /// use kafka::client::metadata::Broker;
+    /// use rustfs_kafka::client::KafkaClient;
+    /// use rustfs_kafka::client::metadata::Broker;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -780,7 +769,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// let mut client = kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// let mut client = rustfs_kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
     /// for topic in client.topics().names() {
     ///   println!("topic: {}", topic);
@@ -811,7 +800,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// let mut client = kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// let mut client = rustfs_kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// let _ = client.load_metadata(&["my-topic"]).unwrap();
     /// ```
     ///
@@ -868,12 +857,12 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use rustfs_kafka::client::KafkaClient;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
     /// let topics: Vec<String> = client.topics().names().map(ToOwned::to_owned).collect();
-    /// let offsets = client.fetch_offsets(&topics, kafka::client::FetchOffset::Latest).unwrap();
+    /// let offsets = client.fetch_offsets(&topics, rustfs_kafka::client::FetchOffset::Latest).unwrap();
     /// ```
     ///
     /// Returns a mapping of topic name to `PartitionOffset`s for each
@@ -966,7 +955,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchOffset};
+    /// use rustfs_kafka::client::{KafkaClient, FetchOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1079,7 +1068,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchOffset};
+    /// use rustfs_kafka::client::{KafkaClient, FetchOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1128,7 +1117,7 @@ impl KafkaClient {
     /// messages with a lower offset.)
     ///
     /// Note: before using this method consider using
-    /// `kafka::consumer::Consumer` instead which provides an easier
+    /// `rustfs_kafka::consumer::Consumer` instead which provides an easier
     /// to use API for the regular use-case of fetching messages from
     /// Kafka.
     ///
@@ -1142,7 +1131,7 @@ impl KafkaClient {
     /// messages.
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchPartition};
+    /// use rustfs_kafka::client::{KafkaClient, FetchPartition};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -1169,7 +1158,7 @@ impl KafkaClient {
     ///   }
     /// }
     /// ```
-    /// See also `kafka::consumer`.
+    /// See also `rustfs_kafka::consumer`.
     /// See also `KafkaClient::set_fetch_max_bytes_per_partition`.
     pub fn fetch_messages<'a, I, J>(&mut self, input: I) -> Result<Vec<fetch::Response>>
     where
@@ -1244,7 +1233,7 @@ impl KafkaClient {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use kafka::client::{KafkaClient, ProduceMessage, RequiredAcks};
+    /// use rustfs_kafka::client::{KafkaClient, ProduceMessage, RequiredAcks};
     ///
     /// let mut client = KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
@@ -1276,7 +1265,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, CommitOffset};
+    /// use rustfs_kafka::client::{KafkaClient, CommitOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1330,7 +1319,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use rustfs_kafka::client::KafkaClient;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1353,7 +1342,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::{KafkaClient, FetchGroupOffset};
+    /// use rustfs_kafka::client::{KafkaClient, FetchGroupOffset};
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
@@ -1402,7 +1391,7 @@ impl KafkaClient {
     /// # Examples
     ///
     /// ```no_run
-    /// use kafka::client::KafkaClient;
+    /// use rustfs_kafka::client::KafkaClient;
     ///
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();

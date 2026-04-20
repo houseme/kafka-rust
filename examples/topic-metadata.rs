@@ -4,7 +4,7 @@ use std::env;
 use std::io;
 use std::process;
 
-use kafka::client::{FetchOffset, KafkaClient};
+use rustfs_kafka::client::{FetchOffset, KafkaClient};
 
 /// Dumps available topic metadata to stdout.
 fn main() {

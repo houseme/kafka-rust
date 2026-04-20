@@ -112,20 +112,17 @@ jobs:
     strategy:
       matrix:
         include:
-          - name: "Default (rustls)"
+          - name: "Default (aws-lc-rs)"
             features: ""
             extra_args: ""
-          - name: "Explicit rustls (aws-lc-rs)"
-            features: "security-rustls-default"
-            extra_args: "--no-default-features --features=snappy,gzip,security-rustls-default"
-          - name: "Explicit rustls (ring)"
-            features: "security-rustls-ring"
-            extra_args: "--no-default-features --features=snappy,gzip,security-rustls-ring"
-          - name: "OpenSSL (deprecated)"
-            features: "security-openssl"
-            extra_args: "--no-default-features --features=snappy,gzip,security-openssl"
+          - name: "Explicit aws-lc-rs"
+            features: "security"
+            extra_args: "--no-default-features --features=snappy,gzip,security"
+          - name: "ring"
+            features: "security-ring"
+            extra_args: "--no-default-features --features=snappy,gzip,security-ring"
           - name: "No security"
-            features: "no-security"
+            features: ""
             extra_args: "--no-default-features --features=snappy,gzip"
     steps:
       - uses: actions/checkout@v6
@@ -149,9 +146,9 @@ jobs:
             cargo test --verbose ${{ matrix.extra_args }}
           fi
 
-  # Test musl build to verify no OpenSSL dependency with rustls
+  # Test musl build to verify pure-Rust TLS
   musl-build:
-    name: Test musl build (OpenSSL-free)
+    name: Test musl build (pure Rust)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -168,16 +165,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build for musl with rustls
-        run: cargo build --target x86_64-unknown-linux-musl --features=security-rustls-default --verbose
-
-      - name: Verify no OpenSSL dependency
-        run: |
-          # Check if the library file exists (it might be a .rlib or similar for a library crate)
-          # For a library crate, we might not produce a binary to ldd.
-          # Instead, we can check if the build succeeded without openssl-sys
-          if cargo tree --target x86_64-unknown-linux-musl --features=security-rustls-default | grep openssl-sys; then
-             echo "ERROR: musl build dependency tree contains openssl-sys!"
-             exit 1
-          else
-             echo "✓ musl build dependency tree is free of openssl-sys"
-          fi
+        run: cargo build --target x86_64-unknown-linux-musl --verbose

@@ -1,5 +1,5 @@
 #[cfg(feature = "integration_tests")]
-extern crate kafka;
+extern crate rustfs_kafka;
 
 #[cfg(feature = "integration_tests")]
 extern crate rand;
@@ -13,7 +13,7 @@ mod integration {
 
     use tracing::debug;
 
-    use kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig};
+    use rustfs_kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig};
 
     mod client;
     mod consumer_producer;

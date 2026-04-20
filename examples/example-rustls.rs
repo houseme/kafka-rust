@@ -2,15 +2,15 @@ fn main() {
     example::main();
 }
 
-#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 mod example {
-    use kafka;
+    use rustfs_kafka;
     use tracing::info;
 
     use std::env;
     use std::process;
 
-    use self::kafka::client::{FetchOffset, KafkaClient, SecurityConfig};
+    use self::rustfs_kafka::client::{FetchOffset, KafkaClient, SecurityConfig};
 
     pub fn main() {
         tracing_subscriber::fmt::init();
@@ -153,13 +153,13 @@ mod example {
     }
 }
 
-#[cfg(not(any(feature = "security-rustls-default", feature = "security-rustls-ring")))]
+#[cfg(not(any(feature = "security", feature = "security-ring")))]
 mod example {
     use std::process;
 
     pub fn main() {
         println!("example relevant only with a rustls security feature enabled!");
-        println!("Try: cargo run --example example-rustls --features=security-rustls-default");
+        println!("Try: cargo run --example example-rustls --features=security");
         process::exit(1);
     }
 }

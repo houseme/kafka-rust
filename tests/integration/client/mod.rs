@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use kafka::client::fetch::Response;
-use kafka::client::{
+use rustfs_kafka::client::fetch::Response;
+use rustfs_kafka::client::{
     CommitOffset, FetchOffset, FetchPartition, PartitionOffset, ProduceMessage, RequiredAcks,
 };
 

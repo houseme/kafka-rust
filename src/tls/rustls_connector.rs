@@ -76,11 +76,11 @@ impl RustlsConnector {
         let root_store = Self::load_root_store(tls_config)?;
 
         let provider = {
-            #[cfg(feature = "security-rustls-ring")]
+            #[cfg(feature = "security-ring")]
             {
                 rustls::crypto::ring::default_provider()
             }
-            #[cfg(not(feature = "security-rustls-ring"))]
+            #[cfg(not(feature = "security-ring"))]
             {
                 rustls::crypto::aws_lc_rs::default_provider()
             }

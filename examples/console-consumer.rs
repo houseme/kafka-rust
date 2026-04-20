@@ -4,7 +4,7 @@ use std::{env, process};
 //use std::ascii::AsciiExt;
 
 use anyhow::{Result, bail};
-use kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
 
 use tracing::{error, info};
 

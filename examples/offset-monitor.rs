@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use anyhow::{Error, Result, anyhow};
-use kafka::client::{FetchOffset, GroupOffsetStorage, KafkaClient};
+use rustfs_kafka::client::{FetchOffset, GroupOffsetStorage, KafkaClient};
 
 /// A very simple offset monitor for a particular topic able to show
 /// the lag for a particular consumer group. Dumps the offset/lag of

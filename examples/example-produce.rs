@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use kafka::error::Error as KafkaError;
-use kafka::producer::{Producer, Record, RequiredAcks};
+use rustfs_kafka::error::Error as KafkaError;
+use rustfs_kafka::producer::{Producer, Record, RequiredAcks};
 
 /// This program demonstrates sending single message through a
 /// `Producer`.  This is a convenient higher-level client that will

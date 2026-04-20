@@ -1,7 +1,7 @@
 use super::*;
 
-use kafka::error;
-use kafka::producer::Record;
+use rustfs_kafka::error;
+use rustfs_kafka::producer::Record;
 
 /// Tests that basic message sending results in a successful call.
 #[test]

@@ -9,18 +9,10 @@ use super::config::Config;
 use super::state::State;
 use super::{Consumer, DEFAULT_FALLBACK_OFFSET, DEFAULT_RETRY_MAX_BYTES_LIMIT};
 
-#[cfg(any(
-    feature = "security-rustls-default",
-    feature = "security-rustls-ring",
-    feature = "security-openssl"
-))]
+#[cfg(feature = "security")]
 use crate::client::SecurityConfig;
 
-#[cfg(not(any(
-    feature = "security-rustls-default",
-    feature = "security-rustls-ring",
-    feature = "security-openssl"
-)))]
+#[cfg(not(feature = "security"))]
 type SecurityConfig = ();
 
 /// A Kafka Consumer builder easing the process of setting up various
@@ -117,11 +109,7 @@ impl Builder {
 
     /// Specifies the security config to use.
     /// See `KafkaClient::new_secure` for more info.
-    #[cfg(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    ))]
+    #[cfg(feature = "security")]
     #[must_use]
     pub fn with_security(mut self, sec: SecurityConfig) -> Builder {
         self.security_config = Some(sec);
@@ -225,21 +213,13 @@ impl Builder {
         self
     }
 
-    #[cfg(not(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    )))]
+    #[cfg(not(feature = "security"))]
     #[must_use]
     fn new_kafka_client(hosts: Vec<String>, _: Option<SecurityConfig>) -> KafkaClient {
         KafkaClient::new(hosts)
     }
 
-    #[cfg(any(
-        feature = "security-rustls-default",
-        feature = "security-rustls-ring",
-        feature = "security-openssl"
-    ))]
+    #[cfg(feature = "security")]
     fn new_kafka_client(hosts: Vec<String>, security: Option<SecurityConfig>) -> KafkaClient {
         if let Some(security) = security {
             KafkaClient::new_secure(hosts, security)
