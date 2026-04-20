@@ -1589,6 +1589,190 @@ impl KafkaClient {
         //         .unwrap_or_default(),
         // )
     }
+
+    // =====================================================================
+    // kafka-protocol adapter methods (protocol2)
+    // =====================================================================
+
+    /// Fetch offsets using the kafka-protocol adapter (ListOffsets v1).
+    pub fn fetch_offsets_kp<T: AsRef<str>>(
+        &mut self,
+        topics: &[T],
+        offset: FetchOffset,
+    ) -> Result<HashMap<String, Vec<PartitionOffset>>> {
+        let time = offset.to_kafka_value();
+        let n_topics = topics.len();
+        let state = &mut self.state;
+        let correlation = state.next_correlation_id();
+        let config = &self.config;
+
+        let mut broker_partitions: HashMap<&str, Vec<(&str, i32, i64)>> = HashMap::new();
+        for topic in topics {
+            let topic = topic.as_ref();
+            if let Some(ps) = state.partitions_for(topic) {
+                for (id, host) in ps
+                    .iter()
+                    .filter_map(|(id, p)| p.broker(state).map(|b| (id, b.host())))
+                {
+                    broker_partitions
+                        .entry(host)
+                        .or_default()
+                        .push((topic, id, time));
+                }
+            }
+        }
+
+        let now = Instant::now();
+        let mut res: HashMap<String, Vec<PartitionOffset>> = HashMap::with_capacity(n_topics);
+        for (host, partitions) in broker_partitions {
+            let conn = self.conn_pool.get_conn(host, now)?;
+            let (header, request) = crate::protocol2::offset::build_list_offsets_request(
+                correlation, &config.client_id, &partitions,
+            );
+            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_LIST_OFFSETS)?;
+            let kp_resp = __kp_get_response::<kafka_protocol::messages::ListOffsetsResponse>(
+                conn,
+                crate::protocol2::API_VERSION_LIST_OFFSETS,
+            )?;
+            let our_resp = crate::protocol2::offset::convert_list_offsets_response(kp_resp, correlation);
+
+            for tp in our_resp.topic_partitions {
+                let mut entry = res.entry(tp.topic);
+                let mut new_resp_offsets = None;
+                let mut err = None;
+                {
+                    let resp_offsets = match entry {
+                        hash_map::Entry::Occupied(ref mut e) => e.get_mut(),
+                        hash_map::Entry::Vacant(_) => {
+                            new_resp_offsets.get_or_insert(Vec::with_capacity(tp.partitions.len()))
+                        }
+                    };
+                    for p in tp.partitions {
+                        let partition_offset = match p.to_offset() {
+                            Ok(po) => po,
+                            Err(code) => {
+                                err = Some((p.partition, code));
+                                break;
+                            }
+                        };
+                        resp_offsets.push(partition_offset);
+                    }
+                }
+                if let Some((partition, code)) = err {
+                    let topic = KafkaClient::get_key_from_entry(entry);
+                    return Err(Error::TopicPartitionError {
+                        topic_name: topic,
+                        partition_id: partition,
+                        error_code: code,
+                    });
+                }
+                if let hash_map::Entry::Vacant(e) = entry {
+                    e.insert(new_resp_offsets.unwrap());
+                }
+            }
+        }
+
+        Ok(res)
+    }
+
+    /// Commit offsets using the kafka-protocol adapter (OffsetCommit v2).
+    pub fn commit_offsets_kp<'a, J, I>(&mut self, group: &str, offsets: I) -> Result<()>
+    where
+        J: AsRef<CommitOffset<'a>>,
+        I: IntoIterator<Item = J>,
+    {
+        let correlation_id = self.state.next_correlation_id();
+        let config = &self.config;
+        let mut offset_vec: Vec<(&str, i32, i64, Option<&str>)> = Vec::new();
+        for o in offsets {
+            let o = o.as_ref();
+            if self.state.contains_topic_partition(o.topic, o.partition) {
+                offset_vec.push((o.topic, o.partition, o.offset, None));
+            } else {
+                return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
+            }
+        }
+        if offset_vec.is_empty() {
+            debug!("commit_offsets_kp: no offsets provided");
+            Ok(())
+        } else {
+            __commit_offsets_kp(
+                &offset_vec,
+                group,
+                correlation_id,
+                &config.client_id,
+                &mut self.state,
+                &mut self.conn_pool,
+                config,
+            )
+        }
+    }
+
+    /// Commit a single offset using the kafka-protocol adapter.
+    pub fn commit_offset_kp(&mut self, group: &str, topic: &str, partition: i32, offset: i64) -> Result<()> {
+        self.commit_offsets_kp(group, &[CommitOffset::new(topic, partition, offset)])
+    }
+
+    /// Fetch group offsets using the kafka-protocol adapter (OffsetFetch v2).
+    pub fn fetch_group_offsets_kp<'a, J, I>(
+        &mut self,
+        group: &str,
+        partitions: I,
+    ) -> Result<HashMap<String, Vec<PartitionOffset>>>
+    where
+        J: AsRef<FetchGroupOffset<'a>>,
+        I: IntoIterator<Item = J>,
+    {
+        let correlation_id = self.state.next_correlation_id();
+        let config = &self.config;
+        let mut partition_vec: Vec<(&str, i32)> = Vec::new();
+        for p in partitions {
+            let p = p.as_ref();
+            if self.state.contains_topic_partition(p.topic, p.partition) {
+                partition_vec.push((p.topic, p.partition));
+            } else {
+                return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
+            }
+        }
+        __fetch_group_offsets_kp(
+            &partition_vec,
+            group,
+            correlation_id,
+            &config.client_id,
+            &mut self.state,
+            &mut self.conn_pool,
+            config,
+        )
+    }
+
+    /// Fetch group topic offset using the kafka-protocol adapter.
+    pub fn fetch_group_topic_offset_kp(
+        &mut self,
+        group: &str,
+        topic: &str,
+    ) -> Result<Vec<PartitionOffset>> {
+        let correlation_id = self.state.next_correlation_id();
+        let config = &self.config;
+        let mut partition_vec: Vec<(&str, i32)> = Vec::new();
+        match self.state.partitions_for(topic) {
+            None => return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition)),
+            Some(tp) => {
+                for (id, _) in tp {
+                    partition_vec.push((topic, id));
+                }
+            }
+        }
+        __fetch_group_offsets_kp(
+            &partition_vec,
+            group,
+            correlation_id,
+            &config.client_id,
+            &mut self.state,
+            &mut self.conn_pool,
+            config,
+        )
+        .map(|mut m| m.remove(topic).unwrap_or_default())
+    }
 }
 
 impl KafkaClientInternals for KafkaClient {
@@ -2121,4 +2305,213 @@ fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
 /// method should be called _only_ as part of a retry attempt.
 fn __retry_sleep(cfg: &ClientConfig) {
     thread::sleep(cfg.retry_backoff_time);
+}
+
+// =====================================================================
+// kafka-protocol adapter free functions (protocol2)
+// =====================================================================
+
+fn __get_group_coordinator_kp<'a>(
+    group: &str,
+    state: &'a mut state::ClientState,
+    conn_pool: &mut network::Connections,
+    config: &ClientConfig,
+    now: Instant,
+) -> Result<&'a str> {
+    if let Some(host) = state.group_coordinator(group) {
+        return Ok(unsafe { mem::transmute(host) });
+    }
+    let correlation_id = state.next_correlation_id();
+    let (header, request) =
+        crate::protocol2::consumer::build_find_coordinator_request(correlation_id, &config.client_id, group);
+    let mut attempt = 1;
+    loop {
+        let conn = conn_pool.get_conn_any(now).expect("available connection");
+        debug!(
+            "get_group_coordinator_kp: asking for coordinator of '{}' on: {:?}",
+            group, conn
+        );
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_FIND_COORDINATOR)?;
+        let kp_resp = __kp_get_response::<kafka_protocol::messages::FindCoordinatorResponse>(
+            conn,
+            crate::protocol2::API_VERSION_FIND_COORDINATOR,
+        )?;
+        let r = crate::protocol2::consumer::convert_find_coordinator_response(kp_resp, correlation_id);
+        let retry_code = match r.error {
+            0 => {
+                let gc = protocol::GroupCoordinatorResponse {
+                    header: protocol::HeaderResponse { correlation: correlation_id },
+                    error: r.error,
+                    broker_id: r.broker_id,
+                    port: r.port,
+                    host: r.host,
+                };
+                return Ok(state.set_group_coordinator(group, &gc));
+            }
+            e if KafkaCode::from_protocol(e) == Some(KafkaCode::GroupCoordinatorNotAvailable) => e,
+            e => {
+                if let Some(code) = KafkaCode::from_protocol(e) {
+                    return Err(Error::Kafka(code));
+                }
+                return Err(Error::Kafka(KafkaCode::Unknown));
+            }
+        };
+        if attempt < config.retry_max_attempts {
+            debug!(
+                "get_group_coordinator_kp: will retry request (c: {}) due to: {:?}",
+                correlation_id, retry_code
+            );
+            attempt += 1;
+            __retry_sleep(config);
+        } else {
+            return Err(Error::Kafka(
+                KafkaCode::from_protocol(retry_code).unwrap_or(KafkaCode::Unknown),
+            ));
+        }
+    }
+}
+
+fn __commit_offsets_kp(
+    offsets: &[(&str, i32, i64, Option<&str>)],
+    group: &str,
+    correlation_id: i32,
+    client_id: &str,
+    state: &mut state::ClientState,
+    conn_pool: &mut network::Connections,
+    config: &ClientConfig,
+) -> Result<()> {
+    let mut attempt = 1;
+    loop {
+        let now = Instant::now();
+        let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
+        debug!("commit_offsets_kp: sending request to: {}", host);
+
+        let conn = conn_pool.get_conn(host, now)?;
+        let (header, request) = crate::protocol2::consumer::build_offset_commit_request(
+            correlation_id,
+            client_id,
+            group,
+            -1, // generation_id
+            "", // member_id
+            -1, // retention_time_ms
+            offsets,
+        );
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_OFFSET_COMMIT)?;
+        let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
+            conn,
+            crate::protocol2::API_VERSION_OFFSET_COMMIT,
+        )?;
+        let our_resp = crate::protocol2::consumer::convert_offset_commit_response(kp_resp, correlation_id);
+
+        let mut retry_code = None;
+        'rproc: for tp in &our_resp.topic_partitions {
+            for p in &tp.partitions {
+                match KafkaCode::from_protocol(p.error) {
+                    None => {}
+                    Some(e @ KafkaCode::GroupLoadInProgress) => {
+                        retry_code = Some(e);
+                        break 'rproc;
+                    }
+                    Some(e @ KafkaCode::NotCoordinatorForGroup) => {
+                        debug!("commit_offsets_kp: resetting group coordinator for '{}'", group);
+                        state.remove_group_coordinator(group);
+                        retry_code = Some(e);
+                        break 'rproc;
+                    }
+                    Some(code) => return Err(Error::Kafka(code)),
+                }
+            }
+        }
+        match retry_code {
+            Some(e) => {
+                if attempt < config.retry_max_attempts {
+                    debug!(
+                        "commit_offsets_kp: will retry request (c: {}) due to: {:?}",
+                        correlation_id, e
+                    );
+                    attempt += 1;
+                    __retry_sleep(config);
+                } else {
+                    return Err(Error::Kafka(e));
+                }
+            }
+            None => return Ok(()),
+        }
+    }
+}
+
+fn __fetch_group_offsets_kp(
+    partitions: &[(&str, i32)],
+    group: &str,
+    correlation_id: i32,
+    client_id: &str,
+    state: &mut state::ClientState,
+    conn_pool: &mut network::Connections,
+    config: &ClientConfig,
+) -> Result<HashMap<String, Vec<PartitionOffset>>> {
+    let mut attempt = 1;
+    loop {
+        let now = Instant::now();
+        let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
+        debug!("fetch_group_offsets_kp: sending request to: {}", host);
+
+        let conn = conn_pool.get_conn(host, now)?;
+        let (header, request) = crate::protocol2::consumer::build_offset_fetch_request(
+            correlation_id,
+            client_id,
+            group,
+            partitions,
+        );
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_OFFSET_FETCH)?;
+        let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
+            conn,
+            crate::protocol2::API_VERSION_OFFSET_FETCH,
+        )?;
+        let our_resp = crate::protocol2::consumer::convert_offset_fetch_response(kp_resp, correlation_id);
+
+        let mut retry_code = None;
+        let mut topic_map = HashMap::with_capacity(our_resp.topic_partitions.len());
+
+        'rproc: for tp in our_resp.topic_partitions {
+            let mut partition_offsets = Vec::with_capacity(tp.partitions.len());
+            for p in tp.partitions {
+                match KafkaCode::from_protocol(p.error) {
+                    None => {
+                        partition_offsets.push(PartitionOffset {
+                            offset: p.offset,
+                            partition: p.partition,
+                        });
+                    }
+                    Some(e @ KafkaCode::GroupLoadInProgress) => {
+                        retry_code = Some(e);
+                        break 'rproc;
+                    }
+                    Some(e @ KafkaCode::NotCoordinatorForGroup) => {
+                        debug!("fetch_group_offsets_kp: resetting group coordinator for '{}'", group);
+                        state.remove_group_coordinator(group);
+                        retry_code = Some(e);
+                        break 'rproc;
+                    }
+                    Some(e) => return Err(Error::Kafka(e)),
+                }
+            }
+            topic_map.insert(tp.topic, partition_offsets);
+        }
+
+        match retry_code {
+            Some(e) => {
+                if attempt < config.retry_max_attempts {
+                    debug!(
+                        "fetch_group_offsets_kp: will retry request (c: {}) due to: {:?}",
+                        correlation_id, e
+                    );
+                    attempt += 1;
+                    __retry_sleep(config);
+                } else {
+                    return Err(Error::Kafka(e));
+                }
+            }
+            None => return Ok(topic_map),
+        }
+    }
 }
