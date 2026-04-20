@@ -1,7 +1,7 @@
 [package]
 name = "rustfs-kafka"
-version = "0.11.0"
-authors = ["John Ward", "John Ward <john@johnward.net>"]
+version = "0.20.0"
+authors = ["houseme", "houseme <husemecn@gmail.com>"]
 categories = ["api-bindings"]
 documentation = "https://docs.rs/rustfs-kafka/"
 edition = "2024"
@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/houseme/kafka-rust"
 description = "Rust client for Apache Kafka"
-rust-version = "1.89.0"
+rust-version = "1.93.0"
 
 [dependencies]
 byteorder = "1.5"

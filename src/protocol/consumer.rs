@@ -1,7 +1,7 @@
 use super::{API_KEY_GROUP_COORDINATOR, API_KEY_OFFSET_COMMIT, API_KEY_OFFSET_FETCH, API_VERSION};
 use super::{HeaderRequest, HeaderResponse};
 use crate::codecs::{self, FromByte, ToByte};
-use crate::error::{self, Error, KafkaCode, Result};
+use crate::error::{Error, KafkaCode, Result};
 use crate::utils::PartitionOffset;
 use std::io::{Read, Write};
 
@@ -424,8 +424,8 @@ pub struct PartitionOffsetCommitResponse {
 }
 
 impl PartitionOffsetCommitResponse {
-    pub fn to_error(&self) -> Option<error::KafkaCode> {
-        error::KafkaCode::from_protocol(self.error)
+    pub fn to_error(&self) -> Option<KafkaCode> {
+        KafkaCode::from_protocol(self.error)
     }
 }
 

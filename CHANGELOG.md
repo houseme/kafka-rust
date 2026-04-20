@@ -48,19 +48,19 @@ Update your `Cargo.toml`:
 kafka = { version = "0.10", features = ["security"] }
 
 # After
-rustfs-kafka = "0.11"
+rustfs-kafka = "0.20"
 ```
 
 To use `ring` instead of `aws-lc-rs`:
 
 ```toml
-rustfs-kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip", "security-ring"] }
+rustfs-kafka = { version = "0.20", default-features = false, features = ["snappy", "gzip", "security-ring"] }
 ```
 
 To build without TLS:
 
 ```toml
-rustfs-kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip"] }
+rustfs-kafka = { version = "0.20", default-features = false, features = ["snappy", "gzip"] }
 ```
 
 Update your code imports:

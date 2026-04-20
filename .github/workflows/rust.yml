@@ -67,7 +67,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cargo-nextest
 
-      - name: Run tests
+      - name: Run unit tests
         run: |
           cargo nextest run --all
           cargo test --all --doc
@@ -84,7 +84,7 @@ jobs:
       - name: Make the test script executable
         run: chmod +x ./tests/run-all-tests
 
-      - name: Run tests
+      - name: Run integration tests
         run: ./tests/run-all-tests ${{ matrix.KAFKA_VER }}
         env:
           KAFKA_VER: ${{ matrix.KAFKA_VER }}
