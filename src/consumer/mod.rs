@@ -199,10 +199,10 @@ impl Consumer {
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
     /// let topics = vec!["test-topic".to_string()];
-    /// let typos = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797)).unwrap();
+    /// let topic_offsets = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797)).unwrap();
     ///
     /// // Seek to the offsets
-    /// for (topic, partition_offsets) in typos {
+    /// for (topic, partition_offsets) in topic_offsets {
     ///     for po in partition_offsets {
     ///         consumer.seek(&topic, po.partition, po.offset).unwrap();
     ///     }

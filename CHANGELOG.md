@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
     - `security-rustls-default`: Uses `aws-lc-rs` (via `rustls/aws-lc-rs`).
     - `security-rustls-ring`: Uses `ring` (via `rustls/ring`).
 - **Certificate Handling**:
-    - Integrated `rustls-pki-types` (v1.0) with PEM support for robust certificate parsing.
+    - Integrated `rustls-pki-types` with PEM support for robust certificate parsing.
     - Integrated `rustls-native-certs` (v0.8) for loading system certificates.
     - Integrated `webpki-roots` (v1.0) as the fallback root certificate store.
 
@@ -52,21 +52,21 @@ For most users, no changes are required. The default build will now use rustls i
 If you explicitly need OpenSSL (not recommended):
 
 ```toml
-kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-openssl"] }
+kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip", "security-openssl"] }
 ```
 
 To use rustls explicitly (recommended):
 
 ```toml
-kafka = { version = "0.10", features = ["security"] }
+kafka = { version = "0.11", features = ["security"] }
 # or
-kafka = { version = "0.10", features = ["security-rustls-default"] }
+kafka = { version = "0.11", features = ["security-rustls-default"] }
 ```
 
 To use rustls with `ring` crypto provider:
 
 ```toml
-kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-rustls-ring"] }
+kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip", "security-rustls-ring"] }
 ```
 
 **Migrating from `rustls-pemfile` to `rustls-pki-types`**:

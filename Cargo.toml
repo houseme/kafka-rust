@@ -45,6 +45,7 @@ gzip = ["flate2"]
 # TLS/Security features
 # The 'security' feature now defaults to rustls (pure Rust, recommended)
 security = ["security-rustls-default"]
+security-rustls = ["security-rustls-default"]
 _security-rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs"]
 security-rustls-default = ["_security-rustls", "rustls?/aws-lc-rs"]
 security-rustls-ring = ["_security-rustls", "rustls?/ring"]

@@ -158,8 +158,8 @@ mod example {
     use std::process;
 
     pub fn main() {
-        println!("example relevant only with the \"security-rustls\" feature enabled!");
-        println!("Try: cargo run --example example-rustls --features=security-rustls");
+        println!("example relevant only with a rustls security feature enabled!");
+        println!("Try: cargo run --example example-rustls --features=security-rustls-default");
         process::exit(1);
     }
 }

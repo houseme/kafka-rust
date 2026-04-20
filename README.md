@@ -22,7 +22,7 @@ expect the version number to grow quickly).
 
 ```toml
 [dependencies]
-kafka = "0.10"
+kafka = "0.11"
 ```
 
 To build kafka-rust the usual `cargo build` should suffice. The crate
@@ -48,14 +48,14 @@ rustls is enabled by default and requires no additional system dependencies:
 
 ```toml
 [dependencies]
-kafka = { version = "0.10", features = ["security"] }
+kafka = { version = "0.11", features = ["security"] }
 ```
 
 To use `ring` instead of `aws-lc-rs`:
 
 ```toml
 [dependencies]
-kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-rustls-ring"] }
+kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip", "security-rustls-ring"] }
 ```
 
 Benefits of rustls:
@@ -88,7 +88,7 @@ For backward compatibility, OpenSSL support is still available but deprecated:
 
 ```toml
 [dependencies]
-kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip", "security-openssl"] }
+kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip", "security-openssl"] }
 ```
 
 **⚠️ Note:** OpenSSL backend will be removed in the next major version. Please migrate to rustls.
@@ -99,7 +99,7 @@ To build without any TLS support:
 
 ```toml
 [dependencies]
-kafka = { version = "0.10", default-features = false, features = ["snappy", "gzip"] }
+kafka = { version = "0.11", default-features = false, features = ["snappy", "gzip"] }
 ```
 
 ## Supported Kafka version
