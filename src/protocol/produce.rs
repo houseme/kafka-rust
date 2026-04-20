@@ -4,6 +4,8 @@ use crate::codecs::{FromByte, ToByte};
 use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
+#[cfg(feature = "lz4")]
+use crate::compression::lz4;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy;
 
@@ -213,6 +215,11 @@ impl PartitionProduceRequest<'_> {
                 let cdata = snappy::compress(&buf)?;
                 render_compressed(&mut buf, &cdata, compression)?;
             }
+            #[cfg(feature = "lz4")]
+            Compression::LZ4 => {
+                let cdata = lz4::compress(&buf)?;
+                render_compressed(&mut buf, &cdata, compression)?;
+            }
         }
         buf.encode(out)
     }
@@ -251,6 +258,11 @@ impl PartitionProduceRequest<'_> {
                 let cdata = snappy::compress(&buf)?;
                 render_compressed_with_timestamp(&mut buf, &cdata, compression, timestamp)?;
             }
+            #[cfg(feature = "lz4")]
+            Compression::LZ4 => {
+                let cdata = lz4::compress(&buf)?;
+                render_compressed_with_timestamp(&mut buf, &cdata, compression, timestamp)?;
+            }
         }
         buf.encode(out)
     }
@@ -258,7 +270,7 @@ impl PartitionProduceRequest<'_> {
 
 // ~ A helper method to render `cdata` into `out` as a compressed message.
 // ~ `out` is first cleared and then populated with the rendered message.
-#[cfg(any(feature = "snappy", feature = "gzip"))]
+#[cfg(any(feature = "snappy", feature = "gzip", feature = "lz4"))]
 fn render_compressed(out: &mut Vec<u8>, cdata: &[u8], compression: Compression) -> Result<()> {
     out.clear();
     let cmsg = MessageProduceRequest::new(None, Some(cdata));
@@ -266,12 +278,9 @@ fn render_compressed(out: &mut Vec<u8>, cdata: &[u8], compression: Compression) 
     cmsg._encode_to_buf(out, MESSAGE_MAGIC_BYTE, compression as i8)
 }
 
-// available when feature producer_timestamp and snappy || gzip are available
-// ~ A helper method to render `cdata` into `out` as a compressed message.
-// ~ `out` is first cleared and then populated with the rendered message.
 #[cfg(all(
     feature = "producer_timestamp",
-    any(feature = "snappy", feature = "gzip")
+    any(feature = "snappy", feature = "gzip", feature = "lz4")
 ))]
 fn render_compressed_with_timestamp(
     out: &mut Vec<u8>,

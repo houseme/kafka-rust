@@ -18,6 +18,10 @@ pub enum Error {
     #[error(transparent)]
     InvalidSnappy(#[from] snap::Error),
 
+    #[cfg(feature = "lz4")]
+    #[error("LZ4 Error: {0}")]
+    InvalidLz4(String),
+
     /// An error as reported by a remote Kafka server
     #[error("Kafka Error ({0:?})")]
     Kafka(KafkaCode),

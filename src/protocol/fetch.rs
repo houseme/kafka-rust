@@ -6,6 +6,8 @@ use crate::codecs::ToByte;
 use crate::compression::Compression;
 #[cfg(feature = "gzip")]
 use crate::compression::gzip;
+#[cfg(feature = "lz4")]
+use crate::compression::lz4;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy::SnappyReader;
 use crate::error::KafkaCode;
@@ -424,6 +426,11 @@ impl<'a> MessageSet<'a> {
                             use std::io::Read;
                             let mut v = Vec::new();
                             SnappyReader::new(pmsg.value)?.read_to_end(&mut v)?;
+                            return MessageSet::from_vec(v, req_offset, validate_crc);
+                        }
+                        #[cfg(feature = "lz4")]
+                        c if c == Compression::LZ4 as i8 => {
+                            let v = lz4::uncompress(pmsg.value)?;
                             return MessageSet::from_vec(v, req_offset, validate_crc);
                         }
                         _ => return Err(Error::UnsupportedCompression),

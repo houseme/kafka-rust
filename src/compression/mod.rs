@@ -1,6 +1,9 @@
 #[cfg(feature = "gzip")]
 pub mod gzip;
 
+#[cfg(feature = "lz4")]
+pub mod lz4;
+
 #[cfg(feature = "snappy")]
 pub mod snappy;
 
@@ -15,4 +18,6 @@ pub enum Compression {
     GZIP = 1,
     #[cfg(feature = "snappy")]
     SNAPPY = 2,
+    #[cfg(feature = "lz4")]
+    LZ4 = 3,
 }
