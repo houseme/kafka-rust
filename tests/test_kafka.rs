@@ -4,15 +4,12 @@ extern crate kafka;
 #[cfg(feature = "integration_tests")]
 extern crate rand;
 
-#[cfg(feature = "integration_tests")]
-#[macro_use]
-extern crate lazy_static;
-
 #[allow(clippy::needless_borrow)]
 #[allow(unused_must_use)]
 #[cfg(feature = "integration_tests")]
 mod integration {
     use std::collections::HashMap;
+    use std::sync::LazyLock;
 
     use tracing::debug;
 
@@ -32,23 +29,21 @@ mod integration {
     const KAFKA_CLIENT_SECURE: &str = "KAFKA_CLIENT_SECURE";
     const KAFKA_CLIENT_COMPRESSION: &str = "KAFKA_CLIENT_COMPRESSION";
 
-    lazy_static! {
-        static ref COMPRESSIONS: HashMap<&'static str, Compression> = {
-            let mut m = HashMap::new();
+    static COMPRESSIONS: LazyLock<HashMap<&'static str, Compression>> = LazyLock::new(|| {
+        let mut m = HashMap::new();
 
-            m.insert("", Compression::NONE);
-            m.insert("none", Compression::NONE);
-            m.insert("NONE", Compression::NONE);
+        m.insert("", Compression::NONE);
+        m.insert("none", Compression::NONE);
+        m.insert("NONE", Compression::NONE);
 
-            m.insert("snappy", Compression::SNAPPY);
-            m.insert("SNAPPY", Compression::SNAPPY);
+        m.insert("snappy", Compression::SNAPPY);
+        m.insert("SNAPPY", Compression::SNAPPY);
 
-            m.insert("gzip", Compression::GZIP);
-            m.insert("GZIP", Compression::GZIP);
+        m.insert("gzip", Compression::GZIP);
+        m.insert("GZIP", Compression::GZIP);
 
-            m
-        };
-    }
+        m
+    });
 
     /// Constructs a Kafka client for the integration tests, and loads
     /// its metadata so it is ready to use.

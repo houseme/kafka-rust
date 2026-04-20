@@ -10,33 +10,32 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/kafka-rust/kafka-rust"
 description = "Rust client for Apache Kafka"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 
 [dependencies]
 byteorder = "1.5"
-crc = "3.2"
+crc-fast = "=1.9.0"
 fnv = "1.0.7"
-twox-hash = "1.6.3"
+twox-hash = "2.1.2"
 
-flate2 = { version = "1.0", optional = true }
-openssl = { version = "0.10", optional = true }
-snap = { version = "1.1", optional = true }
-chrono = { version = "0.4", optional = true }
-thiserror = "1.0"
-tracing = "0.1"
+flate2 = { version = "1.1.9", optional = true }
+openssl = { version = "0.10.78", optional = true }
+snap = { version = "1.1.1", optional = true }
+chrono = { version = "0.4.44", optional = true }
+thiserror = "2.0.18"
+tracing = "0.1.44"
 
 # rustls TLS backend (pure Rust, default)
-rustls = { version = "0.23", optional = true }
-webpki-roots = { version = "1.0", optional = true }
-rustls-pemfile = { version = "2.2", optional = true }
-rustls-native-certs = { version = "0.8", optional = true }
+rustls = { version = "0.23.38", optional = true, default-features = false, features = ["logging", "prefer-post-quantum", "std", "tls12"] }
+webpki-roots = { version = "1.0.7", optional = true }
+rustls-pki-types = { version = "1.14.0", optional = true, features = ["std"] }
+rustls-native-certs = { version = "0.8.3", optional = true }
 
 [dev-dependencies]
-getopts = "0.2.21"
-tracing-subscriber = "0.3"
-rand = "0.8.5"
-lazy_static = "1.5"
-anyhow = "1.0"
+getopts = "0.2.24"
+tracing-subscriber = "0.3.23"
+rand = "0.10.1"
+anyhow = "1.0.102"
 
 [features]
 default = ["snappy", "gzip", "security"]
@@ -45,8 +44,11 @@ gzip = ["flate2"]
 
 # TLS/Security features
 # The 'security' feature now defaults to rustls (pure Rust, recommended)
-security = ["security-rustls"]
-security-rustls = ["rustls", "webpki-roots", "rustls-pemfile", "rustls-native-certs"]
+security = ["security-rustls-default"]
+security-rustls = ["security-rustls-default"]
+_security-rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs"]
+security-rustls-default = ["_security-rustls", "rustls?/aws-lc-rs"]
+security-rustls-ring = ["_security-rustls", "rustls?/ring"]
 # Deprecated: OpenSSL backend (will be removed in next major version)
 security-openssl = ["openssl"]
 

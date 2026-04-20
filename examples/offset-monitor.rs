@@ -118,9 +118,9 @@ impl State {
         group: &str,
     ) -> Result<()> {
         // ~ get the latest topic offsets
-        let latests = client.fetch_topic_offsets(topic, FetchOffset::Latest)?;
+        let latest = client.fetch_topic_offsets(topic, FetchOffset::Latest)?;
 
-        for l in latests {
+        for l in latest {
             let off = self
                 .offsets
                 .get_mut(l.partition as usize)
@@ -233,7 +233,7 @@ impl<W: Write> Printer<W> {
             use std::fmt::Write;
 
             self.fmt_buf.clear();
-            let _ = write!(self.fmt_buf, "{}", time.elapsed().unwrap().as_secs());
+            let _ = write!(self.fmt_buf, "{}", time.elapsed()?.as_secs());
             let _ = write!(self.out_buf, "{1:<0$}", self.time_width, self.fmt_buf);
             if self.print_summary {
                 let mut prev_latest = 0;

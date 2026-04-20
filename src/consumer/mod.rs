@@ -64,7 +64,6 @@
 use crate::client::fetch;
 use crate::client::{CommitOffset, FetchPartition, KafkaClient};
 use crate::error::{Error, KafkaCode, Result};
-use crate::protocol;
 use std::collections::hash_map::{Entry, HashMap};
 use std::slice;
 use tracing::debug;
@@ -98,7 +97,7 @@ pub struct Consumer {
 }
 
 // XXX 1) Allow returning to a previous offset (aka seeking)
-// XXX 2) Issue IO in a separate (background) thread and pre-fetch messagesets
+// XXX 2) Issue IO in a separate (background) thread and pre-fetch message sets
 
 impl Consumer {
     /// Starts building a consumer using the given kafka client.
@@ -107,7 +106,7 @@ impl Consumer {
         builder::new(Some(client), Vec::new())
     }
 
-    /// Starts building a consumer bootstraping internally a new kafka
+    /// Starts building a consumer bootstrapping internally a new kafka
     /// client from the given kafka hosts.
     #[must_use]
     pub fn from_hosts(hosts: Vec<String>) -> Builder {
@@ -200,10 +199,10 @@ impl Consumer {
     /// let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
     /// client.load_metadata_all().unwrap();
     /// let topics = vec!["test-topic".to_string()];
-    /// let tpos = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797)).unwrap();
+    /// let topic_offsets = client.list_offsets(&topics, FetchOffset::ByTime(1698425676797)).unwrap();
     ///
     /// // Seek to the offsets
-    /// for (topic, partition_offsets) in tpos {
+    /// for (topic, partition_offsets) in topic_offsets {
     ///     for po in partition_offsets {
     ///         consumer.seek(&topic, po.partition, po.offset).unwrap();
     ///     }
@@ -300,7 +299,7 @@ impl Consumer {
                     .expect("unknown topic in response");
 
                 for p in t.partitions() {
-                    let tp = state::TopicPartition {
+                    let tp = TopicPartition {
                         topic_ref,
                         partition: p.partition(),
                     };
@@ -415,7 +414,7 @@ impl Consumer {
         self.state
             .topic_ref(topic)
             .and_then(|tref| {
-                self.state.consumed_offsets.get(&state::TopicPartition {
+                self.state.consumed_offsets.get(&TopicPartition {
                     topic_ref: tref,
                     partition,
                 })
@@ -440,7 +439,7 @@ impl Consumer {
             .topic_ref(topic)
             .ok_or_else(|| Error::Kafka(KafkaCode::UnknownTopicOrPartition))?;
 
-        let tp = state::TopicPartition {
+        let tp = TopicPartition {
             topic_ref,
             partition,
         };
@@ -613,7 +612,7 @@ impl<'a> Iterator for MessageSetsIter<'a> {
                 if let Some(messages) = p
                     .data()
                     .ok()
-                    .map(protocol::fetch::Data::messages)
+                    .map(fetch::Data::messages)
                     .filter(|msgs| !msgs.is_empty())
                 {
                     return Some(MessageSet {

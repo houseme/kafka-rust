@@ -71,11 +71,20 @@ use twox_hash::XxHash32;
 #[cfg(feature = "producer_timestamp")]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(feature = "security")]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 use crate::client::SecurityConfig;
 
-#[cfg(not(feature = "security"))]
+#[cfg(not(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+)))]
 type SecurityConfig = ();
+
 use crate::client_internals::KafkaClientInternals;
 use crate::protocol;
 
@@ -235,7 +244,7 @@ impl Producer {
         Builder::new(Some(client), Vec::new())
     }
 
-    /// Starts building a producer bootstraping internally a new kafka
+    /// Starts building a producer bootstrapping internally a new kafka
     /// client from the given kafka hosts.
     #[must_use]
     pub fn from_hosts(hosts: Vec<String>) -> Builder<DefaultPartitioner> {
@@ -389,7 +398,11 @@ impl Builder {
 
     /// Specifies the security config to use.
     /// See `KafkaClient::new_secure` for more info.
-    #[cfg(feature = "security")]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig) -> Self {
         self.security_config = Some(security);
@@ -471,12 +484,20 @@ impl<P> Builder<P> {
         }
     }
 
-    #[cfg(not(feature = "security"))]
+    #[cfg(not(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    )))]
     fn new_kafka_client(hosts: Vec<String>, _: Option<SecurityConfig>) -> KafkaClient {
         KafkaClient::new(hosts)
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     fn new_kafka_client(hosts: Vec<String>, security: Option<SecurityConfig>) -> KafkaClient {
         if let Some(security) = security {
             KafkaClient::new_secure(hosts, security)
@@ -572,7 +593,7 @@ impl<'a> Topics<'a> {
         Topics { partitions }
     }
 
-    /// Retrieves informationa about a topic's partitions.
+    /// Retrieves information about a topic's partitions.
     #[inline]
     #[must_use]
     pub fn partitions(&'a self, topic: &str) -> Option<&'a Partitions> {
@@ -777,7 +798,7 @@ mod default_partitioner_tests {
         // to different partitions)
         let h3 = assert_partitioning(&h, &mut p, "foo", "foo-key");
         let h4 = assert_partitioning(&h, &mut p, "foo", "bar-key");
-        assert!(h3 != h4);
+        assert_ne!(h3, h4);
     }
 
     #[derive(Default)]

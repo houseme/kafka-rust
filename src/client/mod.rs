@@ -7,6 +7,8 @@
 // pub re-export
 pub use crate::compression::Compression;
 use crate::protocol::list_offset::ListOffsetVersion;
+#[cfg(feature = "producer_timestamp")]
+pub use crate::protocol::produce::ProducerTimestamp;
 pub use crate::utils::PartitionOffset;
 use crate::utils::TimestampedPartitionOffset;
 use std;
@@ -19,13 +21,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, trace};
 
-#[cfg(feature = "producer_timestamp")]
-pub use crate::protocol::produce::ProducerTimestamp;
-
 #[cfg(not(feature = "producer_timestamp"))]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 pub use self::network::SecurityConfig;
 
 use crate::codecs::{FromByte, ToByte};
@@ -328,7 +331,7 @@ pub struct FetchPartition<'a> {
     /// The offset as of which to fetch messages.
     pub offset: i64,
 
-    /// The partition to fetch messasges from.
+    /// The partition to fetch messages from.
     pub partition: i32,
 
     /// Specifies the max. amount of data to fetch (for this
@@ -454,7 +457,11 @@ impl KafkaClient {
     /// and [openssl_verify](https://crates.io/crates/openssl-verify),
     /// as well as
     /// [Kafka's documentation](https://kafka.apache.org/documentation.html#security_ssl).
-    #[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+    #[cfg(any(
+        feature = "security-rustls-default",
+        feature = "security-rustls-ring",
+        feature = "security-openssl"
+    ))]
     #[must_use]
     pub fn new_secure(hosts: Vec<String>, security: SecurityConfig) -> KafkaClient {
         KafkaClient {
@@ -1122,7 +1129,7 @@ impl KafkaClient {
     ///
     /// Note: before using this method consider using
     /// `kafka::consumer::Consumer` instead which provides an easier
-    /// to use API for the regular use-case of fetching messesage from
+    /// to use API for the regular use-case of fetching messages from
     /// Kafka.
     ///
     /// # Example
@@ -1495,7 +1502,7 @@ fn __get_group_coordinator<'a>(
     now: Instant,
 ) -> Result<&'a str> {
     if let Some(host) = state.group_coordinator(group) {
-        // ~ decouple the lifetimes to make borrowck happy;
+        // ~ decouple the lifetimes to make borrow-ck happy;
         // this is actually safe since we're immediately
         // returning this, so the follow up code is not
         // affected here
@@ -1505,7 +1512,7 @@ fn __get_group_coordinator<'a>(
     let req = protocol::GroupCoordinatorRequest::new(group, correlation_id, &config.client_id);
     let mut attempt = 1;
     loop {
-        // ~ idealy we'd make this work even if `load_metadata` has not
+        // ~ ideally we'd make this work even if `load_metadata` has not
         // been called yet; if there are no connections available we can
         // try connecting to the user specified bootstrap server similar
         // to the way `load_metadata` works.

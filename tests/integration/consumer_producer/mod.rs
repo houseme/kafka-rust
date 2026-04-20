@@ -3,12 +3,13 @@ pub use super::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use kafka::client::{FetchOffset, PartitionOffset};
+use kafka::client::{FetchOffset, KafkaClient, PartitionOffset};
 use kafka::consumer::Consumer;
 use kafka::producer::Record;
 use kafka::producer::{Producer, RequiredAcks};
 
 use rand::RngCore;
+use tracing::debug;
 
 const RANDOM_MESSAGE_SIZE: usize = 32;
 
@@ -84,7 +85,7 @@ pub fn test_consumer_with_client(mut client: KafkaClient) -> Consumer {
 /// the given producer.
 fn send_random_messages(producer: &mut Producer, topic: &str, num_messages: u32) {
     let mut random_message_buf = [0u8; RANDOM_MESSAGE_SIZE];
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     for _ in 0..num_messages {
         rng.fill_bytes(&mut random_message_buf);

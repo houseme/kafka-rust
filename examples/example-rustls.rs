@@ -2,7 +2,7 @@ fn main() {
     example::main();
 }
 
-#[cfg(feature = "security-rustls")]
+#[cfg(any(feature = "security-rustls-default", feature = "security-rustls-ring"))]
 mod example {
     use kafka;
     use tracing::info;
@@ -153,13 +153,13 @@ mod example {
     }
 }
 
-#[cfg(not(feature = "security-rustls"))]
+#[cfg(not(any(feature = "security-rustls-default", feature = "security-rustls-ring")))]
 mod example {
     use std::process;
 
     pub fn main() {
-        println!("example relevant only with the \"security-rustls\" feature enabled!");
-        println!("Try: cargo run --example example-rustls --features=security-rustls");
+        println!("example relevant only with a rustls security feature enabled!");
+        println!("Try: cargo run --example example-rustls --features=security-rustls-default");
         process::exit(1);
     }
 }

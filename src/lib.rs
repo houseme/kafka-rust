@@ -1,4 +1,4 @@
-//! Clients for comunicating with a [Kafka](http://kafka.apache.org/)
+//! Clients for communicating with a [Kafka](http://kafka.apache.org/)
 //! cluster.  These are:
 //!
 //! - `kafka::producer::Producer` - for sending message to Kafka
@@ -44,7 +44,11 @@ pub mod producer;
 mod protocol;
 mod utils;
 
-#[cfg(any(feature = "security-rustls", feature = "security-openssl"))]
+#[cfg(any(
+    feature = "security-rustls-default",
+    feature = "security-rustls-ring",
+    feature = "security-openssl"
+))]
 mod tls;
 
 pub use self::error::{Error, Result};
