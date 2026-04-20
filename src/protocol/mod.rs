@@ -27,12 +27,14 @@ mod zreader;
 pub use self::consumer::{
     GroupCoordinatorRequest, GroupCoordinatorResponse, OffsetCommitRequest, OffsetCommitResponse,
     OffsetCommitVersion, OffsetFetchRequest, OffsetFetchResponse, OffsetFetchVersion,
+    PartitionOffsetCommitResponse, PartitionOffsetFetchResponse,
+    TopicPartitionOffsetCommitResponse, TopicPartitionOffsetFetchResponse,
 };
 pub use self::fetch::FetchRequest;
 pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
-pub use self::metadata::{MetadataRequest, MetadataResponse};
-pub use self::offset::{OffsetRequest, OffsetResponse};
-pub use self::produce::{ProduceRequest, ProduceResponse};
+pub use self::metadata::{BrokerMetadata, MetadataRequest, MetadataResponse, PartitionMetadata, TopicMetadata};
+pub use self::offset::{OffsetRequest, OffsetResponse, PartitionOffsetResponse, TopicPartitionOffsetResponse};
+pub use self::produce::{PartitionProduceResponse, ProduceRequest, ProduceResponse, TopicPartitionProduceResponse};
 
 // --------------------------------------------------------------------
 
@@ -60,7 +62,7 @@ pub trait ResponseParser {
 // --------------------------------------------------------------------
 
 impl KafkaCode {
-    fn from_protocol(n: i16) -> Option<KafkaCode> {
+    pub(crate) fn from_protocol(n: i16) -> Option<KafkaCode> {
         if n == 0 {
             return None;
         }
@@ -102,7 +104,7 @@ fn test_kafka_code_from_protocol() {
 
 // a (sub-) module private method for error
 impl Error {
-    fn from_protocol(n: i16) -> Option<Error> {
+    pub(crate) fn from_protocol(n: i16) -> Option<Error> {
         KafkaCode::from_protocol(n).map(Error::Kafka)
     }
 }

@@ -42,6 +42,7 @@ pub mod consumer;
 pub mod error;
 pub mod producer;
 mod protocol;
+mod protocol2;
 mod utils;
 
 #[cfg(feature = "security")]

@@ -10,6 +10,8 @@ use crate::compression::gzip;
 use crate::compression::lz4;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy::SnappyReader;
+#[cfg(feature = "zstd")]
+use crate::compression::zstd;
 use crate::error::KafkaCode;
 use crate::protocol::zreader::ZReader;
 use crate::{Error, Result};
@@ -431,6 +433,11 @@ impl<'a> MessageSet<'a> {
                         #[cfg(feature = "lz4")]
                         c if c == Compression::LZ4 as i8 => {
                             let v = lz4::uncompress(pmsg.value)?;
+                            return MessageSet::from_vec(v, req_offset, validate_crc);
+                        }
+                        #[cfg(feature = "zstd")]
+                        c if c == Compression::ZSTD as i8 => {
+                            let v = zstd::uncompress(pmsg.value)?;
                             return MessageSet::from_vec(v, req_offset, validate_crc);
                         }
                         _ => return Err(Error::UnsupportedCompression),

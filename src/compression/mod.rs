@@ -12,6 +12,7 @@
 //! | GZIP   | `1`       | `gzip`   | `flate2`   |
 //! | Snappy | `2`       | `snappy` | `snap`     |
 //! | LZ4    | `3`       | `lz4`    | `lz4_flex` |
+//! | ZSTD   | `4`       | `zstd`   | `zstd`     |
 //!
 //! All features except `gzip` are enabled by default. To trim dependencies,
 //! disable the default features and re-enable only what you need:
@@ -30,6 +31,12 @@ pub mod lz4;
 #[cfg(feature = "snappy")]
 pub mod snappy;
 
+#[cfg(feature = "lz4_native")]
+pub mod lz4_native;
+
+#[cfg(feature = "zstd")]
+pub mod zstd;
+
 /// Compression types supported by Kafka.
 ///
 /// The discriminant values correspond to the compression encoding in the
@@ -42,6 +49,7 @@ pub mod snappy;
 /// | `GZIP`  | 1     | `gzip`        |
 /// | `SNAPPY`| 2     | `snappy`      |
 /// | `LZ4`   | 3     | `lz4`         |
+/// | `ZSTD`  | 4     | `zstd`        |
 #[derive(Debug, Copy, Clone, Default)]
 pub enum Compression {
     /// No compression.
@@ -56,4 +64,7 @@ pub enum Compression {
     /// LZ4 compression. Fastest compression and decompression speed.
     #[cfg(feature = "lz4")]
     LZ4 = 3,
+    /// ZSTD compression. Excellent balance of ratio and speed.
+    #[cfg(feature = "zstd")]
+    ZSTD = 4,
 }

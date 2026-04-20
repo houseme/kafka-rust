@@ -8,6 +8,8 @@ use crate::compression::gzip;
 use crate::compression::lz4;
 #[cfg(feature = "snappy")]
 use crate::compression::snappy;
+#[cfg(feature = "zstd")]
+use crate::compression::zstd;
 
 use crate::error::{KafkaCode, Result};
 
@@ -220,6 +222,11 @@ impl PartitionProduceRequest<'_> {
                 let cdata = lz4::compress(&buf)?;
                 render_compressed(&mut buf, &cdata, compression)?;
             }
+            #[cfg(feature = "zstd")]
+            Compression::ZSTD => {
+                let cdata = zstd::compress(&buf)?;
+                render_compressed(&mut buf, &cdata, compression)?;
+            }
         }
         buf.encode(out)
     }
@@ -263,6 +270,11 @@ impl PartitionProduceRequest<'_> {
                 let cdata = lz4::compress(&buf)?;
                 render_compressed_with_timestamp(&mut buf, &cdata, compression, timestamp)?;
             }
+            #[cfg(feature = "zstd")]
+            Compression::ZSTD => {
+                let cdata = zstd::compress(&buf)?;
+                render_compressed_with_timestamp(&mut buf, &cdata, compression, timestamp)?;
+            }
         }
         buf.encode(out)
     }
@@ -270,7 +282,7 @@ impl PartitionProduceRequest<'_> {
 
 // ~ A helper method to render `cdata` into `out` as a compressed message.
 // ~ `out` is first cleared and then populated with the rendered message.
-#[cfg(any(feature = "snappy", feature = "gzip", feature = "lz4"))]
+#[cfg(any(feature = "snappy", feature = "gzip", feature = "lz4", feature = "zstd"))]
 fn render_compressed(out: &mut Vec<u8>, cdata: &[u8], compression: Compression) -> Result<()> {
     out.clear();
     let cmsg = MessageProduceRequest::new(None, Some(cdata));
@@ -280,7 +292,7 @@ fn render_compressed(out: &mut Vec<u8>, cdata: &[u8], compression: Compression) 
 
 #[cfg(all(
     feature = "producer_timestamp",
-    any(feature = "snappy", feature = "gzip", feature = "lz4")
+    any(feature = "snappy", feature = "gzip", feature = "lz4", feature = "zstd")
 ))]
 fn render_compressed_with_timestamp(
     out: &mut Vec<u8>,

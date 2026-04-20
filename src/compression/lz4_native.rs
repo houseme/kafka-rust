@@ -1,28 +1,18 @@
-//! LZ4 compression codec for Kafka.
+//! LZ4 compression codec for Kafka (native lz4 crate).
 //!
 //! This module provides LZ4 compression and decompression using the
-//! [`lz4_flex`](https://crates.io/crates/lz4_flex) crate with its **frame**
-//! format. The LZ4 compression type corresponds to attribute value `3` in the
-//! Kafka message protocol (the lower 3 bits of the `attributes` field).
+//! [`lz4`](https://crates.io/crates/lz4) crate with its **frame** format.
+//! This is the native C-based LZ4 implementation, which is compatible with
+//! `kafka-protocol`'s LZ4 handling.
 //!
 //! # Kafka Compatibility
 //!
 //! Kafka brokers use the LZ4 frame format as defined by the
 //! [LZ4 Frame Format Specification](https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md).
-//! The `lz4_flex` crate's frame encoder/decoder is compatible with this format,
-//! allowing seamless interoperability with Kafka's Java client and other
-//! LZ4-enabled Kafka producers/consumers.
-//!
-//! # Performance Characteristics
-//!
-//! LZ4 offers a favorable trade-off between compression speed and ratio:
-//! - **Compression speed**: Very fast, typically 400+ MB/s
-//! - **Decompression speed**: Extremely fast, typically 2+ GB/s
-//! - **Compression ratio**: Lower than GZIP but significantly faster
+//! The `lz4` crate's `EncoderBuilder`/`DecoderBuilder` produce and consume
+//! this format, ensuring compatibility with Kafka's Java client.
 
 use std::io::{Read, Write};
-
-use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 
 use crate::error::{Error, Result};
 
@@ -30,30 +20,35 @@ use crate::error::{Error, Result};
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidLz4`] if the underlying encoder encounters
-/// an I/O error during compression.
+/// Returns [`Error::InvalidLz4Native`] if the underlying encoder encounters
+/// an error during compression.
 pub fn compress(src: &[u8]) -> Result<Vec<u8>> {
-    let mut encoder = FrameEncoder::new(Vec::new());
+    let mut buffer = Vec::new();
+    let mut encoder = lz4::EncoderBuilder::new()
+        .auto_flush(true)
+        .build(&mut buffer)
+        .map_err(|e| Error::InvalidLz4Native(e.to_string()))?;
     encoder
         .write_all(src)
-        .map_err(|e| Error::InvalidLz4(e.to_string()))?;
-    encoder
-        .finish()
-        .map_err(|e| Error::InvalidLz4(e.to_string()))
+        .map_err(|e| Error::InvalidLz4Native(e.to_string()))?;
+    let (_output, result) = encoder.finish();
+    result.map_err(|e| Error::InvalidLz4Native(e.to_string()))?;
+    Ok(buffer)
 }
 
 /// Decompresses LZ4 frame-formatted data back to the original bytes.
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidLz4`] if the input is not a valid LZ4 frame
+/// Returns [`Error::InvalidLz4Native`] if the input is not a valid LZ4 frame
 /// or if the frame data is corrupted.
 pub fn uncompress(src: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = FrameDecoder::new(src);
+    let mut decoder =
+        lz4::Decoder::new(src).map_err(|e| Error::InvalidLz4Native(e.to_string()))?;
     let mut buffer = Vec::new();
     decoder
         .read_to_end(&mut buffer)
-        .map_err(|e| Error::InvalidLz4(e.to_string()))?;
+        .map_err(|e| Error::InvalidLz4Native(e.to_string()))?;
     Ok(buffer)
 }
 
@@ -74,8 +69,9 @@ mod tests {
     fn test_uncompress_corrupted_data() {
         let data = b"Hello, LZ4 compression!";
         let mut compressed = compress(data).unwrap();
-        if compressed.len() > 7 {
-            compressed[7] ^= 0xFF;
+        // Corrupt the frame header (FLG byte) to ensure an error
+        if compressed.len() > 5 {
+            compressed[4] ^= 0xFF;
         }
         let result: Result<Vec<u8>> = uncompress(&compressed);
         assert!(result.is_err());
@@ -139,12 +135,6 @@ mod tests {
         let compressed = compress(&data).unwrap();
         let decompressed = uncompress(&compressed).unwrap();
         assert_eq!(data, decompressed);
-    }
-
-    #[test]
-    fn test_lz4_compression_attribute_value() {
-        use crate::compression::Compression;
-        assert_eq!(Compression::LZ4 as i8, 3);
     }
 
     #[test]

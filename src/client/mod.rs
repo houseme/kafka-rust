@@ -814,6 +814,14 @@ impl KafkaClient {
         Ok(())
     }
 
+    /// Reloads metadata using the kafka-protocol adapter (v1 protocol).
+    /// This is the new path that will eventually replace `load_metadata`.
+    pub fn load_metadata_kp<T: AsRef<str>>(&mut self, topics: &[T]) -> Result<()> {
+        let resp = self.fetch_metadata_kp(topics)?;
+        self.state.update_metadata(resp);
+        Ok(())
+    }
+
     /// Clears metadata stored in the client.  You must load metadata
     /// after this call if you want to use the client.
     #[inline]
@@ -846,6 +854,47 @@ impl KafkaClient {
                 }
                 Err(e) => {
                     debug!("fetch_metadata: failed to connect to {}: {}", host, e);
+                }
+            }
+        }
+        Err(Error::NoHostReachable)
+    }
+
+    /// Fetches metadata using the kafka-protocol adapter (protocol version 1).
+    fn fetch_metadata_kp<T: AsRef<str>>(
+        &mut self,
+        topics: &[T],
+    ) -> Result<protocol::MetadataResponse> {
+        let correlation = self.state.next_correlation_id();
+        let now = Instant::now();
+        let topic_strs: Vec<&str> = topics.iter().map(|t| t.as_ref()).collect();
+
+        for host in &self.config.hosts {
+            debug!("fetch_metadata_kp: requesting metadata from {}", host);
+            match self.conn_pool.get_conn(host, now) {
+                Ok(conn) => {
+                    let (header, request) =
+                        crate::protocol2::metadata::build_metadata_request(correlation, &self.config.client_id, Some(&topic_strs));
+                    match __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_METADATA) {
+                        Ok(()) => {
+                            match __kp_get_response::<kafka_protocol::messages::MetadataResponse>(conn, crate::protocol2::API_VERSION_METADATA) {
+                                Ok(kp_resp) => {
+                                    return Ok(crate::protocol2::metadata::convert_metadata_response(kp_resp, correlation));
+                                }
+                                Err(e) => debug!(
+                                    "fetch_metadata_kp: failed to decode metadata from {}: {}",
+                                    host, e
+                                ),
+                            }
+                        }
+                        Err(e) => debug!(
+                            "fetch_metadata_kp: failed to request metadata from {}: {}",
+                            host, e
+                        ),
+                    }
+                }
+                Err(e) => {
+                    debug!("fetch_metadata_kp: failed to connect to {}: {}", host, e);
                 }
             }
         }
@@ -1836,6 +1885,53 @@ fn __get_response_size(conn: &mut network::KafkaConnection) -> Result<i32> {
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     i32::decode_new(&mut Cursor::new(&buf))
+}
+
+// ---------------------------------------------------------------------------
+// kafka-protocol transport functions (Phase 3+)
+// These use Encodable/Decodable traits from kafka_protocol with BytesMut/Bytes.
+
+fn __kp_send_request(
+    conn: &mut network::KafkaConnection,
+    header: &kafka_protocol::messages::RequestHeader,
+    body: &impl kafka_protocol::protocol::Encodable,
+    api_version: i16,
+) -> Result<()> {
+    use bytes::BytesMut;
+    use kafka_protocol::protocol::Encodable;
+
+    let mut header_buf = BytesMut::new();
+    header.encode(&mut header_buf, api_version).map_err(|_| Error::CodecError)?;
+
+    let mut body_buf = BytesMut::new();
+    body.encode(&mut body_buf, api_version).map_err(|_| Error::CodecError)?;
+
+    let total_len = (header_buf.len() + body_buf.len()) as i32;
+    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    out.extend_from_slice(&total_len.to_be_bytes());
+    out.extend_from_slice(&header_buf);
+    out.extend_from_slice(&body_buf);
+
+    trace!("__kp_send_request: sending {} bytes", out.len());
+    conn.send(&out)?;
+    Ok(())
+}
+
+fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
+    conn: &mut network::KafkaConnection,
+    api_version: i16,
+) -> Result<R> {
+    use bytes::Bytes;
+    use kafka_protocol::messages::ResponseHeader;
+    use kafka_protocol::protocol::Decodable;
+
+    let size = __get_response_size(conn)?;
+    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+
+    let mut bytes = Bytes::from(resp_bytes);
+    let _resp_header = ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::CodecError)?;
+
+    R::decode(&mut bytes, api_version).map_err(|_| Error::CodecError)
 }
 
 /// Suspends the calling thread for the configured "retry" time. This

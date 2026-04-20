@@ -17,10 +17,15 @@ byteorder = "1.5"
 crc-fast = "=1.9.0"
 fnv = "1.0.7"
 twox-hash = "2.1.2"
+bytes = "1.10"
+kafka-protocol = { version = "0.17", default-features = false, features = ["client"] }
+indexmap = "2"
 
 flate2 = { version = "1.1.9", optional = true }
 snap = { version = "1.1.1", optional = true }
 lz4_flex = { version = "0.11", optional = true, default-features = false, features = ["frame", "std"] }
+lz4 = { version = "1.24", optional = true }
+zstd = { version = "0.13", optional = true }
 chrono = { version = "0.4.44", optional = true }
 thiserror = "2.0.18"
 tracing = "0.1.44"
@@ -42,6 +47,8 @@ default = ["snappy", "gzip", "lz4", "security"]
 snappy = ["snap"]
 gzip = ["flate2"]
 lz4 = ["lz4_flex"]
+lz4_native = ["dep:lz4"]
+zstd = ["dep:zstd"]
 
 # TLS/Security features (rustls, default crypto: aws-lc-rs)
 security = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs", "rustls/aws-lc-rs"]
