@@ -40,9 +40,18 @@ mod state;
 // ~ re-export (only) certain types from the protocol::fetch module as
 // 'client::fetch'.
 pub mod fetch {
-    //! A representation of fetched messages from Kafka.
+    //! A representation of fetched messages from Kafka (legacy, borrowed types).
 
     pub use crate::protocol::fetch::{Data, Message, Partition, Response, Topic};
+}
+
+/// Owned fetch response types from the kafka-protocol adapter.
+/// These types own their data (no lifetimes) and are returned by
+/// `KafkaClient::fetch_messages_kp`.
+pub mod fetch_kp {
+    pub use crate::protocol2::fetch::{
+        OwnedData, OwnedFetchResponse, OwnedMessage, OwnedPartition, OwnedTopic,
+    };
 }
 
 const DEFAULT_CONNECTION_RW_TIMEOUT_SECS: u64 = 120;
@@ -1266,7 +1275,7 @@ impl KafkaClient {
     pub fn fetch_messages_kp<'a, I, J>(
         &mut self,
         input: I,
-    ) -> Result<Vec<crate::protocol2::fetch::OwnedFetchResponse>>
+    ) -> Result<Vec<fetch_kp::OwnedFetchResponse>>
     where
         J: AsRef<FetchPartition<'a>>,
         I: IntoIterator<Item = J>,
