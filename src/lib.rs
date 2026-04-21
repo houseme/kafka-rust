@@ -36,7 +36,6 @@
 
 pub mod client;
 mod client_internals;
-mod codecs;
 mod compression;
 pub mod consumer;
 pub mod error;

@@ -1,7 +1,7 @@
 use rustfs_kafka::client::{FetchPartition, KafkaClient};
 
 /// This program demonstrates the low level api for fetching messages.
-/// Please look at examles/consume.rs for an easier to use API.
+/// Please look at examples/consume.rs for an easier to use API.
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -34,26 +34,26 @@ fn main() {
         }
         Ok(resps) => {
             for resp in resps {
-                for t in resp.topics() {
-                    for p in t.partitions() {
+                for t in &resp.topics {
+                    for p in &t.partitions {
                         match p.data() {
                             Err(ref e) => {
-                                println!("partition error: {}:{}: {}", t.topic(), p.partition(), e)
+                                println!("partition error: {}:{}: {}", t.topic, p.partition, e)
                             }
                             Ok(data) => {
                                 println!(
                                     "topic: {} / partition: {} / latest available message \
                                           offset: {}",
-                                    t.topic(),
-                                    p.partition(),
-                                    data.highwatermark_offset()
+                                    t.topic,
+                                    p.partition,
+                                    data.highwatermark_offset
                                 );
-                                for msg in data.messages() {
+                                for msg in &data.messages {
                                     println!(
                                         "topic: {} / partition: {} / message.offset: {} / \
                                               message.len: {}",
-                                        t.topic(),
-                                        p.partition(),
+                                        t.topic,
+                                        p.partition,
                                         msg.offset,
                                         msg.value.len()
                                     );

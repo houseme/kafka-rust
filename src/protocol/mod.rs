@@ -1,17 +1,7 @@
-use std::io::{Read, Write};
 use std::mem;
 use std::time::Duration;
 
-use crate::codecs::{FromByte, ToByte};
 use crate::error::{Error, KafkaCode, Result};
-
-/// Macro to return Result<()> from multiple statements
-macro_rules! try_multi {
-    ($($input_expr:expr),*) => ({
-        $($input_expr?;)*
-        Ok(())
-    })
-}
 
 pub mod consumer;
 pub mod list_offset;
@@ -19,45 +9,14 @@ pub mod metadata;
 pub mod offset;
 pub mod produce;
 
-pub mod fetch;
-mod zreader;
-
-// ~ convenient re-exports for request/response types defined in the
-// submodules
 pub use self::consumer::{
-    GroupCoordinatorRequest, GroupCoordinatorResponse, OffsetCommitRequest, OffsetCommitResponse,
-    OffsetCommitVersion, OffsetFetchRequest, OffsetFetchResponse, OffsetFetchVersion,
+    GroupCoordinatorResponse, OffsetCommitResponse, OffsetFetchResponse,
     PartitionOffsetCommitResponse, PartitionOffsetFetchResponse,
     TopicPartitionOffsetCommitResponse, TopicPartitionOffsetFetchResponse,
 };
-pub use self::fetch::FetchRequest;
-pub use self::list_offset::{ListOffsetsRequest, ListOffsetsResponse};
-pub use self::metadata::{BrokerMetadata, MetadataRequest, MetadataResponse, PartitionMetadata, TopicMetadata};
-pub use self::offset::{OffsetRequest, OffsetResponse, PartitionOffsetResponse, TopicPartitionOffsetResponse};
-pub use self::produce::{PartitionProduceResponse, ProduceRequest, ProduceResponse, TopicPartitionProduceResponse};
-
-// --------------------------------------------------------------------
-
-const API_KEY_PRODUCE: i16 = 0;
-const API_KEY_FETCH: i16 = 1;
-const API_KEY_OFFSET: i16 = 2;
-const API_KEY_METADATA: i16 = 3;
-// 4-7 reserved for non-public kafka api services
-const API_KEY_OFFSET_COMMIT: i16 = 8;
-const API_KEY_OFFSET_FETCH: i16 = 9;
-const API_KEY_GROUP_COORDINATOR: i16 = 10;
-
-// the default version of Kafka API we are requesting
-const API_VERSION: i16 = 0;
-
-// --------------------------------------------------------------------
-
-/// Provides a way to parse the full raw response data into a
-/// particular response structure.
-pub trait ResponseParser {
-    type T;
-    fn parse(&self, response: Vec<u8>) -> Result<Self::T>;
-}
+pub use self::metadata::{BrokerMetadata, MetadataResponse, PartitionMetadata, TopicMetadata};
+pub use self::offset::{OffsetResponse, PartitionOffsetResponse, TopicPartitionOffsetResponse};
+pub use self::produce::{PartitionProduceResponse, ProduceResponse, TopicPartitionProduceResponse};
 
 // --------------------------------------------------------------------
 
@@ -82,67 +41,19 @@ fn test_kafka_code_from_protocol() {
     }
 
     assert!(KafkaCode::from_protocol(0).is_none());
-    assert_kafka_code!(
-        KafkaCode::OffsetOutOfRange,
-        KafkaCode::OffsetOutOfRange as i16
-    );
-    assert_kafka_code!(
-        KafkaCode::IllegalGeneration,
-        KafkaCode::IllegalGeneration as i16
-    );
-    assert_kafka_code!(
-        KafkaCode::UnsupportedVersion,
-        KafkaCode::UnsupportedVersion as i16
-    );
+    assert_kafka_code!(KafkaCode::OffsetOutOfRange, KafkaCode::OffsetOutOfRange as i16);
+    assert_kafka_code!(KafkaCode::IllegalGeneration, KafkaCode::IllegalGeneration as i16);
+    assert_kafka_code!(KafkaCode::UnsupportedVersion, KafkaCode::UnsupportedVersion as i16);
     assert_kafka_code!(KafkaCode::Unknown, KafkaCode::Unknown as i16);
-    // ~ test some un mapped non-zero codes; should all map to "unknown"
     assert_kafka_code!(KafkaCode::Unknown, i16::MAX);
     assert_kafka_code!(KafkaCode::Unknown, i16::MIN);
     assert_kafka_code!(KafkaCode::Unknown, -100);
     assert_kafka_code!(KafkaCode::Unknown, 100);
 }
 
-// a (sub-) module private method for error
 impl Error {
     pub(crate) fn from_protocol(n: i16) -> Option<Error> {
         KafkaCode::from_protocol(n).map(Error::Kafka)
-    }
-}
-
-// --------------------------------------------------------------------
-
-#[derive(Debug)]
-pub struct HeaderRequest<'a> {
-    pub api_key: i16,
-    pub api_version: i16,
-    pub correlation_id: i32,
-    pub client_id: &'a str,
-}
-
-impl<'a> HeaderRequest<'a> {
-    fn new(
-        api_key: i16,
-        api_version: i16,
-        correlation_id: i32,
-        client_id: &'a str,
-    ) -> HeaderRequest<'a> {
-        HeaderRequest {
-            api_key,
-            api_version,
-            correlation_id,
-            client_id,
-        }
-    }
-}
-
-impl ToByte for HeaderRequest<'_> {
-    fn encode<W: Write>(&self, buffer: &mut W) -> Result<()> {
-        try_multi!(
-            self.api_key.encode(buffer),
-            self.api_version.encode(buffer),
-            self.correlation_id.encode(buffer),
-            self.client_id.encode(buffer)
-        )
     }
 }
 
@@ -153,29 +64,8 @@ pub struct HeaderResponse {
     pub correlation: i32,
 }
 
-impl FromByte for HeaderResponse {
-    type R = HeaderResponse;
-
-    #[allow(unused_must_use)]
-    fn decode<T: Read>(&mut self, buffer: &mut T) -> Result<()> {
-        self.correlation.decode(buffer)
-    }
-}
-
 // --------------------------------------------------------------------
 
-pub fn to_crc(data: &[u8]) -> u32 {
-    to_crc_u64(data) as u32
-}
-
-pub fn to_crc_u64(data: &[u8]) -> u64 {
-    crc_fast::checksum(crc_fast::CrcAlgorithm::Crc32IsoHdlc, data)
-}
-
-// --------------------------------------------------------------------
-
-/// Safely converts a Duration into the number of milliseconds as an
-/// i32 as often required in the kafka protocol.
 pub fn to_millis_i32(d: Duration) -> Result<i32> {
     let m = d
         .as_secs()
