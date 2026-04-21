@@ -87,6 +87,16 @@ pub enum Error {
 
     #[error("Operation requires group id but no group was set")]
     UnsetGroupId,
+
+    /// An error from a broker request that preserves the request context.
+    /// Contains the broker host, API key name, and the underlying error.
+    #[error("Broker request to {broker} failed ({api_key}): {source}")]
+    BrokerRequestError {
+        broker: String,
+        api_key: &'static str,
+        #[source]
+        source: Box<Self>,
+    },
 }
 
 /// Various errors reported by a remote Kafka server.
@@ -206,4 +216,15 @@ pub enum KafkaCode {
     /// The version of API is not supported.
     UnsupportedVersion = 35,
     // CAUTION! When adding to this list, KafkaCode::from_protocol must be updated. If there's a better way, please open an issue for it!
+}
+
+impl Error {
+    /// Wraps this error with broker request context (broker host and API key name).
+    pub fn with_broker_context(self, broker: impl Into<String>, api_key: &'static str) -> Self {
+        Error::BrokerRequestError {
+            broker: broker.into(),
+            api_key,
+            source: Box::new(self),
+        }
+    }
 }

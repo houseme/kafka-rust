@@ -1292,15 +1292,17 @@ impl KafkaClient {
         let now = Instant::now();
         let mut res: HashMap<String, Vec<PartitionOffset>> = HashMap::with_capacity(n_topics);
         for (host, partitions) in broker_partitions {
-            let conn = self.conn_pool.get_conn(host, now)?;
+            let conn = self.conn_pool.get_conn(host, now)
+                .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
             let (header, request) = crate::protocol2::offset::build_list_offsets_request(
                 correlation, &config.client_id, &partitions,
             );
-            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_LIST_OFFSETS)?;
+            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_LIST_OFFSETS)
+                .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
             let kp_resp = __kp_get_response::<kafka_protocol::messages::ListOffsetsResponse>(
                 conn,
                 crate::protocol2::API_VERSION_LIST_OFFSETS,
-            )?;
+            ).map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
             let our_resp = crate::protocol2::offset::convert_list_offsets_response(kp_resp, correlation);
 
             for tp in our_resp.topic_partitions {
@@ -1468,7 +1470,8 @@ fn __fetch_messages_kp(
     let now = Instant::now();
     let mut res = Vec::with_capacity(broker_partitions.len());
     for (host, partitions) in broker_partitions {
-        let conn = conn_pool.get_conn(host, now)?;
+        let conn = conn_pool.get_conn(host, now)
+            .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let (header, request) = crate::protocol2::fetch::build_fetch_request(
             correlation_id,
             client_id,
@@ -1478,11 +1481,12 @@ fn __fetch_messages_kp(
             0x7fffffff, // max_bytes for the whole fetch request
             &partitions,
         );
-        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_FETCH)?;
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_FETCH)
+            .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::FetchResponse>(
             conn,
             crate::protocol2::API_VERSION_FETCH,
-        )?;
+        ).map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let owned = crate::protocol2::fetch::convert_fetch_response(kp_resp, correlation_id)?;
         res.push(owned);
     }
@@ -1504,7 +1508,8 @@ fn __produce_messages_kp(
     let now = Instant::now();
     if no_acks {
         for (host, msgs) in broker_msgs {
-            let conn = conn_pool.get_conn(host, now)?;
+            let conn = conn_pool.get_conn(host, now)
+                .map_err(|e| e.with_broker_context(host, "Produce"))?;
             let (header, request) = crate::protocol2::produce::build_produce_request(
                 correlation_id,
                 client_id,
@@ -1513,13 +1518,15 @@ fn __produce_messages_kp(
                 compression,
                 &msgs,
             );
-            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_PRODUCE)?;
+            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_PRODUCE)
+                .map_err(|e| e.with_broker_context(host, "Produce"))?;
         }
         Ok(vec![])
     } else {
         let mut res: Vec<ProduceConfirm> = vec![];
         for (host, msgs) in broker_msgs {
-            let conn = conn_pool.get_conn(host, now)?;
+            let conn = conn_pool.get_conn(host, now)
+                .map_err(|e| e.with_broker_context(host, "Produce"))?;
             let (header, request) = crate::protocol2::produce::build_produce_request(
                 correlation_id,
                 client_id,
@@ -1528,11 +1535,12 @@ fn __produce_messages_kp(
                 compression,
                 &msgs,
             );
-            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_PRODUCE)?;
+            __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_PRODUCE)
+                .map_err(|e| e.with_broker_context(host, "Produce"))?;
             let kp_resp = __kp_get_response::<kafka_protocol::messages::ProduceResponse>(
                 conn,
                 crate::protocol2::API_VERSION_PRODUCE,
-            )?;
+            ).map_err(|e| e.with_broker_context(host, "Produce"))?;
             let our_resp = crate::protocol2::produce::convert_produce_response(kp_resp, correlation_id);
             for tpo in our_resp.get_response() {
                 res.push(tpo);
@@ -1625,11 +1633,12 @@ fn __get_group_coordinator_kp<'a>(
             "get_group_coordinator_kp: asking for coordinator of '{}' on: {:?}",
             group, conn
         );
-        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_FIND_COORDINATOR)?;
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_FIND_COORDINATOR)
+            .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::FindCoordinatorResponse>(
             conn,
             crate::protocol2::API_VERSION_FIND_COORDINATOR,
-        )?;
+        ).map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
         let r = crate::protocol2::consumer::convert_find_coordinator_response(kp_resp, correlation_id);
         let retry_code = match r.error {
             0 => {
@@ -1680,7 +1689,8 @@ fn __commit_offsets_kp(
         let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
         debug!("commit_offsets_kp: sending request to: {}", host);
 
-        let conn = conn_pool.get_conn(host, now)?;
+        let conn = conn_pool.get_conn(host, now)
+            .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
         let (header, request) = crate::protocol2::consumer::build_offset_commit_request(
             correlation_id,
             client_id,
@@ -1690,11 +1700,12 @@ fn __commit_offsets_kp(
             -1, // retention_time_ms
             offsets,
         );
-        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_OFFSET_COMMIT)?;
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_OFFSET_COMMIT)
+            .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
             conn,
             crate::protocol2::API_VERSION_OFFSET_COMMIT,
-        )?;
+        ).map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
         let our_resp = crate::protocol2::consumer::convert_offset_commit_response(kp_resp, correlation_id);
 
         let mut retry_code = None;
@@ -1749,18 +1760,20 @@ fn __fetch_group_offsets_kp(
         let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
         debug!("fetch_group_offsets_kp: sending request to: {}", host);
 
-        let conn = conn_pool.get_conn(host, now)?;
+        let conn = conn_pool.get_conn(host, now)
+            .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
         let (header, request) = crate::protocol2::consumer::build_offset_fetch_request(
             correlation_id,
             client_id,
             group,
             partitions,
         );
-        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_OFFSET_FETCH)?;
+        __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_OFFSET_FETCH)
+            .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
             conn,
             crate::protocol2::API_VERSION_OFFSET_FETCH,
-        )?;
+        ).map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
         let our_resp = crate::protocol2::consumer::convert_offset_fetch_response(kp_resp, correlation_id);
 
         let mut retry_code = None;
