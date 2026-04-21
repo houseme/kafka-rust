@@ -1,9 +1,11 @@
 services:
   zookeeper:
     image: zookeeper:3.7.2
+    profiles:
+      - zk
     ports:
       - "2181:2181"
-  
+
   kafka:
     build:
       context: kafka-rust-image
@@ -12,8 +14,7 @@ services:
         scala_version: ${SCALA_VER}
     ports:
       - "9092:9092"
-    links:
-      - zookeeper
     environment:
       KAFKA_CREATE_TOPICS: kafka-rust-test:2:1,kafka-rust-test2:2:1
       KAFKA_CLIENT_SECURE: ${KAFKA_CLIENT_SECURE}
+      KAFKA_VERSION: ${KAFKA_VER}

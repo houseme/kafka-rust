@@ -7,7 +7,7 @@ fi
 start_timeout_exceeded=false
 count=0
 step=10
-while netstat -lnt | awk '$4 ~ /:'$KAFKA_PORT'$/ {exit 1}'; do
+while ! ss -lnt | grep -q ":${KAFKA_PORT}\b"; do
     echo "waiting for kafka to be ready"
     sleep $step;
     count=$(expr $count + $step)
