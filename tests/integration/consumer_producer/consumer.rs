@@ -6,8 +6,6 @@ use rustfs_kafka::producer::Record;
 /// Tests that consuming one message works
 #[test]
 fn test_consumer_poll() {
-    tracing_subscriber::fmt::try_init();
-
     // poll once to set a position in the topic
     let mut consumer = test_consumer();
     let mut messages = consumer.poll().unwrap();
@@ -47,8 +45,6 @@ fn test_consumer_poll() {
 /// Test Consumer::commit_messageset
 #[test]
 fn test_consumer_commit_messageset() {
-    tracing_subscriber::fmt::try_init();
-
     let mut consumer = test_consumer();
 
     // get the offsets at the beginning of the test
@@ -129,8 +125,6 @@ fn test_consumer_commit_messageset() {
 /// message sets, nothing is committed.
 #[test]
 fn test_consumer_commit_messageset_no_consumes() {
-    tracing_subscriber::fmt::try_init();
-
     let mut consumer = test_consumer();
 
     // get the offsets at the beginning of the test

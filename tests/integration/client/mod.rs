@@ -12,7 +12,7 @@ use rustfs_kafka::client::{
     CommitOffset, FetchOffset, FetchPartition, PartitionOffset, ProduceMessage, RequiredAcks,
 };
 
-fn flatten_fetched_messages(resps: &Vec<Response>) -> Vec<(&str, i32, &[u8])> {
+fn flatten_fetched_messages(resps: &[Response]) -> Vec<(&str, i32, &[u8])> {
     let mut messages = Vec::new();
 
     for resp in resps {
@@ -34,7 +34,7 @@ fn test_kafka_client_load_metadata() {
     let mut client = new_kafka_client();
     let client_id = "test-id".to_string();
     client.set_client_id(client_id.clone());
-    client.load_metadata_all(); // why unwrap??
+    client.load_metadata_all().expect("failed to load metadata");
 
     let topics = client.topics();
 
@@ -74,7 +74,6 @@ fn test_kafka_client_load_metadata() {
 /// * KafkaClient::fetch_offsets
 #[test]
 fn test_produce_fetch_messages() {
-    tracing_subscriber::fmt::try_init();
     let mut client = new_ready_kafka_client();
     let topics = [TEST_TOPIC_NAME, TEST_TOPIC_NAME_2];
     let init_latest_offsets = client.fetch_offsets(&topics, FetchOffset::Latest).unwrap();
@@ -166,7 +165,6 @@ fn test_produce_fetch_messages() {
 
 #[test]
 fn test_commit_offset() {
-    tracing_subscriber::fmt::try_init();
     let mut client = new_ready_kafka_client();
 
     for &(partition, offset) in &[
@@ -235,7 +233,9 @@ fn test_commit_offsets() {
     ];
 
     for commit_pair in &commits {
-        client.commit_offsets(TEST_GROUP_NAME, commit_pair); // why unwrap ??
+        client
+            .commit_offsets(TEST_GROUP_NAME, commit_pair)
+            .expect("failed to commit offsets");
 
         let partition_offsets: HashSet<PartitionOffset> = client
             .fetch_group_topic_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME)

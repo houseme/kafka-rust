@@ -4,19 +4,19 @@ extern crate rustfs_kafka;
 #[cfg(feature = "integration_tests")]
 extern crate rand;
 
-#[allow(clippy::needless_borrow)]
-#[allow(unused_must_use)]
 #[cfg(feature = "integration_tests")]
 mod integration {
-    use std::collections::HashMap;
-    use std::sync::LazyLock;
-
     use tracing::debug;
 
     use rustfs_kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig};
 
     mod client;
     mod consumer_producer;
+
+    #[ctor::ctor]
+    fn init_tracing() {
+        let _ = tracing_subscriber::fmt::try_init();
+    }
 
     pub const LOCAL_KAFKA_BOOTSTRAP_HOST: &str = "localhost:9092";
     pub const TEST_TOPIC_NAME: &str = "kafka-rust-test";
@@ -25,31 +25,23 @@ mod integration {
     pub const TEST_TOPIC_PARTITIONS: [i32; 2] = [0, 1];
     pub const KAFKA_CONSUMER_OFFSETS_TOPIC_NAME: &str = "__consumer_offsets";
 
-    // env vars
     const KAFKA_CLIENT_SECURE: &str = "KAFKA_CLIENT_SECURE";
     const KAFKA_CLIENT_COMPRESSION: &str = "KAFKA_CLIENT_COMPRESSION";
 
-    static COMPRESSIONS: LazyLock<HashMap<&'static str, Compression>> = LazyLock::new(|| {
-        let mut m = HashMap::new();
-
-        m.insert("", Compression::NONE);
-        m.insert("none", Compression::NONE);
-        m.insert("NONE", Compression::NONE);
-
-        m.insert("snappy", Compression::SNAPPY);
-        m.insert("SNAPPY", Compression::SNAPPY);
-
-        m.insert("gzip", Compression::GZIP);
-        m.insert("GZIP", Compression::GZIP);
-
-        m
-    });
+    fn parse_compression(s: &str) -> Compression {
+        match s.to_uppercase().as_str() {
+            "" | "NONE" => Compression::NONE,
+            "GZIP" => Compression::GZIP,
+            "SNAPPY" => Compression::SNAPPY,
+            other => panic!("Unknown compression type: {other}"),
+        }
+    }
 
     /// Constructs a Kafka client for the integration tests, and loads
     /// its metadata so it is ready to use.
     pub(crate) fn new_ready_kafka_client() -> KafkaClient {
         let mut client = new_kafka_client();
-        client.load_metadata_all();
+        client.load_metadata_all().expect("failed to load metadata");
         client
     }
 
@@ -65,10 +57,8 @@ mod integration {
 
         client.set_group_offset_storage(Some(GroupOffsetStorage::Kafka));
 
-        let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or(String::from(""));
-        let compression = COMPRESSIONS.get(&*compression).unwrap();
-
-        client.set_compression(*compression);
+        let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
+        client.set_compression(parse_compression(&compression));
         debug!("Constructing client: {:?}", client);
 
         client
@@ -77,18 +67,16 @@ mod integration {
     /// Returns a new security config if the `KAFKA_CLIENT_SECURE`
     /// environment variable is set to a non-empty string.
     pub(crate) fn new_security_config() -> Option<SecurityConfig> {
-        match std::env::var_os(KAFKA_CLIENT_SECURE) {
-            Some(ref val) if val.as_os_str() != "" => (),
-            _ => return None,
+        let val = std::env::var(KAFKA_CLIENT_SECURE).ok()?;
+        if val.is_empty() {
+            return None;
         }
-
         Some(get_security_config())
     }
 
     /// If the `KAFKA_CLIENT_SECURE` environment variable is set, return a
     /// `SecurityConfig`.
     pub(crate) fn get_security_config() -> SecurityConfig {
-        // Use rustls-based SecurityConfig
         SecurityConfig::new().with_hostname_verification(false)
     }
 }

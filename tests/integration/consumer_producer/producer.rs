@@ -15,7 +15,6 @@ fn test_producer_send() {
 /// Sending to a non-existent topic should fail.
 #[test]
 fn test_producer_send_non_existent_topic() {
-    tracing_subscriber::fmt::try_init();
     let mut producer = test_producer();
 
     let error_code = match producer

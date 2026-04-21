@@ -67,7 +67,7 @@ pub fn test_consumer_with_client(mut client: KafkaClient) -> Consumer {
         }
     }
 
-    client.load_metadata_all(); // Why unwrap ?
+    client.load_metadata_all().expect("failed to load metadata");
     let partition_offsets: HashSet<PartitionOffset> = client
         .fetch_group_topic_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME)
         .unwrap()
@@ -89,7 +89,9 @@ fn send_random_messages(producer: &mut Producer, topic: &str, num_messages: u32)
 
     for _ in 0..num_messages {
         rng.fill_bytes(&mut random_message_buf);
-        producer.send(&Record::from_value(topic, &random_message_buf[..])); // why unwrap ?
+        producer
+            .send(&Record::from_value(topic, &random_message_buf[..]))
+            .expect("failed to send random message");
     }
 }
 
