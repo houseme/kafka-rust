@@ -183,6 +183,35 @@ impl ApiVersionCache {
             .get(host)
             .map_or(fallback, |v| v.negotiate(api_key, fallback))
     }
+
+    /// Returns the negotiated version for the given API key,
+    /// falling back to a safe default if no version information is available.
+    pub fn get_or_fallback(&self, host: &str, api_key: i16) -> i16 {
+        let fallback = Self::fallback_version(api_key);
+        self.negotiate(host, api_key, fallback)
+    }
+
+    /// Returns the fallback (minimum supported) version for an API key.
+    #[must_use]
+    pub fn fallback_version(api_key: i16) -> i16 {
+        match api_key {
+            api_key::PRODUCE => API_VERSION_PRODUCE,
+            api_key::FETCH => API_VERSION_FETCH,
+            api_key::METADATA => API_VERSION_METADATA,
+            api_key::LIST_OFFSETS => API_VERSION_LIST_OFFSETS,
+            api_key::FIND_COORDINATOR => API_VERSION_FIND_COORDINATOR,
+            api_key::OFFSET_COMMIT => API_VERSION_OFFSET_COMMIT,
+            api_key::OFFSET_FETCH => API_VERSION_OFFSET_FETCH,
+            api_key::API_VERSIONS => 0,
+            _ => 0,
+        }
+    }
+
+    /// Returns true if no broker versions have been cached.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.broker_versions.is_empty()
+    }
 }
 
 /// Resolve the effective API version for a given API key using cached negotiations.
@@ -348,5 +377,46 @@ mod tests {
         assert_eq!(v.find_coordinator, d.find_coordinator);
         assert_eq!(v.offset_commit, d.offset_commit);
         assert_eq!(v.offset_fetch, d.offset_fetch);
+    }
+
+    #[test]
+    fn fallback_version_known_apis() {
+        assert_eq!(ApiVersionCache::fallback_version(api_key::PRODUCE), API_VERSION_PRODUCE);
+        assert_eq!(ApiVersionCache::fallback_version(api_key::FETCH), API_VERSION_FETCH);
+        assert_eq!(ApiVersionCache::fallback_version(api_key::METADATA), API_VERSION_METADATA);
+        assert_eq!(ApiVersionCache::fallback_version(api_key::LIST_OFFSETS), API_VERSION_LIST_OFFSETS);
+        assert_eq!(ApiVersionCache::fallback_version(api_key::FIND_COORDINATOR), API_VERSION_FIND_COORDINATOR);
+        assert_eq!(ApiVersionCache::fallback_version(api_key::OFFSET_COMMIT), API_VERSION_OFFSET_COMMIT);
+        assert_eq!(ApiVersionCache::fallback_version(api_key::OFFSET_FETCH), API_VERSION_OFFSET_FETCH);
+    }
+
+    #[test]
+    fn fallback_version_unknown_api() {
+        assert_eq!(ApiVersionCache::fallback_version(99), 0);
+        assert_eq!(ApiVersionCache::fallback_version(-1), 0);
+    }
+
+    #[test]
+    fn get_or_fallback_empty_cache_returns_fallback() {
+        let cache = ApiVersionCache::new();
+        assert_eq!(cache.get_or_fallback("unknown:9092", api_key::PRODUCE), API_VERSION_PRODUCE);
+    }
+
+    #[test]
+    fn get_or_fallback_populated_cache_negotiates() {
+        use kafka_protocol::messages::api_versions_response::ApiVersion;
+        let mut cache = ApiVersionCache::new();
+        let resp = kafka_protocol::messages::ApiVersionsResponse::default().with_api_keys(vec![
+            ApiVersion::default()
+                .with_api_key(api_key::PRODUCE)
+                .with_min_version(3)
+                .with_max_version(8),
+        ]);
+        let bv = BrokerApiVersions::from_response(resp);
+        cache.insert("broker1:9092".to_string(), bv);
+
+        // Should negotiate within range, using fallback if API key unknown
+        assert_eq!(cache.get_or_fallback("broker1:9092", api_key::PRODUCE), API_VERSION_PRODUCE);
+        assert_eq!(cache.get_or_fallback("broker1:9092", api_key::FETCH), API_VERSION_FETCH);
     }
 }
