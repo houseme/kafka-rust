@@ -1259,6 +1259,11 @@ impl KafkaClient {
     // =====================================================================
 
     /// Fetch offsets using the kafka-protocol adapter (`ListOffsets` v1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if an internal invariant of the response parsing is violated
+    /// (this indicates a protocol-level bug).
     pub fn fetch_offsets_kp<T: AsRef<str>>(
         &mut self,
         topics: &[T],

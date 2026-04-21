@@ -149,6 +149,11 @@ impl Consumer {
     }
 
     /// Polls for the next available message data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fetching messages from Kafka fails or if
+    /// the response cannot be decoded.
     pub fn poll(&mut self) -> Result<MessageSets> {
         let (n, resps) = self.fetch_messages();
         let resps = resps?;
@@ -195,6 +200,9 @@ impl Consumer {
     ///     }
     /// }
     /// ```
+    /// # Errors
+    ///
+    /// Returns an error if the topic or partition is not being consumed.
     pub fn seek(&mut self, topic: &str, partition: i32, offset: i64) -> Result<()> {
         let topic_ref = self.state.topic_ref(topic);
         match topic_ref {
@@ -245,8 +253,10 @@ impl Consumer {
                 let topic = state.topic_name(tp.topic_ref);
                 FetchPartition::new(topic, tp.partition, s.offset).with_max_bytes(s.max_bytes)
             }).collect();
+            #[allow(clippy::cast_possible_truncation)] // partition count won't exceed u32
+            let num_partitions = state.fetch_offsets.len() as u32;
             (
-                state.fetch_offsets.len() as u32,
+                num_partitions,
                 client.fetch_messages_kp(reqs.iter()),
             )
         }
@@ -356,6 +366,10 @@ impl Consumer {
 
     /// Marks the message at the specified offset in the specified
     /// topic partition as consumed by the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is not being consumed.
     pub fn consume_message(&mut self, topic: &str, partition: i32, offset: i64) -> Result<()> {
         let topic_ref = self
             .state
@@ -384,6 +398,10 @@ impl Consumer {
     /// A convenience method to mark the given message set consumed as a
     /// whole by the caller. This is equivalent to marking the last
     /// message of the given set as consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic of the message set is not being consumed.
     pub fn consume_messageset(&mut self, msgs: &MessageSet) -> Result<()> {
         if let Some(last) = msgs.messages.last() {
             self.consume_message(&msgs.topic, msgs.partition, last.offset)
@@ -394,6 +412,11 @@ impl Consumer {
 
     /// Persists the so-far "marked as consumed" messages (on behalf
     /// of this consumer's group for the underlying topic - if any.)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no group is configured or if committing
+    /// offsets to Kafka fails.
     pub fn commit_consumed(&mut self) -> Result<()> {
         if self.config.group.is_empty() {
             return Err(Error::UnsetGroupId);

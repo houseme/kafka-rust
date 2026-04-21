@@ -72,22 +72,22 @@ const UNKNOWN_BROKER_INDEX: u32 = u32::MAX;
 // constant and/or treat it conditionally.
 #[derive(Debug, Copy, Clone)]
 pub struct BrokerRef {
-    _index: u32,
+    index: u32,
 }
 
 impl BrokerRef {
     // ~ private constructor on purpose
     fn new(index: u32) -> Self {
-        BrokerRef { _index: index }
+        BrokerRef { index }
     }
 
     fn index(self) -> usize {
-        self._index as usize
+        self.index as usize
     }
 
     fn set(&mut self, other: BrokerRef) {
-        if self._index != other._index {
-            self._index = other._index;
+        if self.index != other.index {
+            self.index = other.index;
         }
     }
 
@@ -126,6 +126,8 @@ impl TopicPartitions {
     }
 
     pub fn partition(&self, partition_id: i32) -> Option<&TopicPartition> {
+        // partition IDs from Kafka are always non-negative
+        #[allow(clippy::cast_sign_loss)]
         self.partitions.get(partition_id as usize)
     }
 
@@ -302,6 +304,8 @@ impl ClientState {
             };
             // ~ sync the partitions vector with the new information
             for partition in t.partitions {
+                // partition IDs from Kafka are always non-negative
+                #[allow(clippy::cast_sign_loss)]
                 let tp = &mut tps[partition.id as usize];
                 if let Some(bref) = brokers.get(&partition.leader) {
                     tp.broker.set(*bref);
@@ -344,6 +348,8 @@ impl ClientState {
                         host: broker_host,
                     });
                     // ~ track the pushed broker's index
+                    // partition counts won't exceed u32::MAX
+                    #[allow(clippy::cast_possible_truncation)]
                     e.insert(BrokerRef::new(new_index as u32));
                 }
             }
@@ -391,22 +397,25 @@ impl ClientState {
                         group_host, broker.host, broker.node_id
                     );
                 }
-                broker_ref._index = i;
+                broker_ref.index = i;
                 break;
             }
         }
         // ~ if not found, add it to the list of known brokers
-        if broker_ref._index == UNKNOWN_BROKER_INDEX {
-            broker_ref._index = self.brokers.len() as u32;
+        if broker_ref.index == UNKNOWN_BROKER_INDEX {
+            // broker counts won't exceed u32::MAX
+            #[allow(clippy::cast_possible_truncation)]
+            let idx = self.brokers.len() as u32;
+            broker_ref.index = idx;
             self.brokers.push(Broker {
                 node_id: gc.broker_id,
                 host: group_host,
             });
         }
         if let Some(br) = self.group_coordinators.get_mut(group)
-            && br._index != broker_ref._index
+            && br.index != broker_ref.index
         {
-            br._index = broker_ref._index;
+            br.index = broker_ref.index;
         }
         self.group_coordinators.insert(group.to_owned(), broker_ref);
         &self.brokers[broker_ref.index()].host

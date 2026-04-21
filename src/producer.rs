@@ -263,6 +263,16 @@ impl Producer {
 
 impl<P: Partitioner> Producer<P> {
     /// Synchronously send the specified message to Kafka.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the response contains an unexpected number of confirms
+    /// (this indicates a protocol-level bug).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if producing the message to Kafka fails or if
+    /// the broker reports an error for the target partition.
     pub fn send<K, V>(&mut self, rec: &Record<K, V>) -> Result<()>
     where
         K: AsBytes,
@@ -292,6 +302,11 @@ impl<P: Partitioner> Producer<P> {
     /// Synchronously send all of the specified messages to Kafka. To validate
     /// that all of the specified records have been successfully delivered,
     /// inspection of the offsets on the returned confirms is necessary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if producing messages to Kafka fails or if
+    /// any target topic/partition is unknown.
     pub fn send_all<K, V>(&mut self, recs: &[Record<'_, K, V>]) -> Result<Vec<ProduceConfirm>>
     where
         K: AsBytes,
@@ -331,11 +346,13 @@ impl<P> State<P> {
         let mut ids = HashMap::with_capacity(ts.len());
         for t in ts {
             let ps = t.partitions();
+            #[allow(clippy::cast_possible_truncation)] // partition count won't exceed u32
+            let num_all_partitions = ps.len() as u32;
             ids.insert(
                 t.name().to_owned(),
                 Partitions {
                     available_ids: ps.available_ids(),
-                    num_all_partitions: ps.len() as u32,
+                    num_all_partitions,
                 },
             );
         }
@@ -488,6 +505,10 @@ impl<P> Builder<P> {
 
     /// Finally creates/builds a new producer based on the so far
     /// supplied settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the Kafka client or loading metadata fails.
     pub fn create(self) -> Result<Producer<P>> {
         // ~ create the client if necessary
         let (mut client, need_metadata) = match self.client {
@@ -554,6 +575,7 @@ impl Partitions {
     /// merely a convenience method. See `Partitions::available_ids`.
     #[inline]
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn num_available(&self) -> u32 {
         self.available_ids.len() as u32
     }
@@ -607,23 +629,23 @@ pub type DefaultHasher = XxHash32;
 /// For every message it proceeds as follows:
 ///
 /// - If the messages contains a non-negative partition value it
-/// leaves the message untouched.  This will cause `Producer` to try
-/// to send the message to exactly that partition to.
+///   leaves the message untouched. This will cause `Producer` to try
+///   to send the message to exactly that partition to.
 ///
 /// - Otherwise, if the message has an "unspecified" `partition` -
-/// this is, it has a negative partition value - and a specified key,
-/// `DefaultPartitioner` will compute a hash from the key using the
-/// underlying hasher and take `hash % num_all_partitions` to derive
-/// the partition to send the message to.  This will consistently
-/// cause messages with the same key to be sent to the same partition.
+///   this is, it has a negative partition value - and a specified key,
+///   `DefaultPartitioner` will compute a hash from the key using the
+///   underlying hasher and take `hash % num_all_partitions` to derive
+///   the partition to send the message to. This will consistently
+///   cause messages with the same key to be sent to the same partition.
 ///
 /// - Otherwise - a message with an "unspecified" `partition` and no
-/// key - `DefaultPartitioner` will "randomly" pick one from the
-/// "available" partitions trying to distribute the messages across
-/// the multiple partitions.  In particular, it tries to distribute
-/// such messages across the "available" partitions in a round robin
-/// fashion.  "Available" it this context means partitions with a
-/// known leader.
+///   key - `DefaultPartitioner` will "randomly" pick one from the
+///   "available" partitions trying to distribute the messages across
+///   the multiple partitions. In particular, it tries to distribute
+///   such messages across the "available" partitions in a round robin
+///   fashion. "Available" it this context means partitions with a
+///   known leader.
 ///
 /// This behavior may not suffice every workload.  If your application
 /// is dependent on a particular distribution scheme different from
@@ -690,7 +712,7 @@ impl<H: BuildHasher> Partitioner for DefaultPartitioner<H> {
             // partitioning by key.  other behaviour - if desired
             // - can be implemented in custom, user provided
             // partitioners.
-            let hash = h.finish() as u32;
+            let hash = h.finish() as u32; // hash truncated to u32 is acceptable for partitioning
             // if `num_partitions == u32::MAX` this can lead to a
             // negative partition ... such a partition count is very
             // unlikely though
@@ -700,7 +722,7 @@ impl<H: BuildHasher> Partitioner for DefaultPartitioner<H> {
             // available ones.
             let avail = partitions.available_ids();
             if !avail.is_empty() {
-                rec.partition = avail[self.cntr as usize % avail.len()];
+                rec.partition = avail[self.cntr as usize % avail.len()]; // cntr is u32, usize is wider
                 // ~ update internal state so that the next time we choose
                 // a different partition
                 self.cntr = self.cntr.wrapping_add(1);
@@ -740,7 +762,7 @@ mod default_partitioner_tests {
             partition: -1,
         };
         p.partition(Topics::new(topics), &mut msg);
-        let num_partitions = topics.get(topic).unwrap().num_all_partitions as i32;
+        let num_partitions = topics.get(topic).unwrap().num_all() as i32;
         assert!(msg.partition >= 0 && msg.partition < num_partitions);
         msg.partition
     }

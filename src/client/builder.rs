@@ -159,6 +159,10 @@ impl KafkaClientBuilder {
     }
 
     /// Builds the [`KafkaClient`] with the configured settings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `fetch_max_wait_time_millis` exceeds `i32::MAX` milliseconds.
     #[must_use]
     pub fn build(self) -> KafkaClient {
         let config = ClientConfig {
