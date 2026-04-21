@@ -208,8 +208,16 @@ impl Connections {
 
     pub fn get_conn(&mut self, host: &str, now: Instant) -> Result<&mut KafkaConnection> {
         if let Some(conn) = self.conns.get_mut(host) {
-            if now.duration_since(conn.last_checkout) >= self.config.idle_timeout {
-                debug!("Idle timeout reached: {:?}", conn.item);
+            let needs_reconnect =
+                now.duration_since(conn.last_checkout) >= self.config.idle_timeout
+                    || conn.item.is_terminated();
+            if needs_reconnect {
+                let reason = if conn.item.is_terminated() {
+                    "connection terminated"
+                } else {
+                    "idle timeout"
+                };
+                debug!("Reconnecting ({}) to: {:?}", reason, conn.item);
                 let new_conn = self.config.new_conn(self.state.next_conn_id(), host)?;
                 let _ = conn.item.shutdown();
                 conn.item = new_conn;
@@ -228,8 +236,16 @@ impl Connections {
 
     pub fn get_conn_any(&mut self, now: Instant) -> Option<&mut KafkaConnection> {
         for (host, conn) in &mut self.conns {
-            if now.duration_since(conn.last_checkout) >= self.config.idle_timeout {
-                debug!("Idle timeout reached: {:?}", conn.item);
+            let needs_reconnect =
+                now.duration_since(conn.last_checkout) >= self.config.idle_timeout
+                    || conn.item.is_terminated();
+            if needs_reconnect {
+                let reason = if conn.item.is_terminated() {
+                    "connection terminated"
+                } else {
+                    "idle timeout"
+                };
+                debug!("Reconnecting ({}) to: {:?}", reason, conn.item);
                 let new_conn_id = self.state.next_conn_id();
                 let new_conn = match self.config.new_conn(new_conn_id, host.as_str()) {
                     Ok(new_conn) => {
@@ -237,7 +253,7 @@ impl Connections {
                         new_conn
                     }
                     Err(e) => {
-                        warn!("Failed to establish connection to {}: {:?}", host, e);
+                        warn!("Failed to reconnect to {}: {:?}", host, e);
                         continue;
                     }
                 };
@@ -351,15 +367,27 @@ pub struct KafkaConnection {
     id: u32,
     host: String,
     stream: KafkaStream,
+    state: ConnectionState,
+}
+
+/// Connection health state for detecting broken connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionState {
+    /// Connection is healthy and ready for I/O.
+    Connected,
+    /// Connection was terminated (e.g., by broker, timeout, or error).
+    /// Next operation should trigger a reconnection.
+    Terminated,
 }
 
 impl fmt::Debug for KafkaConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "KafkaConnection {{ id: {}, secured: {}, host: \"{}\" }}",
+            "KafkaConnection {{ id: {}, secured: {}, state: {:?}, host: \"{}\" }}",
             self.id,
             self.stream.is_secured(),
+            self.state,
             self.host
         )
     }
@@ -379,13 +407,23 @@ fn configure_tcp_socket(socket: &socket2::Socket) -> std::io::Result<()> {
 
 impl KafkaConnection {
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
-        let r = self.stream.write(msg).map_err(From::from);
+        let r = self.stream.write(msg).map_err(|e| {
+            self.state = ConnectionState::Terminated;
+            From::from(e)
+        });
         trace!("Sent {} bytes to: {:?} => {:?}", msg.len(), self, r);
         r
     }
 
+    fn is_terminated(&self) -> bool {
+        self.state == ConnectionState::Terminated
+    }
+
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
-        let r = self.stream.read_exact(buf).map_err(From::from);
+        let r = self.stream.read_exact(buf).map_err(|e| {
+            self.state = ConnectionState::Terminated;
+            From::from(e)
+        });
         trace!("Read {} bytes from: {:?} => {:?}", buf.len(), self, r);
         r
     }
@@ -397,6 +435,7 @@ impl KafkaConnection {
     }
 
     fn shutdown(&mut self) -> Result<()> {
+        self.state = ConnectionState::Terminated;
         let r = self.stream.shutdown(Shutdown::Both);
         debug!("Shut down: {:?} => {:?}", self, r);
         r.map_err(From::from)
@@ -414,6 +453,7 @@ impl KafkaConnection {
             id,
             host: host.to_owned(),
             stream,
+            state: ConnectionState::Connected,
         })
     }
 
