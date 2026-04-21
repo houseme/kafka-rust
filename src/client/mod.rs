@@ -369,47 +369,47 @@ impl KafkaClient {
 
     #[inline]
     pub fn set_fetch_max_wait_time(&mut self, max_wait_time: Duration) -> Result<()> {
-        self.config.fetch_max_wait_time = protocol::to_millis_i32(max_wait_time)?;
+        self.config.fetch.max_wait_time = protocol::to_millis_i32(max_wait_time)?;
         Ok(())
     }
 
     #[inline]
     #[must_use]
     pub fn fetch_max_wait_time(&self) -> Duration {
-        Duration::from_millis(self.config.fetch_max_wait_time as u64)
+        Duration::from_millis(self.config.fetch.max_wait_time as u64)
     }
 
     #[inline]
     pub fn set_fetch_min_bytes(&mut self, min_bytes: i32) {
-        self.config.fetch_min_bytes = min_bytes;
+        self.config.fetch.min_bytes = min_bytes;
     }
 
     #[inline]
     #[must_use]
     pub fn fetch_min_bytes(&self) -> i32 {
-        self.config.fetch_min_bytes
+        self.config.fetch.min_bytes
     }
 
     #[inline]
     pub fn set_fetch_max_bytes_per_partition(&mut self, max_bytes: i32) {
-        self.config.fetch_max_bytes_per_partition = max_bytes;
+        self.config.fetch.max_bytes_per_partition = max_bytes;
     }
 
     #[inline]
     #[must_use]
     pub fn fetch_max_bytes_per_partition(&self) -> i32 {
-        self.config.fetch_max_bytes_per_partition
+        self.config.fetch.max_bytes_per_partition
     }
 
     #[inline]
     pub fn set_fetch_crc_validation(&mut self, validate_crc: bool) {
-        self.config.fetch_crc_validation = validate_crc;
+        self.config.fetch.crc_validation = validate_crc;
     }
 
     #[inline]
     #[must_use]
     pub fn fetch_crc_validation(&self) -> bool {
-        self.config.fetch_crc_validation
+        self.config.fetch.crc_validation
     }
 
     #[inline]
@@ -424,23 +424,23 @@ impl KafkaClient {
 
     #[inline]
     pub fn set_retry_backoff_time(&mut self, time: Duration) {
-        self.config.retry_backoff_time = time;
+        self.config.retry.backoff = time;
     }
 
     #[must_use]
     pub fn retry_backoff_time(&self) -> Duration {
-        self.config.retry_backoff_time
+        self.config.retry.backoff
     }
 
     #[inline]
     pub fn set_retry_max_attempts(&mut self, attempts: u32) {
-        self.config.retry_max_attempts = attempts;
+        self.config.retry.max_attempts = attempts;
     }
 
     #[inline]
     #[must_use]
     pub fn retry_max_attempts(&self) -> u32 {
-        self.config.retry_max_attempts
+        self.config.retry.max_attempts
     }
 
     #[inline]

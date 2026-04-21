@@ -31,7 +31,7 @@ where
                 if inp.max_bytes > 0 {
                     inp.max_bytes
                 } else {
-                    config.fetch_max_bytes_per_partition
+                    config.fetch_max_bytes_per_partition()
                 },
             ));
         }
@@ -41,8 +41,8 @@ where
         conn_pool,
         correlation,
         &config.client_id,
-        config.fetch_max_wait_time,
-        config.fetch_min_bytes,
+        config.fetch_max_wait_time(),
+        config.fetch_min_bytes(),
         broker_partitions,
     )
 }

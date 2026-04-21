@@ -126,7 +126,7 @@ fn __get_group_coordinator_kp<'a>(
                 return Err(Error::Kafka(KafkaCode::Unknown));
             }
         };
-        if attempt < config.retry_max_attempts {
+        if attempt < config.retry_max_attempts() {
             debug!(
                 "get_group_coordinator_kp: will retry request (c: {}) due to: {:?}",
                 correlation_id, retry_code
@@ -196,7 +196,7 @@ fn __commit_offsets_kp(
         }
         match retry_code {
             Some(e) => {
-                if attempt < config.retry_max_attempts {
+                if attempt < config.retry_max_attempts() {
                     debug!(
                         "commit_offsets_kp: will retry request (c: {}) due to: {:?}",
                         correlation_id, e
@@ -274,7 +274,7 @@ fn __fetch_group_offsets_kp(
 
         match retry_code {
             Some(e) => {
-                if attempt < config.retry_max_attempts {
+                if attempt < config.retry_max_attempts() {
                     debug!(
                         "fetch_group_offsets_kp: will retry request (c: {}) due to: {:?}",
                         correlation_id, e
@@ -339,5 +339,5 @@ fn __get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32
 }
 
 fn __retry_sleep(cfg: &ClientConfig) {
-    std::thread::sleep(cfg.retry_backoff_time);
+    std::thread::sleep(cfg.retry_backoff_time());
 }

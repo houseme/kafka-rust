@@ -169,32 +169,40 @@ impl KafkaClientBuilder {
             client_id: self.client_id,
             hosts: self.hosts,
             compression: self.compression,
-            fetch_max_wait_time: crate::protocol::to_millis_i32(Duration::from_millis(
-                self.fetch_max_wait_time_millis,
-            ))
-            .expect("invalid fetch-max-wait-time"),
-            fetch_min_bytes: self.fetch_min_bytes,
-            fetch_max_bytes_per_partition: self.fetch_max_bytes_per_partition,
-            fetch_crc_validation: self.fetch_crc_validation,
+            fetch: super::config::FetchConfig {
+                max_wait_time: crate::protocol::to_millis_i32(Duration::from_millis(
+                    self.fetch_max_wait_time_millis,
+                ))
+                .expect("invalid fetch-max-wait-time"),
+                min_bytes: self.fetch_min_bytes,
+                max_bytes_per_partition: self.fetch_max_bytes_per_partition,
+                crc_validation: self.fetch_crc_validation,
+            },
+            retry: super::config::RetryConfig {
+                backoff: Duration::from_millis(self.retry_backoff_time_millis),
+                max_attempts: self.retry_max_attempts,
+            },
+            connection: super::config::ConnectionConfig {
+                rw_timeout: Duration::from_secs(self.conn_rw_timeout_secs),
+                idle_timeout: Duration::from_millis(self.conn_idle_timeout_millis),
+            },
             offset_storage: self.offset_storage,
-            retry_backoff_time: Duration::from_millis(self.retry_backoff_time_millis),
-            retry_max_attempts: self.retry_max_attempts,
             producer_timestamp: self.producer_timestamp,
         };
 
-        let rw_timeout = match self.conn_rw_timeout_secs {
-            0 => None,
-            n => Some(Duration::from_secs(n)),
+        let rw_timeout = if self.conn_rw_timeout_secs == 0 {
+            None
+        } else {
+            Some(config.connection.rw_timeout)
         };
-        let idle_timeout = Duration::from_millis(self.conn_idle_timeout_millis);
 
         #[cfg(not(feature = "security"))]
-        let conn_pool = Connections::new(rw_timeout, idle_timeout);
+        let conn_pool = Connections::new(rw_timeout, config.connection.idle_timeout);
 
         #[cfg(feature = "security")]
         let conn_pool = match self.security {
-            Some(security) => Connections::new_with_security(rw_timeout, idle_timeout, Some(security)),
-            None => Connections::new(rw_timeout, idle_timeout),
+            Some(security) => Connections::new_with_security(rw_timeout, config.connection.idle_timeout, Some(security)),
+            None => Connections::new(rw_timeout, config.connection.idle_timeout),
         };
 
         KafkaClient {
