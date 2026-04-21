@@ -237,7 +237,7 @@ impl KafkaConnection {
 
     pub(crate) fn shutdown(&mut self) -> Result<()> {
         self.state = ConnectionState::Terminated;
-        let r = self.stream.shutdown(Shutdown::Both);
+        let r = StreamOps::shutdown(&mut self.stream, Shutdown::Both);
         debug!("Shut down: {:?} => {:?}", self, r);
         r.map_err(From::from)
     }
@@ -248,8 +248,8 @@ impl KafkaConnection {
         host: &str,
         rw_timeout: Option<Duration>,
     ) -> Result<KafkaConnection> {
-        stream.set_read_timeout(rw_timeout)?;
-        stream.set_write_timeout(rw_timeout)?;
+        StreamOps::set_read_timeout(&mut stream, rw_timeout)?;
+        StreamOps::set_write_timeout(&mut stream, rw_timeout)?;
         Ok(KafkaConnection {
             id,
             host: host.to_owned(),

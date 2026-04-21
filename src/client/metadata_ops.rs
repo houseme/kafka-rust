@@ -28,6 +28,7 @@ pub fn load_metadata<T: AsRef<str>>(client: &mut KafkaClient, topics: &[T]) -> R
 }
 
 pub fn load_metadata_kp<T: AsRef<str>>(client: &mut KafkaClient, topics: &[T]) -> Result<()> {
+    #[cfg(feature = "metrics")]
     let start = Instant::now();
     let resp = fetch_metadata_kp(client, topics)?;
     client.state.update_metadata(resp);

@@ -13,9 +13,6 @@ pub use self::pool::Connections;
 #[cfg(feature = "security")]
 pub use self::connection::SecurityConfig;
 
-#[cfg(not(feature = "security"))]
-pub type SecurityConfig = ();
-
 /// A wrapper to track the last checkout time of a pooled item.
 pub(crate) struct Pooled<T> {
     pub item: T,

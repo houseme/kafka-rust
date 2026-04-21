@@ -44,6 +44,8 @@
 pub use crate::compression::Compression;
 #[cfg(feature = "producer_timestamp")]
 pub use crate::protocol::produce::ProducerTimestamp;
+pub use crate::protocol::create_topics::{CreateTopicsResponseData, TopicConfig, TopicResult};
+pub use crate::protocol::delete_topics::{DeleteTopicResult, DeleteTopicsResponseData};
 pub use crate::utils::PartitionOffset;
 use crate::utils::TimestampedPartitionOffset;
 use std::collections::hash_map::HashMap;
@@ -565,6 +567,84 @@ impl KafkaClient {
         offset: FetchOffset,
     ) -> Result<HashMap<String, Vec<PartitionOffset>>> {
         metadata_ops::fetch_offsets_kp(self, topics, offset)
+    }
+
+    // -- topic administration --
+
+    /// Creates one or more topics.
+    ///
+    /// The request is attempted against configured brokers until one succeeds.
+    pub fn create_topics(
+        &mut self,
+        topics: &[TopicConfig],
+        timeout: Duration,
+    ) -> Result<CreateTopicsResponseData> {
+        let correlation_id = self.state.next_correlation_id();
+        let timeout_ms = protocol::to_millis_i32(timeout)?;
+        let now = std::time::Instant::now();
+        let hosts = self.config.hosts.clone();
+        let mut last_err: Option<Error> = None;
+
+        for host in hosts {
+            let conn = match self.conn_pool.get_conn(&host, now) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    last_err = Some(e.with_broker_context(&host, "CreateTopics"));
+                    continue;
+                }
+            };
+
+            match crate::protocol::create_topics::fetch_create_topics(
+                conn,
+                correlation_id,
+                &self.config.client_id,
+                topics,
+                timeout_ms,
+            ) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => last_err = Some(e.with_broker_context(&host, "CreateTopics")),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(Error::no_host_reachable))
+    }
+
+    /// Deletes one or more topics by name.
+    ///
+    /// The request is attempted against configured brokers until one succeeds.
+    pub fn delete_topics(
+        &mut self,
+        topic_names: &[&str],
+        timeout: Duration,
+    ) -> Result<DeleteTopicsResponseData> {
+        let correlation_id = self.state.next_correlation_id();
+        let timeout_ms = protocol::to_millis_i32(timeout)?;
+        let now = std::time::Instant::now();
+        let hosts = self.config.hosts.clone();
+        let mut last_err: Option<Error> = None;
+
+        for host in hosts {
+            let conn = match self.conn_pool.get_conn(&host, now) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    last_err = Some(e.with_broker_context(&host, "DeleteTopics"));
+                    continue;
+                }
+            };
+
+            match crate::protocol::delete_topics::fetch_delete_topics(
+                conn,
+                correlation_id,
+                &self.config.client_id,
+                topic_names,
+                timeout_ms,
+            ) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => last_err = Some(e.with_broker_context(&host, "DeleteTopics")),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(Error::no_host_reachable))
     }
 
     // -- fetch operations (delegated to fetch_ops.rs) --

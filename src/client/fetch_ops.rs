@@ -26,6 +26,7 @@ where
     J: AsRef<FetchPartition<'a>>,
     I: IntoIterator<Item = J>,
 {
+    #[cfg(feature = "metrics")]
     let start = Instant::now();
 
     let mut broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>> = HashMap::new();

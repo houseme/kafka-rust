@@ -30,6 +30,7 @@ where
     J: AsRef<ProduceMessage<'a, 'b>>,
     I: IntoIterator<Item = J>,
 {
+    #[cfg(feature = "metrics")]
     let start = Instant::now();
     let correlation = state.next_correlation_id();
 
@@ -45,12 +46,17 @@ where
             &'b [(String, Vec<u8>)],
         )>,
     > = HashMap::new();
+    #[cfg(feature = "metrics")]
     let mut total_bytes: usize = 0;
+    #[cfg(feature = "metrics")]
     let mut message_count: usize = 0;
     for msg in messages {
         let msg = msg.as_ref();
-        total_bytes += msg.value.map(|v| v.len()).unwrap_or(0);
-        message_count += 1;
+        #[cfg(feature = "metrics")]
+        {
+            total_bytes += msg.value.map(|v| v.len()).unwrap_or(0);
+            message_count += 1;
+        }
         let broker = match state.find_broker(msg.topic, msg.partition) {
             None => {
                 #[cfg(feature = "metrics")]

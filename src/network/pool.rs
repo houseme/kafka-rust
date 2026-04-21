@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use super::connection::KafkaConnection;
-use super::{Pooled, SecurityConfig};
+use super::Pooled;
+#[cfg(feature = "security")]
+use super::SecurityConfig;
 
 #[derive(Debug)]
 pub struct PoolConfig {
