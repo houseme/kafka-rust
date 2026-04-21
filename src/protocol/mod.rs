@@ -5,6 +5,8 @@
 
 pub mod api_versions;
 pub mod consumer;
+pub mod create_topics;
+pub mod delete_topics;
 pub mod fetch;
 pub mod init_producer_id;
 pub mod metadata;
