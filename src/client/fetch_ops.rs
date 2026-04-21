@@ -1,0 +1,82 @@
+use std::collections::HashMap;
+use std::time::Instant;
+
+use crate::error::Result;
+
+use super::config::ClientConfig;
+use super::network::Connections;
+use super::state::ClientState;
+use super::transport;
+use super::FetchPartition;
+
+pub fn fetch_messages_kp<'a, I, J>(
+    conn_pool: &mut Connections,
+    state: &mut ClientState,
+    config: &ClientConfig,
+    correlation: i32,
+    input: I,
+) -> Result<Vec<super::fetch_kp::OwnedFetchResponse>>
+where
+    J: AsRef<FetchPartition<'a>>,
+    I: IntoIterator<Item = J>,
+{
+    let mut broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>> = HashMap::new();
+    for inp in input {
+        let inp = inp.as_ref();
+        if let Some(broker) = state.find_broker(inp.topic, inp.partition) {
+            broker_partitions.entry(broker).or_default().push((
+                inp.topic,
+                inp.partition,
+                inp.offset,
+                if inp.max_bytes > 0 {
+                    inp.max_bytes
+                } else {
+                    config.fetch_max_bytes_per_partition
+                },
+            ));
+        }
+    }
+
+    __fetch_messages_kp(
+        conn_pool,
+        correlation,
+        &config.client_id,
+        config.fetch_max_wait_time,
+        config.fetch_min_bytes,
+        broker_partitions,
+    )
+}
+
+fn __fetch_messages_kp(
+    conn_pool: &mut Connections,
+    correlation_id: i32,
+    client_id: &str,
+    max_wait_ms: i32,
+    min_bytes: i32,
+    broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>>,
+) -> Result<Vec<crate::protocol::fetch::OwnedFetchResponse>> {
+    let now = Instant::now();
+    let mut res = Vec::with_capacity(broker_partitions.len());
+    for (host, partitions) in broker_partitions {
+        let conn = conn_pool.get_conn(host, now)
+            .map_err(|e| e.with_broker_context(host, "Fetch"))?;
+        let (header, request) = crate::protocol::fetch::build_fetch_request(
+            correlation_id,
+            client_id,
+            -1,
+            max_wait_ms,
+            min_bytes,
+            0x7fff_ffff,
+            &partitions,
+        );
+        transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_FETCH)
+            .map_err(|e| e.with_broker_context(host, "Fetch"))?;
+        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::FetchResponse>(
+            conn,
+            crate::protocol::API_VERSION_FETCH,
+        ).map_err(|e| e.with_broker_context(host, "Fetch"))?;
+        let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
+        res.push(owned);
+    }
+    Ok(res)
+}
