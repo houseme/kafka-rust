@@ -767,6 +767,27 @@ impl KafkaClient {
         )
         .map(|mut m| m.remove(topic).unwrap_or_default())
     }
+
+    /// Returns the host of the group coordinator for the given group, if known.
+    #[must_use]
+    pub fn group_coordinator_host(&self, group: &str) -> Option<String> {
+        self.state
+            .group_coordinator(group)
+            .map(|s| s.to_owned())
+    }
+
+    /// Gets the next correlation ID for request tracking.
+    pub fn next_correlation_id(&mut self) -> i32 {
+        self.state.next_correlation_id()
+    }
+
+    /// Gets a mutable connection to the specified host.
+    pub fn get_conn_mut(
+        &mut self,
+        host: &str,
+    ) -> Result<&mut network::KafkaConnection> {
+        self.conn_pool.get_conn(host, std::time::Instant::now())
+    }
 }
 
 impl KafkaClientInternals for KafkaClient {

@@ -78,10 +78,16 @@ use self::state::TopicPartition;
 pub use crate::client::FetchOffset;
 pub use crate::client::GroupOffsetStorage;
 pub use crate::protocol::fetch::OwnedMessage as Message;
+pub use assignor::{PartitionAssignor, RangeAssignor, RoundRobinAssignor};
+pub use group_coordinator::GroupCoordinator;
+pub use rebalance::{RebalanceHandler, RebalanceListener};
 
+mod assignor;
 mod assignment;
 mod builder;
 mod config;
+mod group_coordinator;
+mod rebalance;
 mod state;
 
 /// The default value for `Builder::with_retry_max_bytes_limit`.
