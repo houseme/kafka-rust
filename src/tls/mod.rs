@@ -5,9 +5,7 @@
 use std::io;
 use std::net::TcpStream;
 
-#[cfg(feature = "security")]
 pub mod rustls_connector;
-#[cfg(feature = "security")]
 pub use rustls_connector::RustlsConnector;
 
 /// Configuration for TLS connections

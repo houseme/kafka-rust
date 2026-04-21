@@ -143,6 +143,7 @@ impl From<Arc<Self>> for Error {
                 Self::Connection(ConnectionError::Io(e)) => {
                     Self::Connection(ConnectionError::Io(io::Error::new(e.kind(), e.to_string())))
                 }
+                #[cfg(feature = "security")]
                 Self::Connection(ConnectionError::Tls(s)) => {
                     Self::Connection(ConnectionError::Tls(s.clone()))
                 }

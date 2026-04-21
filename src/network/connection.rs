@@ -5,10 +5,8 @@ use std::time::Duration;
 use tracing::debug;
 
 use crate::error::Result;
-use crate::tls::{TlsConfig, TlsStream};
-
 #[cfg(feature = "security")]
-use crate::tls::RustlsConnector;
+use crate::tls::{RustlsConnector, TlsConfig, TlsStream};
 
 // --------------------------------------------------------------------
 
@@ -100,15 +98,15 @@ impl StreamOps for KafkaStream {
     }
 
     fn set_read_timeout(&mut self, dur: Option<Duration>) -> std::io::Result<()> {
-        self.set_read_timeout(dur)
+        TcpStream::set_read_timeout(self, dur)
     }
 
     fn set_write_timeout(&mut self, dur: Option<Duration>) -> std::io::Result<()> {
-        self.set_write_timeout(dur)
+        TcpStream::set_write_timeout(self, dur)
     }
 
     fn shutdown(&mut self, how: Shutdown) -> std::io::Result<()> {
-        self.shutdown(how)
+        TcpStream::shutdown(self, how)
     }
 }
 
