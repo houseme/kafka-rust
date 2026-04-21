@@ -7,6 +7,37 @@
 //! consumer to only specific topic partitions as demonstrated in the
 //! following example.
 //!
+//! # Features
+//!
+//! - **Automatic offset management** with configurable storage (Kafka/Zookeeper)
+//! - **Pause/Resume** support for individual partitions
+//! - **Seek** to specific offsets within consumed partitions
+//! - **Group-based consumption** with offset commit tracking
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+//!
+//! let mut consumer =
+//!    Consumer::from_hosts(vec!("localhost:9092".to_owned()))
+//!       .with_topic_partitions("my-topic".to_owned(), &[0, 1])
+//!       .with_fallback_offset(FetchOffset::Earliest)
+//!       .with_group("my-group".to_owned())
+//!       .with_offset_storage(Some(GroupOffsetStorage::Kafka))
+//!       .create()
+//!       .unwrap();
+//! loop {
+//!   for ms in consumer.poll().unwrap().iter() {
+//!     for m in ms.messages() {
+//!       println!("{:?}", m);
+//!     }
+//!     consumer.consume_messageset(&ms);
+//!   }
+//!   consumer.commit_consumed().unwrap();
+//! }
+//! ```
+//!
 //! # Example
 //! ```no_run
 //! use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};

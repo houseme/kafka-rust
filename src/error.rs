@@ -1,4 +1,23 @@
-//! Error struct and methods
+//! Error types and error handling utilities.
+//!
+//! This module provides the main [`Error`] enum, sub-error types for each
+//! layer ([`ConnectionError`], [`ProtocolError`], [`ConsumerError`]), and
+//! the [`KafkaCode`] enum for Kafka server error codes.
+//!
+//! # Retriable Errors
+//!
+//! Use [`Error::is_retriable()`] to determine if an error can be resolved
+//! by retrying. Retriable conditions include:
+//! - `LeaderNotAvailable`, `NotLeaderForPartition`
+//! - `GroupLoadInProgress`, `GroupCoordinatorNotAvailable`
+//! - `NetworkException`, `RequestTimedOut`
+//! - Connection I/O errors and timeouts
+//!
+//! # Broker Context
+//!
+//! Errors from broker operations can be enriched with context using
+//! [`Error::with_broker_context()`], which captures the broker host and
+//! API key for improved debuggability.
 
 use std::time::Duration;
 use std::{io, result, sync::Arc};

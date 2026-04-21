@@ -3,6 +3,42 @@
 //!
 //! The entry point into this module is `KafkaClient` obtained by a
 //! call to `KafkaClient::new()`.
+//!
+//! `KafkaClient` is a synchronous, general-purpose Kafka client supporting:
+//!
+//! - **Message production** via `produce_messages()`
+//! - **Message consumption** via `fetch_messages()`
+//! - **Metadata queries** via `load_metadata_all()` / `load_metadata()`
+//! - **Offset management** via `fetch_offsets()` / `commit_offsets()`
+//! - **Topic management** via `create_topics()` / `delete_topics()`
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use rustfs_kafka::client::KafkaClient;
+//!
+//! let mut client = KafkaClient::builder()
+//!     .with_hosts(vec!["localhost:9092".to_owned()])
+//!     .with_client_id("my-app".to_owned())
+//!     .build();
+//! client.load_metadata_all().unwrap();
+//! ```
+//!
+//! # Security
+//!
+//! Use `KafkaClient::new_secure()` or `KafkaClient::builder().with_security()`
+//! for TLS-encrypted connections:
+//!
+//! ```no_run
+//! use rustfs_kafka::client::{KafkaClient, SecurityConfig};
+//!
+//! let mut client = KafkaClient::new_secure(
+//!     vec!["localhost:9093".to_owned()],
+//!     SecurityConfig::new()
+//!         .with_ca_cert("ca.pem".to_owned()),
+//! );
+//! client.load_metadata_all().unwrap();
+//! ```
 
 // pub re-exports
 pub use crate::compression::Compression;
