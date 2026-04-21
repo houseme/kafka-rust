@@ -28,7 +28,7 @@ impl Assignment {
 
 /// A "pointer" to an assignment stored in `Config`.
 #[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
-pub struct AssignmentRef(u32);
+pub struct AssignmentRef(usize);
 
 /// A set of assignments.
 #[derive(Debug)]
@@ -43,14 +43,14 @@ impl Assignments {
         self.0
             .binary_search_by(|x| x.topic.as_str().cmp(topic))
             .ok()
-            .map(|i| AssignmentRef(i as u32))
+            .map(AssignmentRef)
     }
 }
 
 impl Index<AssignmentRef> for Assignments {
     type Output = Assignment;
     fn index(&self, index: AssignmentRef) -> &Self::Output {
-        &self.0[index.0 as usize]
+        &self.0[index.0]
     }
 }
 

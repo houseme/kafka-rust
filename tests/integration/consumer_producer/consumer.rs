@@ -66,8 +66,10 @@ fn test_consumer_commit_messageset() {
     );
 
     // send some messages to the topic
-    const NUM_MESSAGES: i64 = 100;
-    send_random_messages(&mut test_producer(), TEST_TOPIC_NAME, NUM_MESSAGES as u32);
+    const NUM_MESSAGES_I64: i64 = 100;
+    const NUM_MESSAGES_U32: u32 = 100;
+    const NUM_MESSAGES_USIZE: usize = 100;
+    send_random_messages(&mut test_producer(), TEST_TOPIC_NAME, NUM_MESSAGES_U32);
 
     let mut num_messages = 0;
 
@@ -80,13 +82,13 @@ fn test_consumer_commit_messageset() {
 
         consumer.commit_consumed().unwrap();
 
-        if num_messages >= (NUM_MESSAGES as usize) {
+        if num_messages >= NUM_MESSAGES_USIZE {
             break 'read;
         }
     }
 
     assert_eq!(
-        NUM_MESSAGES as usize, num_messages,
+        NUM_MESSAGES_USIZE, num_messages,
         "wrong number of messages"
     );
 
@@ -104,7 +106,7 @@ fn test_consumer_commit_messageset() {
     let num_new_messages_committed = diff_group_offsets(&start_offsets, &latest_offsets);
 
     assert_eq!(
-        NUM_MESSAGES, num_new_messages_committed,
+        NUM_MESSAGES_I64, num_new_messages_committed,
         "wrong number of messages committed"
     );
 
@@ -146,8 +148,9 @@ fn test_consumer_commit_messageset_no_consumes() {
     );
 
     // send some messages to the topic
-    const NUM_MESSAGES: i64 = 100;
-    send_random_messages(&mut test_producer(), TEST_TOPIC_NAME, NUM_MESSAGES as u32);
+    const NUM_MESSAGES_U32: u32 = 100;
+    const NUM_MESSAGES_USIZE: usize = 100;
+    send_random_messages(&mut test_producer(), TEST_TOPIC_NAME, NUM_MESSAGES_U32);
 
     let mut num_messages = 0;
 
@@ -162,13 +165,13 @@ fn test_consumer_commit_messageset_no_consumes() {
 
         consumer.commit_consumed().unwrap();
 
-        if num_messages >= (NUM_MESSAGES as usize) {
+        if num_messages >= NUM_MESSAGES_USIZE {
             break 'read;
         }
     }
 
     assert_eq!(
-        NUM_MESSAGES as usize, num_messages,
+        NUM_MESSAGES_USIZE, num_messages,
         "wrong number of messages"
     );
 

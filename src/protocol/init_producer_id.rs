@@ -21,7 +21,7 @@ pub struct InitProducerIdResponseData {
 }
 
 impl InitProducerIdResponseData {
-    pub fn from_response(resp: InitProducerIdResponse) -> Self {
+    pub fn from_response(resp: &InitProducerIdResponse) -> Self {
         Self {
             producer_id: i64::from(resp.producer_id),
             producer_epoch: resp.producer_epoch,
@@ -61,8 +61,9 @@ pub fn fetch_init_producer_id(
     req.encode(&mut body_buf, version)
         .map_err(|_| Error::codec())?;
 
-    let total_len = (header_buf.len() + body_buf.len()) as i32;
-    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
+    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
+    let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(&body_buf);
@@ -74,13 +75,13 @@ pub fn fetch_init_producer_id(
         conn.read_exact(&mut buf)?;
         i32::from_be_bytes(buf)
     };
-    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
     let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
 
     let kp_resp =
         InitProducerIdResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
-    Ok(InitProducerIdResponseData::from_response(kp_resp))
+    Ok(InitProducerIdResponseData::from_response(&kp_resp))
 }
 
 #[cfg(test)]
@@ -93,7 +94,7 @@ mod tests {
             .with_producer_id(kafka_protocol::messages::ProducerId(12345))
             .with_producer_epoch(1)
             .with_error_code(0);
-        let data = InitProducerIdResponseData::from_response(resp);
+        let data = InitProducerIdResponseData::from_response(&resp);
         assert_eq!(data.producer_id, 12345);
         assert_eq!(data.producer_epoch, 1);
         assert_eq!(data.error_code, 0);

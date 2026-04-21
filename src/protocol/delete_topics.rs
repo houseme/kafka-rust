@@ -25,7 +25,8 @@ pub struct DeleteTopicsResponseData {
 }
 
 fn encode_string(buf: &mut BytesMut, s: &str) {
-    let len = s.len() as i16;
+    let len = crate::protocol::usize_to_i16(s.len())
+        .expect("Kafka string length must fit in i16 for protocol encoding");
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(s.as_bytes());
 }
@@ -34,7 +35,7 @@ fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
     if bytes.len() < 2 {
         return Err(Error::codec());
     }
-    let len = i16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+    let len = crate::protocol::non_negative_i16_to_usize(i16::from_be_bytes([bytes[0], bytes[1]]))?;
     bytes.advance(2);
     if bytes.len() < len {
         return Err(Error::codec());
@@ -55,7 +56,7 @@ pub fn build_delete_topics_request(
 
     let mut body = BytesMut::new();
     // topics array length
-    body.extend_from_slice(&(topic_names.len() as i32).to_be_bytes());
+    body.extend_from_slice(&crate::protocol::usize_to_i32(topic_names.len())?.to_be_bytes());
     for name in topic_names {
         encode_string(&mut body, name);
         // tagged fields (empty)
@@ -77,8 +78,9 @@ pub fn build_delete_topics_request(
         .encode(&mut header_buf, version)
         .map_err(|_| Error::codec())?;
 
-    let total_len = (header_buf.len() + body.len()) as i32;
-    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body.len())?;
+    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
+    let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(&body);
@@ -105,7 +107,7 @@ pub fn fetch_delete_topics(
         conn.read_exact(&mut buf)?;
         i32::from_be_bytes(buf)
     };
-    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
 
     let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
@@ -120,7 +122,9 @@ pub fn fetch_delete_topics(
     if bytes.len() < 4 {
         return Err(Error::codec());
     }
-    let num_results = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let num_results = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+    ]))?;
     bytes.advance(4);
 
     let mut results = Vec::with_capacity(num_results);

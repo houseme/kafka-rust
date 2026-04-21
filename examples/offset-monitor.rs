@@ -30,13 +30,13 @@ fn main() {
         Err(e) => abort!(e),
     };
 
-    if let Err(e) = run(cfg) {
+    if let Err(e) = run(&cfg) {
         abort!(e);
     }
 }
 
 #[allow(clippy::disallowed_methods)]
-fn run(cfg: Config) -> Result<()> {
+fn run(cfg: &Config) -> Result<()> {
     let mut client = KafkaClient::new(cfg.brokers.clone());
     client.set_group_offset_storage(Some(cfg.offset_storage));
     client.load_metadata_all()?;
@@ -65,7 +65,7 @@ fn run(cfg: Config) -> Result<()> {
         Some(partitions) => partitions.len(),
     };
     let mut state = State::new(num_partitions, cfg.committed_not_consumed);
-    let mut printer = Printer::new(stdout(), &cfg);
+    let mut printer = Printer::new(stdout(), cfg);
     printer.print_head(num_partitions)?;
 
     // ~ initialize the state
@@ -122,9 +122,11 @@ impl State {
         let latest = client.fetch_topic_offsets(topic, FetchOffset::Latest)?;
 
         for l in latest {
+            let partition = usize::try_from(l.partition)
+                .map_err(|_| anyhow!("negative topic partition id: {}", l.partition))?;
             let off = self
                 .offsets
-                .get_mut(l.partition as usize)
+                .get_mut(partition)
                 .expect("[topic offset] non-existent partition");
             off.prev_latest = off.curr_latest;
             off.curr_latest = l.offset;
@@ -134,9 +136,11 @@ impl State {
             // ~ get the current group offsets
             let groups = client.fetch_group_topic_offset(group, topic)?;
             for g in groups {
+                let partition = usize::try_from(g.partition)
+                    .map_err(|_| anyhow!("negative group partition id: {}", g.partition))?;
                 let off = self
                     .offsets
-                    .get_mut(g.partition as usize)
+                    .get_mut(partition)
                     .expect("[group offset] non-existent partition");
 
                 // ~ it's quite likely that we fetched group offsets

@@ -91,8 +91,28 @@ pub fn to_millis_i32(d: Duration) -> Result<i32> {
     if m > i32::MAX as u64 {
         Err(Error::invalid_duration())
     } else {
-        Ok(m as i32)
+        i32::try_from(m).map_err(|_| Error::invalid_duration())
     }
+}
+
+pub(crate) fn usize_to_i16(value: usize) -> Result<i16> {
+    i16::try_from(value).map_err(|_| Error::codec())
+}
+
+pub(crate) fn usize_to_i32(value: usize) -> Result<i32> {
+    i32::try_from(value).map_err(|_| Error::codec())
+}
+
+pub(crate) fn non_negative_i16_to_usize(value: i16) -> Result<usize> {
+    usize::try_from(value).map_err(|_| Error::codec())
+}
+
+pub(crate) fn non_negative_i32_to_usize(value: i32) -> Result<usize> {
+    usize::try_from(value).map_err(|_| Error::codec())
+}
+
+pub(crate) fn non_negative_i32_to_u64(value: i32) -> Result<u64> {
+    u64::try_from(value).map_err(|_| Error::codec())
 }
 
 #[test]

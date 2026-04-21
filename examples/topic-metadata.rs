@@ -85,7 +85,11 @@ fn dump_metadata(cfg: Config) -> Result<(), String> {
             }
 
             for offset in offsets {
-                offs[offset.partition as usize].latest = offset.offset;
+                if let Ok(partition) = usize::try_from(offset.partition)
+                    && let Some(entry) = offs.get_mut(partition)
+                {
+                    entry.latest = offset.offset;
+                }
             }
 
             m.insert(topic, offs);
@@ -98,7 +102,11 @@ fn dump_metadata(cfg: Config) -> Result<(), String> {
         for (topic, offsets) in offsets {
             let offs = m.get_mut(&topic).expect("unknown topic");
             for offset in offsets {
-                offs[offset.partition as usize].earliest = offset.offset;
+                if let Ok(partition) = usize::try_from(offset.partition)
+                    && let Some(entry) = offs.get_mut(partition)
+                {
+                    entry.earliest = offset.offset;
+                }
             }
         }
 
@@ -168,8 +176,10 @@ fn dump_metadata(cfg: Config) -> Result<(), String> {
                     if cfg.topic_separators && ti != 0 && pi == 0 {
                         out_buf.push('\n');
                     }
+                    let partition_id =
+                        i32::try_from(pi).expect("partition index must fit in i32 for Kafka");
                     let (leader_id, leader_host) = tmd
-                        .partition(pi as i32)
+                        .partition(partition_id)
                         .expect("unknown topic partition metadata")
                         .leader()
                         .map(|b| (b.id(), b.host()))

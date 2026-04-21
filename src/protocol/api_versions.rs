@@ -108,8 +108,9 @@ pub fn fetch_api_versions(
         .encode(&mut body_buf, API_VERSIONS_REQUEST_VERSION)
         .map_err(|_| Error::codec())?;
 
-    let total_len = (header_buf.len() + body_buf.len()) as i32;
-    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
+    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
+    let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(&body_buf);
@@ -121,7 +122,7 @@ pub fn fetch_api_versions(
         conn.read_exact(&mut buf)?;
         i32::from_be_bytes(buf)
     };
-    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
     let _resp_header = ResponseHeader::decode(&mut bytes, API_VERSIONS_REQUEST_VERSION)
         .map_err(|_| Error::codec())?;

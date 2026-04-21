@@ -408,7 +408,8 @@ fn decode_member_subscription_topics(metadata: &[u8]) -> Option<Vec<String>> {
     }
     i += 4;
 
-    let mut topics = Vec::with_capacity(topic_count as usize);
+    let capacity = usize::try_from(topic_count).ok()?;
+    let mut topics = Vec::with_capacity(capacity);
     for _ in 0..topic_count {
         if i + 2 > metadata.len() {
             return None;
@@ -418,7 +419,7 @@ fn decode_member_subscription_topics(metadata: &[u8]) -> Option<Vec<String>> {
         if len < 0 {
             return None;
         }
-        let len = len as usize;
+        let len = usize::try_from(len).ok()?;
         if i + len > metadata.len() {
             return None;
         }

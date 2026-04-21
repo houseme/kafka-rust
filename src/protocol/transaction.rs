@@ -22,8 +22,8 @@ pub const API_VERSION_ADD_PARTITIONS_TO_TXN: i16 = 2;
 // --------------------------------------------------------------------
 
 fn encode_string(buf: &mut BytesMut, s: &str) {
-    #[allow(clippy::cast_possible_truncation)]
-    let len = s.len() as i16;
+    let len = crate::protocol::usize_to_i16(s.len())
+        .expect("Kafka string length must fit in i16 for protocol encoding");
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(s.as_bytes());
 }
@@ -32,7 +32,7 @@ fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
     if bytes.len() < 2 {
         return Err(Error::codec());
     }
-    let len = i16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+    let len = crate::protocol::non_negative_i16_to_usize(i16::from_be_bytes([bytes[0], bytes[1]]))?;
     bytes.advance(2);
     if bytes.len() < len {
         return Err(Error::codec());
@@ -48,8 +48,9 @@ fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<
         .encode(&mut header_buf, api_version)
         .map_err(|_| Error::codec())?;
 
-    let total_len = (header_buf.len() + body.len()) as i32;
-    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body.len())?;
+    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
+    let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(body);
@@ -61,7 +62,7 @@ fn read_response(conn: &mut KafkaConnection, api_version: i16) -> Result<bytes::
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     let size = i32::from_be_bytes(buf);
-    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
     let _header = ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
     Ok(bytes)
@@ -194,10 +195,10 @@ pub fn build_add_partitions_to_txn_request(
     body.extend_from_slice(&producer_epoch.to_be_bytes());
 
     // partitions array
-    body.extend_from_slice(&(partitions.len() as i32).to_be_bytes());
+    body.extend_from_slice(&crate::protocol::usize_to_i32(partitions.len())?.to_be_bytes());
     for tp in partitions {
         encode_string(&mut body, &tp.topic);
-        body.extend_from_slice(&(tp.partitions.len() as i32).to_be_bytes());
+        body.extend_from_slice(&crate::protocol::usize_to_i32(tp.partitions.len())?.to_be_bytes());
         for &p in &tp.partitions {
             body.extend_from_slice(&p.to_be_bytes());
         }
@@ -256,7 +257,9 @@ pub fn fetch_add_partitions_to_txn(
     let num_results = if bytes.len() < 4 {
         return Err(Error::codec());
     } else {
-        let v = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3],
+        ]))?;
         bytes.advance(4);
         v
     };

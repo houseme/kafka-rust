@@ -121,8 +121,10 @@ fn get_group_coordinator<'a>(
             crate::protocol::API_VERSION_FIND_COORDINATOR,
         )
         .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
-        let r =
-            crate::protocol::consumer::convert_find_coordinator_response(kp_resp, correlation_id);
+        let r = crate::protocol::consumer::convert_find_coordinator_response(
+            &kp_resp,
+            correlation_id,
+        );
         let retry_code = match r.error {
             0 => {
                 let gc = protocol::consumer::GroupCoordinatorResponse {
@@ -348,8 +350,9 @@ fn kp_send_request(
     body.encode(&mut body_buf, api_version)
         .map_err(|_| Error::codec())?;
 
-    let total_len = (header_buf.len() + body_buf.len()) as i32;
-    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
+    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
+    let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(&body_buf);
@@ -367,7 +370,7 @@ fn kp_get_response<R: kafka_protocol::protocol::Decodable>(
     use kafka_protocol::protocol::Decodable;
 
     let size = get_response_size(conn)?;
-    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
 
     let mut bytes = Bytes::from(resp_bytes);
     let _resp_header =

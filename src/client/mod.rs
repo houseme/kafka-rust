@@ -423,7 +423,8 @@ impl KafkaClient {
     #[inline]
     #[must_use]
     pub fn fetch_max_wait_time(&self) -> Duration {
-        Duration::from_millis(self.config.fetch.max_wait_time as u64)
+        let millis = u64::try_from(self.config.fetch.max_wait_time).unwrap_or_default();
+        Duration::from_millis(millis)
     }
 
     #[inline]
@@ -987,7 +988,7 @@ impl KafkaClientInternals for KafkaClient {
             &mut self.state,
             &self.config,
             acks,
-            Duration::from_millis(ack_timeout as u64),
+            Duration::from_millis(u64::try_from(ack_timeout).unwrap_or_default()),
             messages,
         )
     }

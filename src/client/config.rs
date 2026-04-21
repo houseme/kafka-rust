@@ -21,7 +21,7 @@ pub const DEFAULT_GROUP_OFFSET_STORAGE: Option<GroupOffsetStorage> = None;
 
 pub const DEFAULT_RETRY_BACKOFF_TIME_MILLIS: u64 = 100;
 
-pub const DEFAULT_RETRY_MAX_ATTEMPTS: u32 = 120_000 / DEFAULT_RETRY_BACKOFF_TIME_MILLIS as u32;
+pub const DEFAULT_RETRY_MAX_ATTEMPTS: u32 = 120_000 / 100;
 
 pub const DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS: u64 = 540_000;
 
@@ -39,7 +39,7 @@ pub struct FetchConfig {
 impl Default for FetchConfig {
     fn default() -> Self {
         Self {
-            max_wait_time: DEFAULT_FETCH_MAX_WAIT_TIME_MILLIS as i32,
+            max_wait_time: 100,
             min_bytes: DEFAULT_FETCH_MIN_BYTES,
             max_bytes_per_partition: DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
             crc_validation: DEFAULT_FETCH_CRC_VALIDATION,
@@ -103,7 +103,8 @@ impl RetryPolicy {
                 if attempt >= *max_attempts {
                     return None;
                 }
-                let delay = initial.mul_f64(multiplier.powi(attempt as i32));
+                let exp = i32::try_from(attempt).unwrap_or(i32::MAX);
+                let delay = initial.mul_f64(multiplier.powi(exp));
                 let delay = delay.min(*max);
                 Some(delay)
             }

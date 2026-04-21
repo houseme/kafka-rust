@@ -27,15 +27,15 @@ pub const API_VERSION_LEAVE_GROUP: i16 = 1;
 // --------------------------------------------------------------------
 
 fn encode_string(buf: &mut BytesMut, s: &str) {
-    #[allow(clippy::cast_possible_truncation)]
-    let len = s.len() as i16;
+    let len = crate::protocol::usize_to_i16(s.len())
+        .expect("Kafka string length must fit in i16 for protocol encoding");
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(s.as_bytes());
 }
 
 fn encode_bytes(buf: &mut BytesMut, data: &[u8]) {
-    #[allow(clippy::cast_possible_truncation)]
-    let len = data.len() as i32;
+    let len = crate::protocol::usize_to_i32(data.len())
+        .expect("Kafka bytes length must fit in i32 for protocol encoding");
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(data);
 }
@@ -44,7 +44,7 @@ fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
     if bytes.len() < 2 {
         return Err(Error::codec());
     }
-    let len = i16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+    let len = crate::protocol::non_negative_i16_to_usize(i16::from_be_bytes([bytes[0], bytes[1]]))?;
     bytes.advance(2);
     if bytes.len() < len {
         return Err(Error::codec());
@@ -58,7 +58,9 @@ fn decode_bytes(bytes: &mut bytes::Bytes) -> Result<Vec<u8>> {
     if bytes.len() < 4 {
         return Err(Error::codec());
     }
-    let len = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let len = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+    ]))?;
     bytes.advance(4);
     if bytes.len() < len {
         return Err(Error::codec());
@@ -74,8 +76,9 @@ fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<
         .encode(&mut header_buf, api_version)
         .map_err(|_| Error::codec())?;
 
-    let total_len = (header_buf.len() + body.len()) as i32;
-    let mut out = BytesMut::with_capacity(4 + total_len as usize);
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body.len())?;
+    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
+    let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(body);
@@ -87,7 +90,7 @@ fn read_response(conn: &mut KafkaConnection, api_version: i16) -> Result<bytes::
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     let size = i32::from_be_bytes(buf);
-    let resp_bytes = conn.read_exact_alloc(size as u64)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
     let _header = ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
     Ok(bytes)
@@ -145,7 +148,7 @@ pub fn build_join_group_request(
     body.extend_from_slice(&rebalance_timeout_ms.to_be_bytes());
     encode_string(&mut body, member_id);
     encode_string(&mut body, protocol_type);
-    body.extend_from_slice(&(protocols.len() as i32).to_be_bytes());
+    body.extend_from_slice(&crate::protocol::usize_to_i32(protocols.len())?.to_be_bytes());
     for p in protocols {
         encode_string(&mut body, &p.name);
         encode_bytes(&mut body, &p.metadata);
@@ -224,7 +227,9 @@ pub fn fetch_join_group(
     let num_members = if bytes.len() < 4 {
         return Err(Error::codec());
     } else {
-        let v = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3],
+        ]))?;
         bytes.advance(4);
         v
     };
@@ -286,7 +291,7 @@ pub fn build_sync_group_request(
     encode_string(&mut body, group_id);
     body.extend_from_slice(&generation_id.to_be_bytes());
     encode_string(&mut body, member_id);
-    body.extend_from_slice(&(group_assignment.len() as i32).to_be_bytes());
+    body.extend_from_slice(&crate::protocol::usize_to_i32(group_assignment.len())?.to_be_bytes());
     for ga in group_assignment {
         encode_string(&mut body, &ga.member_id);
         encode_bytes(&mut body, &ga.assignment);
@@ -519,7 +524,9 @@ impl MemberAssignment {
         let num_topics = if bytes.len() < 4 {
             return Err(Error::codec());
         } else {
-            let v = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+            let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3],
+            ]))?;
             bytes.advance(4);
             v
         };
@@ -530,7 +537,9 @@ impl MemberAssignment {
             let num_partitions = if bytes.len() < 4 {
                 return Err(Error::codec());
             } else {
-                let v = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+                let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                ]))?;
                 bytes.advance(4);
                 v
             };
@@ -550,7 +559,7 @@ impl MemberAssignment {
             let len = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
             bytes.advance(4);
             if len >= 0 {
-                let len = len as usize;
+                let len = crate::protocol::non_negative_i32_to_usize(len)?;
                 if bytes.len() >= len {
                     Some(bytes[..len].to_vec())
                 } else {
@@ -571,14 +580,17 @@ impl MemberAssignment {
     }
 
     /// Encode this member assignment to raw bytes.
-    #[allow(clippy::cast_possible_truncation)]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = BytesMut::new();
         buf.extend_from_slice(&self.version.to_be_bytes());
-        buf.extend_from_slice(&(self.topic_partitions.len() as i32).to_be_bytes());
+        let topic_count = crate::protocol::usize_to_i32(self.topic_partitions.len())
+            .expect("topic count must fit in i32 for protocol encoding");
+        buf.extend_from_slice(&topic_count.to_be_bytes());
         for ta in &self.topic_partitions {
             encode_string(&mut buf, &ta.topic);
-            buf.extend_from_slice(&(ta.partitions.len() as i32).to_be_bytes());
+            let partition_count = crate::protocol::usize_to_i32(ta.partitions.len())
+                .expect("partition count must fit in i32 for protocol encoding");
+            buf.extend_from_slice(&partition_count.to_be_bytes());
             for &p in &ta.partitions {
                 buf.extend_from_slice(&p.to_be_bytes());
             }

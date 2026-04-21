@@ -57,8 +57,8 @@ impl<H: BuildHasher + Send + Sync> Partitioner for DefaultPartitioner<H> {
             }
             let mut h = self.hash_builder.build_hasher();
             h.write(key);
-            let hash = h.finish() as u32;
-            rec.partition = (hash % num_partitions) as i32;
+            let bucket = h.finish() % u64::from(num_partitions);
+            rec.partition = i32::try_from(bucket).unwrap_or_default();
         } else {
             let avail = partitions.available_ids();
             if !avail.is_empty() {
@@ -153,7 +153,7 @@ mod default_partitioner_tests {
             headers: &[],
         };
         p.partition(Topics::new(topics), &mut msg);
-        let num_partitions = topics.get(topic).unwrap().num_all() as i32;
+        let num_partitions = i32::try_from(topics.get(topic).unwrap().num_all()).unwrap_or(i32::MAX);
         assert!(msg.partition >= 0 && msg.partition < num_partitions);
         msg.partition
     }

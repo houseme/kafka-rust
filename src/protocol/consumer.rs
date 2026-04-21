@@ -35,7 +35,7 @@ pub fn build_find_coordinator_request(
 }
 
 pub fn convert_find_coordinator_response(
-    kp_resp: FindCoordinatorResponse,
+    kp_resp: &FindCoordinatorResponse,
     correlation_id: i32,
 ) -> GroupCoordinatorResponse {
     let node_id = i32::from(kp_resp.node_id);
