@@ -19,11 +19,10 @@ pub use crate::network::SecurityConfig;
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
 
-use crate::client_internals::KafkaClientInternals;
-
 pub mod builder;
 pub mod config;
 pub(crate) mod fetch_ops;
+mod internals;
 pub(crate) mod metadata_ops;
 pub(crate) mod offset_ops;
 pub(crate) mod produce_ops;
@@ -34,6 +33,7 @@ mod state;
 use crate::network;
 
 pub use config::*;
+pub(crate) use internals::KafkaClientInternals;
 
 /// Owned fetch response types from the kafka-protocol adapter.
 /// These types own their data (no lifetimes) and are returned by

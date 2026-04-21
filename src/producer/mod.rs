@@ -48,7 +48,7 @@ pub use config::DEFAULT_ACK_TIMEOUT_MILLIS;
 pub use config::DEFAULT_REQUIRED_ACKS;
 
 use crate::client::{self, KafkaClient};
-use crate::client_internals::KafkaClientInternals;
+use crate::client::KafkaClientInternals;
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::slice::from_ref;

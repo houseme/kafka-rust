@@ -1,11 +1,11 @@
-//! A crate private module to expose `KafkaClient` internals for use
+//! Crate-private trait exposing `KafkaClient` internals for use
 //! within this crate but not outside of it.
 
 use crate::client::ProduceMessage;
 use crate::error::Result;
 use crate::producer::ProduceConfirm;
 
-pub trait KafkaClientInternals {
+pub(crate) trait KafkaClientInternals {
     fn internal_produce_messages<'a, 'b, I, J>(
         &mut self,
         required_acks: i16,

@@ -22,7 +22,6 @@
 #![allow(clippy::manual_let_else)]
 
 pub mod client;
-mod client_internals;
 mod compression;
 pub mod consumer;
 pub mod error;
