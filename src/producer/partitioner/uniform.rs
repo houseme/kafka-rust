@@ -1,4 +1,5 @@
 use crate::client;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Partitioner, Topics};
 
@@ -16,6 +17,7 @@ impl Default for UniformPartitioner {
 }
 
 impl UniformPartitioner {
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -37,7 +39,6 @@ impl Partitioner for UniformPartitioner {
             return;
         }
 
-        use std::time::{SystemTime, UNIX_EPOCH};
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -53,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_uniform_default() {
-        let _ = UniformPartitioner::default();
+        let _ = UniformPartitioner;
     }
 
     #[test]

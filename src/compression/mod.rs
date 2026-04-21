@@ -83,7 +83,7 @@ mod proptests {
                 4 => Compression::ZSTD,
                 _ => return Ok(()),
             };
-            let debug_str = format!("{:?}", compression);
+            let debug_str = format!("{compression:?}");
             assert!(!debug_str.is_empty());
             let as_i32 = compression as i32;
             assert!((0..=4).contains(&as_i32));

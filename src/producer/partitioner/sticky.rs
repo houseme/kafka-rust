@@ -18,6 +18,7 @@ pub struct StickyPartitioner {
 }
 
 impl StickyPartitioner {
+    #[must_use]
     pub fn new(batch_size: usize) -> Self {
         Self {
             current_partition: Mutex::new(None),

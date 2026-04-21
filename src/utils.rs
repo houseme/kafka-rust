@@ -130,14 +130,16 @@ mod tests {
     #[test]
     fn test_timestamped_partition_offset_differs_from_partition_offset() {
         // Ensure they are distinct types — this compiles only if the types are separate.
-        let _po = PartitionOffset {
+        let po = PartitionOffset {
             offset: 1,
             partition: 0,
         };
-        let _tpo = TimestampedPartitionOffset {
+        let tpo = TimestampedPartitionOffset {
             offset: 1,
             partition: 0,
             time: 0,
         };
+        assert_eq!(po.offset, tpo.offset);
+        assert_eq!(po.partition, tpo.partition);
     }
 }

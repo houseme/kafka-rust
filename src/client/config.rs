@@ -1,8 +1,6 @@
 use std::time::Duration;
 
 use crate::compression::Compression;
-
-#[cfg(not(feature = "producer_timestamp"))]
 use crate::protocol::produce::ProducerTimestamp;
 
 use super::GroupOffsetStorage;
@@ -117,24 +115,17 @@ impl RetryPolicy {
     pub fn max_attempts(&self) -> u32 {
         match self {
             Self::None => 0,
-            Self::Fixed { max_attempts, .. } => *max_attempts,
-            Self::Exponential { max_attempts, .. } => *max_attempts,
+            Self::Fixed { max_attempts, .. } | Self::Exponential { max_attempts, .. } => {
+                *max_attempts
+            }
         }
     }
 }
 
 /// Retry-related configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RetryConfig {
     pub policy: RetryPolicy,
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            policy: RetryPolicy::default(),
-        }
-    }
 }
 
 /// Connection-related configuration.

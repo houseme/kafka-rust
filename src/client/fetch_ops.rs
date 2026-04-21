@@ -82,7 +82,7 @@ where
                 }
             }
             Err(e) => {
-                let error_type = format!("{:?}", e);
+                let error_type = format!("{e:?}");
                 crate::metrics::record_fetch_error("_unknown", &error_type);
             }
         }

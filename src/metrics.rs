@@ -37,6 +37,7 @@ pub fn record_fetch_error(topic: &str, error_type: &str) {
 }
 
 /// Updates the active connection count gauge.
+#[allow(clippy::cast_precision_loss)]
 pub fn update_connection_count(count: usize) {
     gauge!("kafka.connection.active").set(count as f64);
 }

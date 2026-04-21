@@ -17,6 +17,15 @@ use super::transport;
 use super::{ProduceConfirm, ProduceMessage, RequiredAcks};
 use crate::network::Connections;
 
+type BrokerMessage<'a, 'b> = (
+    &'a str,
+    i32,
+    Option<&'b [u8]>,
+    Option<&'b [u8]>,
+    &'b [(String, Vec<u8>)],
+);
+type BrokerMessages<'a, 'b> = HashMap<String, Vec<BrokerMessage<'a, 'b>>>;
+
 #[tracing::instrument(skip(conn_pool, state, config, messages), fields(acks = ?acks))]
 pub(crate) fn internal_produce_messages_kp<'a, 'b, I, J>(
     conn_pool: &mut Connections,
@@ -36,16 +45,7 @@ where
 
     // Collect messages into (broker, Vec<(topic, partition, key, value, headers)>)
     // We extract broker info first, then bundle with header references.
-    let mut broker_msgs: HashMap<
-        String,
-        Vec<(
-            &str,
-            i32,
-            Option<&'b [u8]>,
-            Option<&'b [u8]>,
-            &'b [(String, Vec<u8>)],
-        )>,
-    > = HashMap::new();
+    let mut broker_msgs: BrokerMessages<'a, 'b> = HashMap::new();
     #[cfg(feature = "metrics")]
     let mut total_bytes: usize = 0;
     #[cfg(feature = "metrics")]
@@ -54,7 +54,7 @@ where
         let msg = msg.as_ref();
         #[cfg(feature = "metrics")]
         {
-            total_bytes += msg.value.map(|v| v.len()).unwrap_or(0);
+            total_bytes += msg.value.map_or(0, <[u8]>::len);
             message_count += 1;
         }
         let broker = match state.find_broker(msg.topic, msg.partition) {
@@ -104,7 +104,7 @@ where
                 }
             }
             Err(e) => {
-                let error_type = format!("{:?}", e);
+                let error_type = format!("{e:?}");
                 crate::metrics::record_produce_error("_unknown", &error_type);
             }
         }
@@ -121,16 +121,7 @@ fn produce_messages_inner(
     required_acks: i16,
     ack_timeout_ms: i32,
     compression: Compression,
-    broker_msgs: HashMap<
-        String,
-        Vec<(
-            &str,
-            i32,
-            Option<&[u8]>,
-            Option<&[u8]>,
-            &[(String, Vec<u8>)],
-        )>,
-    >,
+    broker_msgs: BrokerMessages<'_, '_>,
     no_acks: bool,
 ) -> Result<Vec<ProduceConfirm>> {
     let now = Instant::now();

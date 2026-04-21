@@ -37,7 +37,7 @@ pub trait PartitionAssignor: Send + Sync {
 pub struct RangeAssignor;
 
 impl PartitionAssignor for RangeAssignor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "range"
     }
 
@@ -85,7 +85,7 @@ impl PartitionAssignor for RangeAssignor {
 
             let mut partition_idx = 0;
             for (i, &member) in subscribed_members.iter().enumerate() {
-                let count = partitions_per_member + if i < extra { 1 } else { 0 };
+                let count = partitions_per_member + usize::from(i < extra);
                 if count == 0 {
                     continue;
                 }
@@ -121,12 +121,12 @@ impl PartitionAssignor for RangeAssignor {
     }
 }
 
-/// RoundRobin assignor: assigns partitions in round-robin fashion.
+/// `RoundRobin` assignor: assigns partitions in round-robin fashion.
 #[derive(Debug, Default)]
 pub struct RoundRobinAssignor;
 
 impl PartitionAssignor for RoundRobinAssignor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "roundrobin"
     }
 
@@ -238,7 +238,7 @@ impl SimpleTopicPartitions {
 impl TopicPartitions for SimpleTopicPartitions {
     fn topics(&self) -> Vec<&str> {
         let mut topics: Vec<&str> = self.data.keys().map(String::as_str).collect();
-        topics.sort();
+        topics.sort_unstable();
         topics
     }
 

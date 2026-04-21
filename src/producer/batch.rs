@@ -19,8 +19,8 @@ struct BatchRecord {
 impl BatchRecord {
     #[cfg(test)]
     fn byte_size(&self) -> usize {
-        self.key.as_ref().map_or(0, |k| k.len())
-            + self.value.as_ref().map_or(0, |v| v.len())
+        self.key.as_ref().map_or(0, std::vec::Vec::len)
+            + self.value.as_ref().map_or(0, std::vec::Vec::len)
             + self
                 .headers
                 .iter()
@@ -99,8 +99,8 @@ impl<P: Partitioner> BatchProducer<P> {
                 .sum::<usize>();
 
         let batch_record = BatchRecord {
-            key: msg.key.map(|k| k.to_vec()),
-            value: msg.value.map(|v| v.to_vec()),
+            key: msg.key.map(<[u8]>::to_vec),
+            value: msg.value.map(<[u8]>::to_vec),
             headers: msg.headers.to_vec(),
         };
 
@@ -188,10 +188,10 @@ impl<P: Partitioner> BatchProducer<P> {
         if self.buffer_bytes >= self.batch_config.max_bytes {
             return true;
         }
-        if let Some(start) = self.batch_start {
-            if start.elapsed() >= Duration::from_millis(self.batch_config.linger_ms) {
-                return true;
-            }
+        if let Some(start) = self.batch_start
+            && start.elapsed() >= Duration::from_millis(self.batch_config.linger_ms)
+        {
+            return true;
         }
         false
     }

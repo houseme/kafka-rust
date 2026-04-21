@@ -11,6 +11,7 @@ pub struct RoundRobinPartitioner {
 }
 
 impl RoundRobinPartitioner {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             counter: AtomicUsize::new(0),

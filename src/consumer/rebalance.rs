@@ -35,6 +35,7 @@ pub struct RebalanceHandler {
 
 impl RebalanceHandler {
     /// Creates a new rebalance handler.
+    #[must_use]
     pub fn new(
         coordinator: GroupCoordinator,
         assignor: Box<dyn PartitionAssignor>,
@@ -50,6 +51,7 @@ impl RebalanceHandler {
     }
 
     /// Sets a rebalance listener for receiving rebalance event callbacks.
+    #[must_use]
     pub fn with_listener(mut self, listener: Box<dyn RebalanceListener>) -> Self {
         self.listener = Some(listener);
         self
@@ -88,16 +90,16 @@ impl RebalanceHandler {
         );
 
         // Notify listener of revocation
-        if let Some(ref listener) = self.listener {
-            if let Some(ref assignment) = self.current_assignment {
-                let revoked: Vec<(String, Vec<i32>)> = assignment
-                    .topic_partitions
-                    .iter()
-                    .map(|tp| (tp.topic.clone(), tp.partitions.clone()))
-                    .collect();
-                if !revoked.is_empty() {
-                    listener.on_partitions_revoked(&revoked);
-                }
+        if let Some(ref listener) = self.listener
+            && let Some(ref assignment) = self.current_assignment
+        {
+            let revoked: Vec<(String, Vec<i32>)> = assignment
+                .topic_partitions
+                .iter()
+                .map(|tp| (tp.topic.clone(), tp.partitions.clone()))
+                .collect();
+            if !revoked.is_empty() {
+                listener.on_partitions_revoked(&revoked);
             }
         }
 
@@ -147,16 +149,16 @@ impl RebalanceHandler {
 
     /// Gracefully leaves the consumer group.
     pub fn leave_group(&mut self) -> Result<()> {
-        if let Some(ref listener) = self.listener {
-            if let Some(ref assignment) = self.current_assignment {
-                let revoked: Vec<(String, Vec<i32>)> = assignment
-                    .topic_partitions
-                    .iter()
-                    .map(|tp| (tp.topic.clone(), tp.partitions.clone()))
-                    .collect();
-                if !revoked.is_empty() {
-                    listener.on_partitions_revoked(&revoked);
-                }
+        if let Some(ref listener) = self.listener
+            && let Some(ref assignment) = self.current_assignment
+        {
+            let revoked: Vec<(String, Vec<i32>)> = assignment
+                .topic_partitions
+                .iter()
+                .map(|tp| (tp.topic.clone(), tp.partitions.clone()))
+                .collect();
+            if !revoked.is_empty() {
+                listener.on_partitions_revoked(&revoked);
             }
         }
         self.current_assignment = None;
@@ -164,6 +166,7 @@ impl RebalanceHandler {
     }
 
     /// Returns a reference to the underlying group coordinator.
+    #[must_use]
     pub fn coordinator(&self) -> &GroupCoordinator {
         &self.coordinator
     }
@@ -186,10 +189,12 @@ impl Drop for RebalanceHandler {
 fn is_rebalance_error(err: &Error) -> bool {
     matches!(
         err,
-        Error::Kafka(KafkaCode::RebalanceInProgress)
-            | Error::Kafka(KafkaCode::IllegalGeneration)
-            | Error::Kafka(KafkaCode::UnknownMemberId)
-            | Error::Kafka(KafkaCode::GroupCoordinatorNotAvailable)
+        Error::Kafka(
+            KafkaCode::RebalanceInProgress
+                | KafkaCode::IllegalGeneration
+                | KafkaCode::UnknownMemberId
+                | KafkaCode::GroupCoordinatorNotAvailable
+        )
     )
 }
 
@@ -215,6 +220,9 @@ mod tests {
 
     #[test]
     fn test_is_rebalance_error() {
+        let listener = TestListener;
+        listener.on_partitions_revoked(&[]);
+        listener.on_partitions_assigned(&[]);
         assert!(is_rebalance_error(&Error::Kafka(
             KafkaCode::RebalanceInProgress
         )));

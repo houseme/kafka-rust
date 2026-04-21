@@ -1,6 +1,6 @@
 //! Transaction protocol implementations.
 //!
-//! Provides EndTxn and AddPartitionsToTxn request builders and response
+//! Provides `EndTxn` and `AddPartitionsToTxn` request builders and response
 //! parsers for Kafka transactional producer support.
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -71,14 +71,14 @@ fn read_response(conn: &mut KafkaConnection, api_version: i16) -> Result<bytes::
 // EndTxn
 // --------------------------------------------------------------------
 
-/// Parsed response from an EndTxn request.
+/// Parsed response from an `EndTxn` request.
 #[derive(Debug, Clone)]
 pub struct EndTxnResponseData {
     pub throttle_time_ms: i32,
     pub error_code: i16,
 }
 
-/// Build an EndTxn request.
+/// Build an `EndTxn` request.
 pub fn build_end_txn_request(
     correlation_id: i32,
     client_id: &str,
@@ -94,7 +94,7 @@ pub fn build_end_txn_request(
     body.extend_from_slice(&producer_id.to_be_bytes());
     body.extend_from_slice(&producer_epoch.to_be_bytes());
     // committed: boolean as int8
-    body.put_i8(if committed { 1 } else { 0 });
+    body.put_i8(i8::from(committed));
     body.put_u8(0); // tagged fields
 
     let header = RequestHeader::default()
@@ -106,7 +106,7 @@ pub fn build_end_txn_request(
     build_frame(&header, &body, version)
 }
 
-/// Send an EndTxn request and parse the response.
+/// Send an `EndTxn` request and parse the response.
 pub fn fetch_end_txn(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -162,7 +162,7 @@ pub struct TxnPartition {
     pub partitions: Vec<i32>,
 }
 
-/// Parsed response from an AddPartitionsToTxn request.
+/// Parsed response from an `AddPartitionsToTxn` request.
 #[derive(Debug, Clone)]
 pub struct AddPartitionsToTxnResponseData {
     pub throttle_time_ms: i32,
@@ -177,7 +177,7 @@ pub struct TxnPartitionResult {
     pub error_code: i16,
 }
 
-/// Build an AddPartitionsToTxn request.
+/// Build an `AddPartitionsToTxn` request.
 pub fn build_add_partitions_to_txn_request(
     correlation_id: i32,
     client_id: &str,
@@ -213,7 +213,7 @@ pub fn build_add_partitions_to_txn_request(
     build_frame(&header, &body, version)
 }
 
-/// Send an AddPartitionsToTxn request and parse the response.
+/// Send an `AddPartitionsToTxn` request and parse the response.
 pub fn fetch_add_partitions_to_txn(
     conn: &mut KafkaConnection,
     correlation_id: i32,

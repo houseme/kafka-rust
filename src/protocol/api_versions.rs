@@ -204,7 +204,6 @@ impl ApiVersionCache {
             api_key::FIND_COORDINATOR => API_VERSION_FIND_COORDINATOR,
             api_key::OFFSET_COMMIT => API_VERSION_OFFSET_COMMIT,
             api_key::OFFSET_FETCH => API_VERSION_OFFSET_FETCH,
-            api_key::API_VERSIONS => 0,
             _ => 0,
         }
     }

@@ -234,6 +234,7 @@ impl Error {
     }
 
     /// Returns `true` if this error is likely transient and can be resolved by retrying.
+    #[must_use]
     pub fn is_retriable(&self) -> bool {
         match self {
             Self::Kafka(code) => code.is_retriable(),
@@ -250,16 +251,19 @@ impl Error {
     }
 
     /// Returns `true` if this error originates from the connection/network layer.
+    #[must_use]
     pub fn is_connection_error(&self) -> bool {
         matches!(self, Self::Connection(_))
     }
 
     /// Returns `true` if this error originates from the protocol layer.
+    #[must_use]
     pub fn is_protocol_error(&self) -> bool {
         matches!(self, Self::Protocol(_))
     }
 
     /// Returns `true` if this error originates from the consumer layer.
+    #[must_use]
     pub fn is_consumer_error(&self) -> bool {
         matches!(self, Self::Consumer(_))
     }
@@ -394,6 +398,7 @@ pub enum KafkaCode {
 
 impl KafkaCode {
     /// Returns `true` if this error code represents a transient, retriable condition.
+    #[must_use]
     pub fn is_retriable(self) -> bool {
         matches!(
             self,
@@ -553,8 +558,7 @@ mod tests {
     #[test]
     fn test_error_category_queries() {
         assert!(
-            Error::Connection(ConnectionError::Io(io::Error::new(ErrorKind::Other, "err")))
-                .is_connection_error()
+            Error::Connection(ConnectionError::Io(io::Error::other("err"))).is_connection_error()
         );
         assert!(!Error::codec().is_connection_error());
         assert!(Error::codec().is_protocol_error());

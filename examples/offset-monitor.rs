@@ -35,6 +35,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn run(cfg: Config) -> Result<()> {
     let mut client = KafkaClient::new(cfg.brokers.clone());
     client.set_group_offset_storage(Some(cfg.offset_storage));

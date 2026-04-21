@@ -153,6 +153,75 @@ pub fn convert_fetch_response(kp_resp: FetchResponse, correlation_id: i32) -> Ow
     }
 }
 
+fn decode_partition_records(
+    records: Option<Bytes>,
+    high_watermark: i64,
+) -> std::result::Result<OwnedData, Arc<Error>> {
+    let Some(mut records_bytes) = records else {
+        return Ok(OwnedData {
+            highwatermark_offset: high_watermark,
+            messages: vec![],
+        });
+    };
+
+    let raw_records = records_bytes.clone();
+    let record_set = if let Ok(rs) = RecordBatchDecoder::decode(&mut records_bytes) {
+        rs
+    } else {
+        let messages = decode_records_safe(raw_records.as_ref()).map_err(Arc::new)?;
+        return Ok(OwnedData {
+            highwatermark_offset: high_watermark,
+            messages,
+        });
+    };
+
+    let mut messages = Vec::new();
+    for record in &record_set.records {
+        messages.push(OwnedMessage {
+            offset: record.offset,
+            key: record.key.clone().unwrap_or_default(),
+            value: record.value.clone().unwrap_or_default(),
+        });
+    }
+
+    Ok(OwnedData {
+        highwatermark_offset: high_watermark,
+        messages,
+    })
+}
+
+/// Safe entry point for fuzzing fetch response data — catches all panics.
+pub(crate) fn decode_records_safe(
+    records: &[u8],
+) -> Result<Vec<OwnedMessage>, crate::error::Error> {
+    const MAX_INPUT_SIZE: usize = 1_048_576;
+    if records.len() > MAX_INPUT_SIZE {
+        return Err(crate::error::Error::codec());
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut buf = Bytes::from(records.to_vec());
+        match RecordBatchDecoder::decode(&mut buf) {
+            Ok(record_set) => {
+                let messages: Vec<OwnedMessage> = record_set
+                    .records
+                    .iter()
+                    .map(|r| OwnedMessage {
+                        offset: r.offset,
+                        key: r.key.clone().unwrap_or_default(),
+                        value: r.value.clone().unwrap_or_default(),
+                    })
+                    .collect();
+                Ok(messages)
+            }
+            Err(_) => Err(crate::error::Error::codec()),
+        }
+    }));
+    match result {
+        Ok(r) => r,
+        Err(_) => Err(crate::error::Error::codec()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,75 +362,5 @@ mod tests {
         assert_eq!(resp.correlation_id, 42);
         assert_eq!(resp.topics.len(), 1);
         assert_eq!(resp.topics[0].topic, "orders");
-    }
-}
-
-fn decode_partition_records(
-    records: Option<Bytes>,
-    high_watermark: i64,
-) -> std::result::Result<OwnedData, Arc<Error>> {
-    let Some(mut records_bytes) = records else {
-        return Ok(OwnedData {
-            highwatermark_offset: high_watermark,
-            messages: vec![],
-        });
-    };
-
-    let raw_records = records_bytes.clone();
-    let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
-        Ok(rs) => rs,
-        Err(_) => {
-            let messages = decode_records_safe(raw_records.as_ref()).map_err(Arc::new)?;
-            return Ok(OwnedData {
-                highwatermark_offset: high_watermark,
-                messages,
-            });
-        }
-    };
-
-    let mut messages = Vec::new();
-    for record in &record_set.records {
-        messages.push(OwnedMessage {
-            offset: record.offset,
-            key: record.key.clone().unwrap_or_default(),
-            value: record.value.clone().unwrap_or_default(),
-        });
-    }
-
-    Ok(OwnedData {
-        highwatermark_offset: high_watermark,
-        messages,
-    })
-}
-
-/// Safe entry point for fuzzing fetch response data — catches all panics.
-pub(crate) fn decode_records_safe(
-    records: &[u8],
-) -> Result<Vec<OwnedMessage>, crate::error::Error> {
-    const MAX_INPUT_SIZE: usize = 1_048_576;
-    if records.len() > MAX_INPUT_SIZE {
-        return Err(crate::error::Error::codec());
-    }
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut buf = Bytes::from(records.to_vec());
-        match RecordBatchDecoder::decode(&mut buf) {
-            Ok(record_set) => {
-                let messages: Vec<OwnedMessage> = record_set
-                    .records
-                    .iter()
-                    .map(|r| OwnedMessage {
-                        offset: r.offset,
-                        key: r.key.clone().unwrap_or_default(),
-                        value: r.value.clone().unwrap_or_default(),
-                    })
-                    .collect();
-                Ok(messages)
-            }
-            Err(_) => Err(crate::error::Error::codec()),
-        }
-    }));
-    match result {
-        Ok(r) => r,
-        Err(_) => Err(crate::error::Error::codec()),
     }
 }

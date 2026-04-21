@@ -1,4 +1,4 @@
-//! InitProducerId protocol (API key 22) for idempotent/transactional producer support.
+//! `InitProducerId` protocol (API key 22) for idempotent/transactional producer support.
 
 use bytes::BytesMut;
 use kafka_protocol::messages::{
@@ -12,7 +12,7 @@ use crate::network::KafkaConnection;
 
 pub const API_VERSION_INIT_PRODUCER_ID: i16 = 2;
 
-/// Parsed response from an InitProducerId request.
+/// Parsed response from an `InitProducerId` request.
 #[derive(Debug, Clone)]
 pub struct InitProducerIdResponseData {
     pub producer_id: i64,
@@ -21,16 +21,16 @@ pub struct InitProducerIdResponseData {
 }
 
 impl InitProducerIdResponseData {
-    pub fn from_response(resp: InitProducerIdResponse) -> Result<Self> {
-        Ok(Self {
+    pub fn from_response(resp: InitProducerIdResponse) -> Self {
+        Self {
             producer_id: i64::from(resp.producer_id),
             producer_epoch: resp.producer_epoch,
             error_code: resp.error_code,
-        })
+        }
     }
 }
 
-/// Build and send an InitProducerId request, returning the parsed response.
+/// Build and send an `InitProducerId` request, returning the parsed response.
 pub fn fetch_init_producer_id(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -80,7 +80,7 @@ pub fn fetch_init_producer_id(
 
     let kp_resp =
         InitProducerIdResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
-    InitProducerIdResponseData::from_response(kp_resp)
+    Ok(InitProducerIdResponseData::from_response(kp_resp))
 }
 
 #[cfg(test)]
@@ -93,7 +93,7 @@ mod tests {
             .with_producer_id(kafka_protocol::messages::ProducerId(12345))
             .with_producer_epoch(1)
             .with_error_code(0);
-        let data = InitProducerIdResponseData::from_response(resp).unwrap();
+        let data = InitProducerIdResponseData::from_response(resp);
         assert_eq!(data.producer_id, 12345);
         assert_eq!(data.producer_epoch, 1);
         assert_eq!(data.error_code, 0);

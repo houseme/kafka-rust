@@ -1,8 +1,8 @@
 //! Consumer Group protocol implementations.
 //!
 //! Provides request builders and response parsers for the four core
-//! consumer group management protocols: JoinGroup, SyncGroup, Heartbeat,
-//! and LeaveGroup.
+//! consumer group management protocols: `JoinGroup`, `SyncGroup`, Heartbeat,
+//! and `LeaveGroup`.
 
 use bytes::{Buf, BytesMut};
 use kafka_protocol::messages::{RequestHeader, ResponseHeader};
@@ -112,7 +112,7 @@ pub struct GroupMember {
     pub metadata: Vec<u8>,
 }
 
-/// Parsed response from a JoinGroup request.
+/// Parsed response from a `JoinGroup` request.
 #[derive(Debug, Clone)]
 pub struct JoinGroupResponseData {
     pub error_code: i16,
@@ -124,7 +124,8 @@ pub struct JoinGroupResponseData {
     pub members: Vec<GroupMember>,
 }
 
-/// Build a JoinGroup request (v1).
+/// Build a `JoinGroup` request (v1).
+#[allow(clippy::too_many_arguments)]
 pub fn build_join_group_request(
     correlation_id: i32,
     client_id: &str,
@@ -159,7 +160,8 @@ pub fn build_join_group_request(
     build_frame(&header, &body, version)
 }
 
-/// Send a JoinGroup request and parse the response.
+/// Send a `JoinGroup` request and parse the response.
+#[allow(clippy::too_many_arguments)]
 pub fn fetch_join_group(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -253,14 +255,14 @@ pub fn fetch_join_group(
 // SyncGroup
 // --------------------------------------------------------------------
 
-/// Parsed response from a SyncGroup request.
+/// Parsed response from a `SyncGroup` request.
 #[derive(Debug, Clone)]
 pub struct SyncGroupResponseData {
     pub error_code: i16,
     pub assignment: Vec<u8>,
 }
 
-/// Assignment for a specific group member (used by leader in SyncGroup).
+/// Assignment for a specific group member (used by leader in `SyncGroup`).
 #[derive(Debug, Clone)]
 pub struct GroupAssignment {
     pub member_id: String,
@@ -268,7 +270,7 @@ pub struct GroupAssignment {
     pub assignment: Vec<u8>,
 }
 
-/// Build a SyncGroup request (v1).
+/// Build a `SyncGroup` request (v1).
 pub fn build_sync_group_request(
     correlation_id: i32,
     client_id: &str,
@@ -299,7 +301,8 @@ pub fn build_sync_group_request(
     build_frame(&header, &body, version)
 }
 
-/// Send a SyncGroup request and parse the response.
+/// Send a `SyncGroup` request and parse the response.
+#[allow(clippy::too_many_arguments)]
 pub fn fetch_sync_group(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -413,7 +416,7 @@ pub fn fetch_heartbeat(
 // LeaveGroup
 // --------------------------------------------------------------------
 
-/// Parsed response from a LeaveGroup request.
+/// Parsed response from a `LeaveGroup` request.
 #[derive(Debug, Clone)]
 pub struct LeaveGroupResponseData {
     pub error_code: i16,
@@ -426,7 +429,7 @@ pub struct LeaveMemberRequest {
     pub group_instance_id: Option<String>,
 }
 
-/// Build a LeaveGroup request (v1).
+/// Build a `LeaveGroup` request (v1).
 pub fn build_leave_group_request(
     correlation_id: i32,
     client_id: &str,
@@ -459,7 +462,7 @@ pub fn build_leave_group_request(
     build_frame(&header, &body, version)
 }
 
-/// Send a LeaveGroup request and parse the response.
+/// Send a `LeaveGroup` request and parse the response.
 pub fn fetch_leave_group(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -661,7 +664,7 @@ mod tests {
             metadata: vec![0, 1, 2],
         }];
         let req = build_join_group_request(
-            1, "client", "group", 10000, 300000, "", None, "consumer", &protocols,
+            1, "client", "group", 10000, 300_000, "", None, "consumer", &protocols,
         );
         assert!(
             req.is_ok(),

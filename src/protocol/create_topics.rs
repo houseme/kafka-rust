@@ -1,4 +1,4 @@
-//! CreateTopics protocol (API key 19) for topic administration.
+//! `CreateTopics` protocol (API key 19) for topic administration.
 
 use bytes::{Buf, BufMut, BytesMut};
 use kafka_protocol::messages::{RequestHeader, ResponseHeader};
@@ -30,16 +30,19 @@ impl TopicConfig {
         }
     }
 
+    #[must_use]
     pub fn with_partitions(mut self, n: i32) -> Self {
         self.num_partitions = n;
         self
     }
 
+    #[must_use]
     pub fn with_replication_factor(mut self, f: i16) -> Self {
         self.replication_factor = f;
         self
     }
 
+    #[must_use]
     pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.configs.push((key.into(), value.into()));
         self
@@ -54,7 +57,7 @@ pub struct TopicResult {
     pub error_message: Option<String>,
 }
 
-/// Parsed response from a CreateTopics request.
+/// Parsed response from a `CreateTopics` request.
 #[derive(Debug, Clone)]
 pub struct CreateTopicsResponseData {
     pub results: Vec<TopicResult>,
@@ -104,7 +107,7 @@ fn decode_nullable_string(bytes: &mut bytes::Bytes) -> Result<Option<String>> {
     Ok(Some(s))
 }
 
-/// Build a CreateTopics request.
+/// Build a `CreateTopics` request.
 pub fn build_create_topics_request(
     correlation_id: i32,
     client_id: &str,
@@ -154,7 +157,7 @@ pub fn build_create_topics_request(
     Ok(out.to_vec())
 }
 
-/// Send a CreateTopics request and parse the response.
+/// Send a `CreateTopics` request and parse the response.
 pub fn fetch_create_topics(
     conn: &mut KafkaConnection,
     correlation_id: i32,

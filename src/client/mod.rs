@@ -70,6 +70,7 @@ pub(crate) mod transport;
 
 use crate::network;
 
+#[allow(clippy::wildcard_imports)]
 pub use config::*;
 pub(crate) use internals::KafkaClientInternals;
 
@@ -851,7 +852,9 @@ impl KafkaClient {
     /// Returns the host of the group coordinator for the given group, if known.
     #[must_use]
     pub fn group_coordinator_host(&self, group: &str) -> Option<String> {
-        self.state.group_coordinator(group).map(|s| s.to_owned())
+        self.state
+            .group_coordinator(group)
+            .map(std::borrow::ToOwned::to_owned)
     }
 
     /// Gets the next correlation ID for request tracking.

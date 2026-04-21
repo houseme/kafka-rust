@@ -382,6 +382,7 @@ fn get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32> 
     Ok(i32::from_be_bytes(buf))
 }
 
+#[allow(clippy::disallowed_methods)]
 fn retry_sleep(cfg: &ClientConfig, attempt: u32) {
     if let Some(delay) = cfg.retry_policy().next_delay(attempt) {
         std::thread::sleep(delay);

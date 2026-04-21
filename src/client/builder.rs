@@ -144,8 +144,8 @@ impl KafkaClientBuilder {
     /// Sets the maximum number of retry attempts.
     pub fn with_retry_max_attempts(mut self, attempts: u32) -> Self {
         match &mut self.retry_policy {
-            RetryPolicy::Exponential { max_attempts, .. } => *max_attempts = attempts,
-            RetryPolicy::Fixed { max_attempts, .. } => *max_attempts = attempts,
+            RetryPolicy::Exponential { max_attempts, .. }
+            | RetryPolicy::Fixed { max_attempts, .. } => *max_attempts = attempts,
             RetryPolicy::None => {}
         }
         self

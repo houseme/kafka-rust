@@ -1,4 +1,4 @@
-//! DeleteTopics protocol (API key 20) for topic administration.
+//! `DeleteTopics` protocol (API key 20) for topic administration.
 
 use bytes::{Buf, BufMut, BytesMut};
 use kafka_protocol::messages::{RequestHeader, ResponseHeader};
@@ -18,7 +18,7 @@ pub struct DeleteTopicResult {
     pub error_code: i16,
 }
 
-/// Parsed response from a DeleteTopics request.
+/// Parsed response from a `DeleteTopics` request.
 #[derive(Debug, Clone)]
 pub struct DeleteTopicsResponseData {
     pub results: Vec<DeleteTopicResult>,
@@ -44,7 +44,7 @@ fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
     Ok(s)
 }
 
-/// Build a DeleteTopics request.
+/// Build a `DeleteTopics` request.
 pub fn build_delete_topics_request(
     correlation_id: i32,
     client_id: &str,
@@ -86,7 +86,7 @@ pub fn build_delete_topics_request(
     Ok(out.to_vec())
 }
 
-/// Send a DeleteTopics request and parse the response.
+/// Send a `DeleteTopics` request and parse the response.
 pub fn fetch_delete_topics(
     conn: &mut KafkaConnection,
     correlation_id: i32,

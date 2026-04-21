@@ -136,13 +136,16 @@ fn test_to_kp_compression() {
 
 #[test]
 fn test_api_version_constants_are_positive() {
-    assert!(API_VERSION_PRODUCE > 0);
-    assert!(API_VERSION_FETCH > 0);
-    assert!(API_VERSION_METADATA > 0);
-    assert!(API_VERSION_LIST_OFFSETS > 0);
-    assert!(API_VERSION_OFFSET_COMMIT > 0);
-    assert!(API_VERSION_OFFSET_FETCH > 0);
-    assert!(API_VERSION_FIND_COORDINATOR > 0);
+    let versions = [
+        API_VERSION_PRODUCE,
+        API_VERSION_FETCH,
+        API_VERSION_METADATA,
+        API_VERSION_LIST_OFFSETS,
+        API_VERSION_OFFSET_COMMIT,
+        API_VERSION_OFFSET_FETCH,
+        API_VERSION_FIND_COORDINATOR,
+    ];
+    assert!(versions.iter().all(|v| *v > 0));
 }
 
 #[cfg(test)]
@@ -163,7 +166,7 @@ mod proptests {
                 _ => return Ok(()),
             };
             let kp = to_kp_compression(compression);
-            let _ = format!("{:?}", kp);
+            let _ = format!("{kp:?}");
         }
 
         #[test]

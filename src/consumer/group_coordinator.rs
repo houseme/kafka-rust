@@ -1,6 +1,6 @@
 //! Consumer Group coordinator for managing group lifecycle.
 //!
-//! Handles JoinGroup, SyncGroup, Heartbeat, and LeaveGroup operations
+//! Handles `JoinGroup`, `SyncGroup`, Heartbeat, and `LeaveGroup` operations
 //! for a consumer participating in a consumer group.
 
 use std::sync::Arc;
@@ -34,7 +34,8 @@ pub struct GroupCoordinator {
 }
 
 impl GroupCoordinator {
-    /// Creates a new GroupCoordinator.
+    /// Creates a new `GroupCoordinator`.
+    #[must_use]
     pub fn new(
         client: KafkaClient,
         group_id: String,
@@ -125,13 +126,13 @@ impl GroupCoordinator {
         self.member_id = Some(join_resp.member_id.clone());
         self.generation_id = Some(join_resp.generation_id);
         self.leader_id = Some(join_resp.leader_id.clone());
-        self.protocol_name = join_resp.protocol_name.clone();
-        if let Some(protocol_type) = join_resp.protocol_type.as_deref() {
-            if protocol_type != "consumer" {
-                return Err(Error::Config(format!(
-                    "unsupported group protocol type: {protocol_type}"
-                )));
-            }
+        self.protocol_name.clone_from(&join_resp.protocol_name);
+        if let Some(protocol_type) = join_resp.protocol_type.as_deref()
+            && protocol_type != "consumer"
+        {
+            return Err(Error::Config(format!(
+                "unsupported group protocol type: {protocol_type}"
+            )));
         }
 
         info!(
@@ -142,7 +143,7 @@ impl GroupCoordinator {
         let correlation_id = self.client.next_correlation_id();
         let client_id = self.client.client_id().to_owned();
         let group_assignment = if self.is_leader() {
-            self.compute_assignment(assignor, &join_resp.members, subscribed_topics)?
+            self.compute_assignment(assignor, &join_resp.members, subscribed_topics)
         } else {
             vec![GroupAssignment {
                 member_id: self.member_id.clone().unwrap_or_default(),
@@ -269,7 +270,7 @@ impl GroupCoordinator {
         assignor: &A,
         members: &[GroupMember],
         subscribed_topics: &[String],
-    ) -> Result<Vec<GroupAssignment>> {
+    ) -> Vec<GroupAssignment> {
         let tp_data = self.build_topic_partitions(subscribed_topics);
 
         let member_ids: Vec<&str> = members.iter().map(|m| m.member_id.as_str()).collect();
@@ -285,7 +286,7 @@ impl GroupCoordinator {
 
         let assignments = assignor.assign(&member_ids, &member_subscriptions, &tp_data);
 
-        Ok(members
+        members
             .iter()
             .zip(assignments)
             .map(|(member, ga)| GroupAssignment {
@@ -293,7 +294,7 @@ impl GroupCoordinator {
                 group_instance_id: member.group_instance_id.clone(),
                 assignment: ga.assignment,
             })
-            .collect())
+            .collect()
     }
 
     fn build_topic_partitions(&self, subscribed_topics: &[String]) -> SimpleTopicPartitions {
@@ -321,6 +322,7 @@ impl GroupCoordinator {
             .ok_or(Error::Kafka(KafkaCode::GroupCoordinatorNotAvailable))
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn start_heartbeat_thread(&mut self) {
         self.stop_heartbeat_thread();
 
@@ -424,7 +426,7 @@ mod tests {
         ]);
 
         let mut topics = tp.topics();
-        topics.sort();
+        topics.sort_unstable();
         assert_eq!(topics, vec!["t1", "t2"]);
 
         assert_eq!(tp.partitions_for("t1"), vec![0, 1, 2]);

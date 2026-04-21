@@ -112,7 +112,7 @@ fn test_consumer_commit_messageset() {
         let consumed_offset = consumer
             .last_consumed_message(TEST_TOPIC_NAME, *partition)
             .unwrap();
-        let latest_offset = latest_offsets.get(&partition).unwrap();
+        let latest_offset = latest_offsets.get(partition).unwrap();
         assert_eq!(
             *latest_offset - 1,
             consumed_offset,

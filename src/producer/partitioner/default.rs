@@ -178,7 +178,8 @@ mod default_partitioner_tests {
             ),
         ]);
 
-        let mut p: DefaultPartitioner<BuildHasherDefault<DefaultHasher>> = Default::default();
+        let mut p: DefaultPartitioner<BuildHasherDefault<DefaultHasher>> =
+            DefaultPartitioner::default();
 
         let h1 = assert_partitioning(&h, &mut p, "foo", "foo-key");
         let h2 = assert_partitioning(&h, &mut p, "foo", "foo-key");

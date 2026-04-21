@@ -161,11 +161,11 @@ impl<P: Partitioner> TransactionalProducer<P> {
 
         // Add partition to transaction if needed
         if !self.current_txn_partitions.contains(&tp) {
-            self.add_partition_to_txn(&tp.0, &tp.1)?;
+            self.add_partition_to_txn(&tp.0, tp.1)?;
             self.current_txn_partitions.insert(tp.clone());
         }
 
-        let _seq = self.next_sequence_number(&tp);
+        let seq = self.next_sequence_number(&tp);
 
         let confirms = self.client.internal_produce_messages(
             RequiredAcks::All as i16,
@@ -173,15 +173,14 @@ impl<P: Partitioner> TransactionalProducer<P> {
             std::iter::once(msg),
         )?;
 
-        if let Some(confirm) = confirms.first() {
-            if let Some(p_confirm) = confirm.partition_confirms.first() {
-                if p_confirm.offset.is_err() {
-                    return Err(Error::Kafka(KafkaCode::Unknown));
-                }
-            }
+        if let Some(confirm) = confirms.first()
+            && let Some(p_confirm) = confirm.partition_confirms.first()
+            && p_confirm.offset.is_err()
+        {
+            return Err(Error::Kafka(KafkaCode::Unknown));
         }
 
-        debug!("Sent message to {}:{} (seq: {})", tp.0, tp.1, _seq);
+        debug!("Sent message to {}:{} (seq: {})", tp.0, tp.1, seq);
 
         Ok(())
     }
@@ -264,14 +263,14 @@ impl<P: Partitioner> TransactionalProducer<P> {
         Ok(())
     }
 
-    fn add_partition_to_txn(&mut self, topic: &str, partition: &i32) -> Result<()> {
+    fn add_partition_to_txn(&mut self, topic: &str, partition: i32) -> Result<()> {
         let coordinator_host = self.find_transaction_coordinator()?;
         let correlation_id = self.client.next_correlation_id();
         let client_id = self.client.client_id().to_owned();
 
         let txn_partitions = vec![TxnPartition {
             topic: topic.to_owned(),
-            partitions: vec![*partition],
+            partitions: vec![partition],
         }];
 
         let resp = transaction::fetch_add_partitions_to_txn(
@@ -301,7 +300,7 @@ impl<P: Partitioner> TransactionalProducer<P> {
             if result.error_code != 0 {
                 return Err(Error::TopicPartitionError {
                     topic_name: result.topic.clone(),
-                    partition_id: *partition,
+                    partition_id: partition,
                     error_code: KafkaCode::from_protocol(result.error_code)
                         .unwrap_or(KafkaCode::Unknown),
                 });
@@ -518,7 +517,7 @@ mod tests {
         assert!(err.is_err());
     }
 
-    /// Minimal state machine mirroring TransactionalProducer for unit tests
+    /// Minimal state machine mirroring `TransactionalProducer` for unit tests
     /// without requiring a broker connection.
     struct TransactionState {
         in_transaction: bool,

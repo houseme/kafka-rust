@@ -175,7 +175,7 @@ fn test_commit_offset() {
         (TEST_TOPIC_PARTITIONS[0], 500),
         (TEST_TOPIC_PARTITIONS[1], 600),
     ] {
-        client.commit_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME, partition, offset);
+        let _ = client.commit_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME, partition, offset);
 
         let partition_offsets: HashSet<PartitionOffset> = client
             .fetch_group_topic_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME)
