@@ -1,0 +1,23 @@
+[package]
+name = "rustfs-kafka-async"
+version = "0.1.0"
+authors = ["houseme", "houseme <husemecn@gmail.com>"]
+categories = ["api-bindings", "asynchronous"]
+edition = "2024"
+keywords = ["kafka", "queue", "async", "tokio"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/houseme/kafka-rust"
+description = "Async Kafka client built on tokio"
+rust-version = "1.93.0"
+
+[dependencies]
+rustfs-kafka = { path = "../.." }
+tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt", "macros"] }
+bytes = "1"
+thiserror = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = "0.3"
