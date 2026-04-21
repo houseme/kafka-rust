@@ -30,6 +30,7 @@ use crate::protocol;
 
 use crate::client_internals::KafkaClientInternals;
 
+pub mod builder;
 pub mod metadata;
 pub(crate) mod network;
 mod state;
@@ -49,13 +50,6 @@ pub mod fetch {
 }
 
 const DEFAULT_CONNECTION_RW_TIMEOUT_SECS: u64 = 120;
-
-fn default_conn_rw_timeout() -> Option<Duration> {
-    match DEFAULT_CONNECTION_RW_TIMEOUT_SECS {
-        0 => None,
-        n => Some(Duration::from_secs(n)),
-    }
-}
 
 /// The default value for `KafkaClient::set_compression(..)`
 pub const DEFAULT_COMPRESSION: Compression = Compression::NONE;
@@ -390,32 +384,34 @@ impl KafkaClient {
     /// let mut client = rustfs_kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
     /// client.load_metadata_all().unwrap();
     /// ```
+    /// Creates a new `KafkaClientBuilder` with default settings.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use rustfs_kafka::client::KafkaClient;
+    ///
+    /// let client = KafkaClient::builder()
+    ///     .with_hosts(vec!["localhost:9092".to_owned()])
+    ///     .with_client_id("my-app".to_owned())
+    ///     .build();
+    /// ```
+    pub fn builder() -> builder::KafkaClientBuilder {
+        builder::KafkaClientBuilder::new()
+    }
+
+    /// Creates a new instance of `KafkaClient`. Before being able to
+    /// successfully use the new client, you'll have to load metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let mut client = rustfs_kafka::client::KafkaClient::new(vec!("localhost:9092".to_owned()));
+    /// client.load_metadata_all().unwrap();
+    /// ```
     #[must_use]
     pub fn new(hosts: Vec<String>) -> KafkaClient {
-        KafkaClient {
-            config: ClientConfig {
-                client_id: String::new(),
-                hosts,
-                compression: DEFAULT_COMPRESSION,
-                fetch_max_wait_time: protocol::to_millis_i32(Duration::from_millis(
-                    DEFAULT_FETCH_MAX_WAIT_TIME_MILLIS,
-                ))
-                .expect("invalid default-fetch-max-time-millis"),
-                fetch_min_bytes: DEFAULT_FETCH_MIN_BYTES,
-                fetch_max_bytes_per_partition: DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
-                fetch_crc_validation: DEFAULT_FETCH_CRC_VALIDATION,
-                offset_storage: DEFAULT_GROUP_OFFSET_STORAGE,
-                retry_backoff_time: Duration::from_millis(DEFAULT_RETRY_BACKOFF_TIME_MILLIS),
-                retry_max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
-                producer_timestamp: DEFAULT_PRODUCER_TIMESTAMP,
-            },
-            conn_pool: network::Connections::new(
-                default_conn_rw_timeout(),
-                Duration::from_millis(DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS),
-            ),
-            state: state::ClientState::new(),
-            api_versions: crate::protocol::api_versions::ApiVersionCache::new(),
-        }
+        Self::builder().with_hosts(hosts).build()
     }
 
     /// Creates a new secure instance of `KafkaClient`. Before being able to
@@ -442,31 +438,10 @@ impl KafkaClient {
     #[cfg(feature = "security")]
     #[must_use]
     pub fn new_secure(hosts: Vec<String>, security: SecurityConfig) -> KafkaClient {
-        KafkaClient {
-            config: ClientConfig {
-                client_id: String::new(),
-                hosts,
-                compression: DEFAULT_COMPRESSION,
-                fetch_max_wait_time: protocol::to_millis_i32(Duration::from_millis(
-                    DEFAULT_FETCH_MAX_WAIT_TIME_MILLIS,
-                ))
-                .expect("invalid default-fetch-max-time-millis"),
-                fetch_min_bytes: DEFAULT_FETCH_MIN_BYTES,
-                fetch_max_bytes_per_partition: DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
-                fetch_crc_validation: DEFAULT_FETCH_CRC_VALIDATION,
-                offset_storage: DEFAULT_GROUP_OFFSET_STORAGE,
-                retry_backoff_time: Duration::from_millis(DEFAULT_RETRY_BACKOFF_TIME_MILLIS),
-                retry_max_attempts: DEFAULT_RETRY_MAX_ATTEMPTS,
-                producer_timestamp: DEFAULT_PRODUCER_TIMESTAMP,
-            },
-            conn_pool: network::Connections::new_with_security(
-                default_conn_rw_timeout(),
-                Duration::from_millis(DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS),
-                Some(security),
-            ),
-            state: state::ClientState::new(),
-            api_versions: crate::protocol::api_versions::ApiVersionCache::new(),
-        }
+        Self::builder()
+            .with_hosts(hosts)
+            .with_security(security)
+            .build()
     }
 
     /// Exposes the hosts used for discovery of the target kafka
