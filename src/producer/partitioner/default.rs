@@ -70,11 +70,11 @@ impl<H: BuildHasher + Send + Sync> Partitioner for DefaultPartitioner<H> {
 }
 
 // --------------------------------------------------------------------
-// Re-export Partitions/Topics types for use by other partitioners
+// Re-export Partitions/Topics types for use by other practitioners
 
 /// Producer relevant partition information of a particular topic.
 ///
-/// Intented for use by `Partition`s.
+/// Intended for use by `Partition's.
 #[derive(Debug)]
 pub struct Partitions {
     pub(crate) available_ids: Vec<i32>,
@@ -104,7 +104,7 @@ impl Partitions {
 
 /// A description of available topics and their available partitions.
 ///
-/// Intented for use by `Partitioner`s.
+/// Intended for use by `Partitioner's.
 pub struct Topics<'a> {
     partitions: &'a HashMap<String, Partitions>,
 }
