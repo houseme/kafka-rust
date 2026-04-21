@@ -69,7 +69,7 @@ pub use self::builder::Builder;
 use self::state::TopicPartition;
 pub use crate::client::FetchOffset;
 pub use crate::client::GroupOffsetStorage;
-pub use crate::protocol2::fetch::OwnedMessage as Message;
+pub use crate::protocol::fetch::OwnedMessage as Message;
 
 mod assignment;
 mod builder;

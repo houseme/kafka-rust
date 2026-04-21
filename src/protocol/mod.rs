@@ -1,22 +1,61 @@
-use std::mem;
-use std::time::Duration;
+//! Kafka protocol layer bridging `kafka-protocol` crate types to internal types.
+//!
+//! This module provides request builders, response converters, and internal
+//! data types for all supported Kafka APIs.
 
-use crate::error::{Error, KafkaCode, Result};
-
+pub mod api_versions;
 pub mod consumer;
-pub mod list_offset;
+pub mod fetch;
 pub mod metadata;
 pub mod offset;
 pub mod produce;
 
-pub use self::consumer::{
+// Re-export key types for convenience
+pub use metadata::{BrokerMetadata, MetadataResponseData, PartitionMetadata, TopicMetadata};
+pub use produce::{PartitionProduceResponse, ProducerTimestamp, ProduceResponseData, TopicPartitionProduceResponse};
+pub use offset::{OffsetResponseData, PartitionOffsetResponse, TopicPartitionOffsetResponse};
+pub use consumer::{
     GroupCoordinatorResponse, OffsetCommitResponse, OffsetFetchResponse,
     PartitionOffsetCommitResponse, PartitionOffsetFetchResponse,
     TopicPartitionOffsetCommitResponse, TopicPartitionOffsetFetchResponse,
 };
-pub use self::metadata::{BrokerMetadata, MetadataResponse, PartitionMetadata, TopicMetadata};
-pub use self::offset::{OffsetResponse, PartitionOffsetResponse, TopicPartitionOffsetResponse};
-pub use self::produce::{PartitionProduceResponse, ProduceResponse, TopicPartitionProduceResponse};
+
+use crate::compression::Compression;
+use crate::error::{Error, KafkaCode, Result};
+use std::mem;
+use std::time::Duration;
+
+pub const API_VERSION_PRODUCE: i16 = 3;
+pub const API_VERSION_FETCH: i16 = 4;
+pub const API_VERSION_METADATA: i16 = 1;
+pub const API_VERSION_LIST_OFFSETS: i16 = 1;
+pub const API_VERSION_OFFSET_COMMIT: i16 = 2;
+pub const API_VERSION_OFFSET_FETCH: i16 = 2;
+pub const API_VERSION_FIND_COORDINATOR: i16 = 1;
+
+/// Map our `Compression` to `kafka_protocol::records::Compression`.
+pub fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {
+    match c {
+        Compression::NONE => kafka_protocol::records::Compression::None,
+        #[cfg(feature = "gzip")]
+        Compression::GZIP => kafka_protocol::records::Compression::Gzip,
+        #[cfg(feature = "snappy")]
+        Compression::SNAPPY => kafka_protocol::records::Compression::Snappy,
+        #[cfg(feature = "lz4")]
+        Compression::LZ4 => kafka_protocol::records::Compression::Lz4,
+        #[cfg(feature = "zstd")]
+        Compression::ZSTD => kafka_protocol::records::Compression::Zstd,
+    }
+}
+
+// --------------------------------------------------------------------
+// Shared data types (moved from old protocol module)
+// --------------------------------------------------------------------
+
+#[derive(Default, Debug, Clone)]
+pub struct HeaderResponse {
+    pub correlation: i32,
+}
 
 // --------------------------------------------------------------------
 
@@ -55,13 +94,6 @@ impl Error {
     pub(crate) fn from_protocol(n: i16) -> Option<Error> {
         KafkaCode::from_protocol(n).map(Error::Kafka)
     }
-}
-
-// --------------------------------------------------------------------
-
-#[derive(Default, Debug, Clone)]
-pub struct HeaderResponse {
-    pub correlation: i32,
 }
 
 // --------------------------------------------------------------------

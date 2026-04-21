@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
-use crate::protocol2::{
+use crate::protocol::{
     API_VERSION_FETCH, API_VERSION_FIND_COORDINATOR, API_VERSION_LIST_OFFSETS,
     API_VERSION_METADATA, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH,
     API_VERSION_PRODUCE,

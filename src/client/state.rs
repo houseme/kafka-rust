@@ -268,7 +268,7 @@ impl ClientState {
 
     /// Loads new and updates existing metadata from the given
     /// metadata response.
-    pub fn update_metadata(&mut self, md: protocol::MetadataResponse) {
+    pub fn update_metadata(&mut self, md: protocol::metadata::MetadataResponseData) {
         debug!("updating metadata from: {:?}", md);
 
         // ~ register new brokers with self.brokers and obtain an
@@ -315,7 +315,7 @@ impl ClientState {
 
     /// Updates self.brokers from the given metadata returning an
     /// index `NodeId -> BrokerRef`
-    fn update_brokers(&mut self, md: &protocol::MetadataResponse) -> HashMap<i32, BrokerRef> {
+    fn update_brokers(&mut self, md: &protocol::metadata::MetadataResponseData) -> HashMap<i32, BrokerRef> {
         // ~ build an index of the already loaded brokers -- if any
         let mut brokers = HashMap::with_capacity(self.brokers.len() + md.brokers.len());
         for (i, broker) in (0u32..).zip(self.brokers.iter()) {
@@ -372,7 +372,7 @@ impl ClientState {
     pub fn set_group_coordinator<'a>(
         &'a mut self,
         group: &str,
-        gc: &protocol::GroupCoordinatorResponse,
+        gc: &protocol::consumer::GroupCoordinatorResponse,
     ) -> &'a str {
         debug!(
             "set_group_coordinator: registering coordinator for '{}': {:?}",
@@ -436,8 +436,8 @@ mod tests {
     }
 
     // mock data for an initial kafka metadata response
-    fn metadata_response_initial() -> protocol::MetadataResponse {
-        protocol::MetadataResponse {
+    fn metadata_response_initial() -> protocol::metadata::MetadataResponseData {
+        protocol::metadata::MetadataResponseData {
             header: protocol::HeaderResponse { correlation: 1 },
             brokers: vec![
                 md::BrokerMetadata {
@@ -552,8 +552,8 @@ mod tests {
         assert_partitions(state, "tee-three", &[]);
     }
 
-    fn metadata_response_update() -> protocol::MetadataResponse {
-        protocol::MetadataResponse {
+    fn metadata_response_update() -> protocol::metadata::MetadataResponseData {
+        protocol::metadata::MetadataResponseData {
             header: protocol::HeaderResponse { correlation: 2 },
             brokers: vec![
                 md::BrokerMetadata {

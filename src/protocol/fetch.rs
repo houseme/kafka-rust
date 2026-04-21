@@ -13,7 +13,7 @@ use kafka_protocol::messages::fetch_request::FetchTopic as KpFetchTopic;
 use kafka_protocol::messages::fetch_response::PartitionData as KpPartitionData;
 
 // ---------------------------------------------------------------------------
-// Owned fetch response types (no lifetimes) for the protocol2 adapter.
+// Owned fetch response types (no lifetimes) for the protocol adapter.
 // These mirror the structure of the legacy protocol::fetch types but own
 // all their data (String instead of &str, Bytes/Vec<u8> instead of &[u8]).
 
