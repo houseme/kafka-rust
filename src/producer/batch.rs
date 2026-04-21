@@ -372,6 +372,8 @@ impl<P> BatchProducerBuilder<P> {
         let producer_config = Config {
             ack_timeout: protocol::to_millis_i32(self.ack_timeout)?,
             required_acks: self.required_acks as i16,
+            enable_idempotence: false,
+            transactional_id: None,
         };
         if need_metadata {
             client.load_metadata_all()?;
@@ -435,6 +437,8 @@ mod tests {
             config: Config {
                 ack_timeout: 30000,
                 required_acks: 1,
+                enable_idempotence: false,
+                transactional_id: None,
             },
             batch_config,
             buffer: BTreeMap::new(),

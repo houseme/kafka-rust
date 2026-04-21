@@ -18,6 +18,8 @@ pub const DEFAULT_MAX_BATCH_BYTES: usize = 1_048_576;
 pub(crate) struct Config {
     pub ack_timeout: i32,
     pub required_acks: i16,
+    pub enable_idempotence: bool,
+    pub transactional_id: Option<String>,
 }
 
 /// Configuration for batch producing.

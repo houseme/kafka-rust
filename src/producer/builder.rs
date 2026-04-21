@@ -29,6 +29,8 @@ pub struct Builder<P = DefaultPartitioner> {
     partitioner: P,
     security_config: Option<SecurityConfig>,
     client_id: Option<String>,
+    enable_idempotence: bool,
+    transactional_id: Option<String>,
     #[cfg(feature = "producer_timestamp")]
     producer_timestamp: Option<ProducerTimestamp>,
 }
@@ -47,6 +49,8 @@ impl Builder {
             partitioner: DefaultPartitioner::default(),
             security_config: None,
             client_id: None,
+            enable_idempotence: false,
+            transactional_id: None,
             #[cfg(feature = "producer_timestamp")]
             producer_timestamp: None,
         };
@@ -110,6 +114,31 @@ impl Builder {
         self.producer_timestamp = Some(timestamp);
         self
     }
+
+    /// Enables idempotent producer mode (exactly-once per partition).
+    ///
+    /// When enabled, the producer will request a Producer ID from the broker
+    /// and include sequence numbers in produce requests. This requires
+    /// `RequiredAcks::All`.
+    #[must_use]
+    pub fn with_idempotence(mut self, enabled: bool) -> Self {
+        self.enable_idempotence = enabled;
+        if enabled {
+            self.required_acks = RequiredAcks::All;
+        }
+        self
+    }
+
+    /// Sets the transactional ID for transactional producer mode.
+    ///
+    /// This implicitly enables idempotence and sets `RequiredAcks::All`.
+    #[must_use]
+    pub fn with_transactional_id(mut self, id: impl Into<String>) -> Self {
+        self.transactional_id = Some(id.into());
+        self.enable_idempotence = true;
+        self.required_acks = RequiredAcks::All;
+        self
+    }
 }
 
 impl<P> Builder<P> {
@@ -126,6 +155,8 @@ impl<P> Builder<P> {
             partitioner,
             security_config: None,
             client_id: None,
+            enable_idempotence: self.enable_idempotence,
+            transactional_id: self.transactional_id,
             #[cfg(feature = "producer_timestamp")]
             producer_timestamp: None,
         }
@@ -164,6 +195,8 @@ impl<P> Builder<P> {
         let producer_config = Config {
             ack_timeout: protocol::to_millis_i32(self.ack_timeout)?,
             required_acks: self.required_acks as i16,
+            enable_idempotence: self.enable_idempotence,
+            transactional_id: self.transactional_id,
         };
         if need_metadata {
             client.load_metadata_all()?;

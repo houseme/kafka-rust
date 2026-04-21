@@ -6,6 +6,7 @@
 pub mod api_versions;
 pub mod consumer;
 pub mod fetch;
+pub mod init_producer_id;
 pub mod metadata;
 pub mod offset;
 pub mod produce;
