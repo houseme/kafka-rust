@@ -40,7 +40,7 @@ mod config;
 mod partitioner;
 mod record;
 
-pub use self::partitioner::{DefaultPartitioner, Partitioner};
+pub use self::partitioner::{DefaultPartitioner, Partitioner, RoundRobinPartitioner, StickyPartitioner, UniformPartitioner};
 pub use self::record::{AsBytes, Headers, Record};
 
 pub use crate::client::{Compression, ProduceConfirm, ProducePartitionConfirm, RequiredAcks};

@@ -13,7 +13,9 @@ pub mod produce;
 // Re-export key types for convenience
 
 use crate::compression::Compression;
-use crate::error::{Error, KafkaCode, ProtocolError, Result};
+use crate::error::{Error, Result};
+#[cfg(test)]
+use crate::error::{KafkaCode, ProtocolError};
 use std::time::Duration;
 
 pub const API_VERSION_PRODUCE: i16 = 3;

@@ -5,77 +5,7 @@ use twox_hash::XxHash32;
 
 use crate::client;
 
-// --------------------------------------------------------------------
-
-/// A description of available topics and their available partitions.
-///
-/// Indented for use by `Partitioner`s.
-pub struct Topics<'a> {
-    partitions: &'a HashMap<String, Partitions>,
-}
-
-/// Producer relevant partition information of a particular topic.
-///
-/// Indented for use by `Partition`s.
-pub struct Partitions {
-    pub(crate) available_ids: Vec<i32>,
-    pub(crate) num_all_partitions: u32,
-}
-
-impl Partitions {
-    /// Retrieves the list of the identifiers of currently "available"
-    /// partitions for the given topic.  This list excludes partitions
-    /// which do not have a leader broker assigned.
-    #[inline]
-    #[must_use]
-    pub fn available_ids(&self) -> &[i32] {
-        &self.available_ids
-    }
-
-    /// Retrieves the number of "available" partitions. This is a
-    /// merely a convenience method. See `Partitions::available_ids`.
-    #[inline]
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn num_available(&self) -> u32 {
-        self.available_ids.len() as u32
-    }
-
-    /// The total number of partitions of the underlygin topic.  This
-    /// number includes also partitions without a current leader
-    /// assignment.
-    #[inline]
-    #[must_use]
-    pub fn num_all(&self) -> u32 {
-        self.num_all_partitions
-    }
-}
-
-impl<'a> Topics<'a> {
-    pub(crate) fn new(partitions: &'a HashMap<String, Partitions>) -> Topics<'a> {
-        Topics { partitions }
-    }
-
-    /// Retrieves information about a topic's partitions.
-    #[inline]
-    #[must_use]
-    pub fn partitions(&'a self, topic: &str) -> Option<&'a Partitions> {
-        self.partitions.get(topic)
-    }
-}
-
-// --------------------------------------------------------------------
-
-/// A partitioner is given a chance to choose/redefine a partition for
-/// a message to be sent to Kafka.  See also
-/// `Record#with_partition`.
-///
-/// Implementations can be stateful.
-pub trait Partitioner {
-    /// Supposed to inspect the given message and if desired re-assign
-    /// the message's target partition.
-    fn partition(&mut self, topics: Topics<'_>, msg: &mut client::ProduceMessage<'_, '_>);
-}
+use super::Partitioner;
 
 /// The default hasher implementation used of `DefaultPartitioner`.
 pub type DefaultHasher = XxHash32;
@@ -110,7 +40,7 @@ impl DefaultPartitioner {
     }
 }
 
-impl<H: BuildHasher> Partitioner for DefaultPartitioner<H> {
+impl<H: BuildHasher + Send + Sync> Partitioner for DefaultPartitioner<H> {
     #[allow(unused_variables)]
     fn partition(&mut self, topics: Topics<'_>, rec: &mut client::ProduceMessage<'_, '_>) {
         if rec.partition >= 0 {
@@ -137,6 +67,58 @@ impl<H: BuildHasher> Partitioner for DefaultPartitioner<H> {
                 self.cntr = self.cntr.wrapping_add(1);
             }
         }
+    }
+}
+
+// --------------------------------------------------------------------
+// Re-export Partitions/Topics types for use by other partitioners
+
+/// Producer relevant partition information of a particular topic.
+///
+/// Intented for use by `Partition`s.
+#[derive(Debug)]
+pub struct Partitions {
+    pub(crate) available_ids: Vec<i32>,
+    pub(crate) num_all_partitions: u32,
+}
+
+impl Partitions {
+    #[inline]
+    #[must_use]
+    pub fn available_ids(&self) -> &[i32] {
+        &self.available_ids
+    }
+
+    #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn num_available(&self) -> u32 {
+        self.available_ids.len() as u32
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn num_all(&self) -> u32 {
+        self.num_all_partitions
+    }
+}
+
+/// A description of available topics and their available partitions.
+///
+/// Intented for use by `Partitioner`s.
+pub struct Topics<'a> {
+    partitions: &'a HashMap<String, Partitions>,
+}
+
+impl<'a> Topics<'a> {
+    pub(crate) fn new(partitions: &'a HashMap<String, Partitions>) -> Topics<'a> {
+        Topics { partitions }
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn partitions(&'a self, topic: &str) -> Option<&'a Partitions> {
+        self.partitions.get(topic)
     }
 }
 
