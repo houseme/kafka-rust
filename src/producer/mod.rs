@@ -35,11 +35,14 @@
 // XXX 1) rethink return values for the send_all() method
 // XXX 2) Handle recoverable errors behind the scenes through retry attempts
 
+mod batch;
 mod builder;
 mod config;
 mod partitioner;
 mod record;
 
+pub use self::batch::{BatchProducer, BatchProducerBuilder};
+pub use config::BatchConfig;
 pub use self::partitioner::{DefaultPartitioner, Partitioner, RoundRobinPartitioner, StickyPartitioner, UniformPartitioner};
 pub use self::record::{AsBytes, Headers, Record};
 
