@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-04-21
+
+### Added
+
+- **kafka-protocol integration**: Migrated from hand-written protocol implementation
+  to [kafka-protocol](https://crates.io/crates/kafka-protocol) v0.17 code-generated Kafka wire protocol library.
+- **Record Batch v2**: Produce requests now use Record Batch v2 format for improved compatibility with modern Kafka
+  brokers.
+- **ZSTD compression**: Added `zstd` feature for ZSTD compression support.
+- **LZ4 native**: Added `lz4_native` feature using the `lz4` C-binding crate as an alternative to `lz4_flex`.
+- **TCP Keepalive & NoDelay**: All TCP connections are configured with keepalive (10s idle, 20s interval) and
+  `TCP_NODELAY` for improved broker compatibility.
+- **Connection state machine**: Connections track health via `Connected`/`Terminated` states. Terminated connections (
+  due to IO errors or broker restarts) are automatically reconnected on next use.
+- **BrokerRequestError**: Broker request failures now include contextual information (broker host and API key name) for
+  improved debugging and retry logic.
+- **API version negotiation**: Client sends `ApiVersionsRequest` to each broker on first metadata request, discovering
+  supported protocol version ranges.
+
+### Changed
+
+- **BREAKING**: `fetch::Message.key` and `fetch::Message.value` changed from `&'a [u8]` to `bytes::Bytes` (owned).
+- **BREAKING**: `fetch::Topic.topic()` changed from returning `&'a str` to `&str` (owned `String`).
+- **BREAKING**: `fetch::Response` removed `raw_data` field; responses are fully decoded.
+- **BREAKING**: Protocol versions upgraded from v0 to v1-v4 (transparent to users but affects minimum broker
+  compatibility).
+- **BREAKING**: Removed `byteorder` and `crc-fast` dependencies.
+- **BREAKING**: Removed `fnv` dependency (replaced by `indexmap` for producer partitioner).
+- **Unified protocol module**: Merged `protocol/` and `protocol2/` into a single `protocol/` module. Data types and
+  kafka-protocol adapter functions coexist in the same files.
+- Removed `lz4_flex` dependency; `lz4` feature now uses the `lz4_flex` crate directly.
+- Removed unused `protocol/list_offset.rs` (dead code from legacy implementation).
+
+### Removed
+
+- `src/codecs.rs` — Legacy serialization traits (416 lines).
+- `src/protocol/fetch.rs` — Legacy fetch response parser (802 lines).
+- `src/protocol/zreader.rs` — Legacy response reader (216 lines).
+- `protocol/list_offset.rs` — Unused legacy types.
+
+### Migration Guide
+
+Update your `Cargo.toml`:
+
+```toml
+# Before
+rustfs-kafka = "0.21"
+
+# After
+rustfs-kafka = "0.22"
+```
+
+Update fetch message access (`Bytes` implements `AsRef<[u8]>` and `Deref<Target=[u8]>`):
+
+```rust
+// Before
+let key: & [u8] = msg.key;
+
+// After
+let key: & [u8] = & msg.key;
+// or simply: &msg.key[..]
+```
+
+## [0.21.0] - 2026-04-20
+
 ### Added
 
 - **rustls 0.23 TLS backend**:
@@ -48,19 +113,19 @@ Update your `Cargo.toml`:
 kafka = { version = "0.10", features = ["security"] }
 
 # After
-rustfs-kafka = "0.20"
+rustfs-kafka = "0.21"
 ```
 
 To use `ring` instead of `aws-lc-rs`:
 
 ```toml
-rustfs-kafka = { version = "0.20", default-features = false, features = ["snappy", "gzip", "security-ring"] }
+rustfs-kafka = { version = "0.21", default-features = false, features = ["snappy", "gzip", "security-ring"] }
 ```
 
 To build without TLS:
 
 ```toml
-rustfs-kafka = { version = "0.20", default-features = false, features = ["snappy", "gzip"] }
+rustfs-kafka = { version = "0.21", default-features = false, features = ["snappy", "gzip"] }
 ```
 
 Update your code imports:

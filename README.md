@@ -11,7 +11,7 @@ A Rust client for Apache Kafka, forked from [kafka-rust](https://github.com/kafk
 
 ```toml
 [dependencies]
-rustfs-kafka = "0.20"
+rustfs-kafka = "0.22"
 ```
 
 To build the usual `cargo build` should suffice. The crate supports various features which can be turned off at compile time.
@@ -31,7 +31,7 @@ rustls is enabled by default and requires no additional system dependencies:
 
 ```toml
 [dependencies]
-rustfs-kafka = "0.20"
+rustfs-kafka = "0.22"
 ```
 
 To use `ring` instead of `aws-lc-rs`:
