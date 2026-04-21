@@ -20,6 +20,8 @@ where
     J: AsRef<FetchPartition<'a>>,
     I: IntoIterator<Item = J>,
 {
+    let start = Instant::now();
+
     let mut broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>> = HashMap::new();
     for inp in input {
         let inp = inp.as_ref();
@@ -37,14 +39,44 @@ where
         }
     }
 
-    __fetch_messages_kp(
+    let result = __fetch_messages_kp(
         conn_pool,
         correlation,
         &config.client_id,
         config.fetch_max_wait_time(),
         config.fetch_min_bytes(),
         broker_partitions,
-    )
+    );
+
+    #[cfg(feature = "metrics")]
+    {
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        match &result {
+            Ok(responses) => {
+                let mut total_bytes: usize = 0;
+                let mut total_messages: usize = 0;
+                for resp in responses {
+                    for t in &resp.topics {
+                        for p in &t.partitions {
+                            if let Ok(data) = p.data() {
+                                total_messages += data.messages.len();
+                                for msg in &data.messages {
+                                    total_bytes += msg.key.len() + msg.value.len();
+                                }
+                            }
+                        }
+                        crate::metrics::record_fetch(&t.topic, total_bytes, total_messages, elapsed);
+                    }
+                }
+            }
+            Err(e) => {
+                let error_type = format!("{:?}", e);
+                crate::metrics::record_fetch_error("_unknown", &error_type);
+            }
+        }
+    }
+
+    result
 }
 
 fn __fetch_messages_kp(

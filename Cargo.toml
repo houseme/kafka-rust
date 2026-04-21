@@ -22,6 +22,7 @@ kafka-protocol = { version = "0.17.0", default-features = false, features = ["cl
 indexmap = "2.14.0"
 
 chrono = { version = "0.4.44", optional = true }
+metrics = { version = "0.24", optional = true }
 thiserror = "2.0.18"
 tracing = "0.1.44"
 
@@ -45,5 +46,6 @@ security = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustl
 security-ring = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs", "rustls/ring"]
 
 producer_timestamp = ["chrono"]
+metrics = ["dep:metrics"]
 nightly = []
 integration_tests = []

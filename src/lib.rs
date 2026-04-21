@@ -26,6 +26,8 @@ mod compression;
 pub mod consumer;
 pub mod error;
 mod network;
+#[cfg(feature = "metrics")]
+mod metrics;
 pub mod producer;
 mod protocol;
 mod utils;

@@ -159,7 +159,17 @@ impl Connections {
             self.allocate_slot(host, now)?
         };
 
-        self.ensure_connected(idx, host, now)?;
+        let result = self.ensure_connected(idx, host, now);
+
+        #[cfg(feature = "metrics")]
+        {
+            crate::metrics::update_connection_count(self.conns.len());
+            if let Err(ref e) = result {
+                crate::metrics::record_connection_error(host, &e.to_string());
+            }
+        }
+
+        result?;
         Ok(&mut self.conns[idx].item)
     }
 

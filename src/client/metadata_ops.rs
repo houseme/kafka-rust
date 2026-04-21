@@ -20,8 +20,11 @@ pub fn load_metadata<T: AsRef<str>>(client: &mut KafkaClient, topics: &[T]) -> R
 }
 
 pub fn load_metadata_kp<T: AsRef<str>>(client: &mut KafkaClient, topics: &[T]) -> Result<()> {
+    let start = Instant::now();
     let resp = fetch_metadata_kp(client, topics)?;
     client.state.update_metadata(resp);
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_metadata_refresh(start.elapsed().as_secs_f64() * 1000.0);
     Ok(())
 }
 

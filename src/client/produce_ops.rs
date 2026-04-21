@@ -23,16 +23,25 @@ where
     J: AsRef<ProduceMessage<'a, 'b>>,
     I: IntoIterator<Item = J>,
 {
+    let start = Instant::now();
     let correlation = state.next_correlation_id();
 
     // Collect messages into (broker, Vec<(topic, partition, key, value, headers)>)
     // We extract broker info first, then bundle with header references.
     let mut broker_msgs: HashMap<String, Vec<(&str, i32, Option<&'b [u8]>, Option<&'b [u8]>, &'b [(String, Vec<u8>)])>> =
         HashMap::new();
+    let mut total_bytes: usize = 0;
+    let mut message_count: usize = 0;
     for msg in messages {
         let msg = msg.as_ref();
+        total_bytes += msg.value.map(|v| v.len()).unwrap_or(0);
+        message_count += 1;
         let broker = match state.find_broker(msg.topic, msg.partition) {
-            None => return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition)),
+            None => {
+                #[cfg(feature = "metrics")]
+                crate::metrics::record_produce_error(msg.topic, "UnknownTopicOrPartition");
+                return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
+            }
             Some(b) => b.to_owned(),
         };
         broker_msgs
@@ -41,11 +50,33 @@ where
             .push((msg.topic, msg.partition, msg.key, msg.value, msg.headers));
     }
 
-    __produce_messages_kp(
+    let result = __produce_messages_kp(
         conn_pool, correlation, &config.client_id,
         acks as i16, protocol::to_millis_i32(ack_timeout)?,
         config.compression, broker_msgs, acks as i16 == 0,
-    )
+    );
+
+    #[cfg(feature = "metrics")]
+    {
+        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+        match &result {
+            Ok(confirms) => {
+                for confirm in confirms {
+                    crate::metrics::record_produce(&confirm.topic, total_bytes, message_count, elapsed);
+                }
+                if confirms.is_empty() && message_count > 0 {
+                    // no-acks mode: record without specific topic
+                    crate::metrics::record_produce("_unknown", total_bytes, message_count, elapsed);
+                }
+            }
+            Err(e) => {
+                let error_type = format!("{:?}", e);
+                crate::metrics::record_produce_error("_unknown", &error_type);
+            }
+        }
+    }
+
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
