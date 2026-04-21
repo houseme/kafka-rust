@@ -8,7 +8,6 @@ use crate::error::Result;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
-use std::mem;
 use std::net::{Shutdown, TcpStream};
 use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
@@ -158,7 +157,9 @@ impl State {
 
 #[derive(Debug)]
 pub struct Connections {
-    conns: HashMap<String, Pooled<KafkaConnection>>,
+    conns: Vec<Pooled<KafkaConnection>>,
+    host_index: HashMap<String, usize>,
+    free_indices: Vec<usize>,
     state: State,
     config: Config,
 }
@@ -167,7 +168,9 @@ impl Connections {
     #[cfg(not(feature = "security"))]
     pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
         Connections {
-            conns: HashMap::new(),
+            conns: Vec::new(),
+            host_index: HashMap::new(),
+            free_indices: Vec::new(),
             state: State::new(),
             config: Config {
                 rw_timeout,
@@ -188,7 +191,9 @@ impl Connections {
         security: Option<SecurityConfig>,
     ) -> Connections {
         Connections {
-            conns: HashMap::new(),
+            conns: Vec::new(),
+            host_index: HashMap::new(),
+            free_indices: Vec::new(),
             state: State::new(),
             config: Config {
                 rw_timeout,
@@ -206,64 +211,79 @@ impl Connections {
         self.config.idle_timeout
     }
 
-    pub fn get_conn(&mut self, host: &str, now: Instant) -> Result<&mut KafkaConnection> {
-        if let Some(conn) = self.conns.get_mut(host) {
-            let needs_reconnect =
-                now.duration_since(conn.last_checkout) >= self.config.idle_timeout
-                    || conn.item.is_terminated();
-            if needs_reconnect {
-                let reason = if conn.item.is_terminated() {
-                    "connection terminated"
-                } else {
-                    "idle timeout"
-                };
-                debug!("Reconnecting ({}) to: {:?}", reason, conn.item);
-                let new_conn = self.config.new_conn(self.state.next_conn_id(), host)?;
-                let _ = conn.item.shutdown();
-                conn.item = new_conn;
-            }
-            conn.last_checkout = now;
-            let kconn: &mut KafkaConnection = &mut conn.item;
-            return Ok(unsafe { mem::transmute(kconn) });
-        }
+    fn allocate_slot(&mut self, host: &str, now: Instant) -> Result<usize> {
         let cid = self.state.next_conn_id();
-        self.conns.insert(
-            host.to_owned(),
-            Pooled::new(now, self.config.new_conn(cid, host)?),
-        );
-        Ok(&mut self.conns.get_mut(host).unwrap().item)
+        let conn = Pooled::new(now, self.config.new_conn(cid, host)?);
+
+        if let Some(idx) = self.free_indices.pop() {
+            self.conns[idx] = conn;
+            self.host_index.insert(host.to_owned(), idx);
+            Ok(idx)
+        } else {
+            let idx = self.conns.len();
+            self.conns.push(conn);
+            self.host_index.insert(host.to_owned(), idx);
+            Ok(idx)
+        }
+    }
+
+    fn ensure_connected(
+        &mut self,
+        idx: usize,
+        host: &str,
+        now: Instant,
+    ) -> Result<()> {
+        let conn = &mut self.conns[idx];
+        let needs_reconnect =
+            now.duration_since(conn.last_checkout) >= self.config.idle_timeout
+                || conn.item.is_terminated();
+        if needs_reconnect {
+            let reason = if conn.item.is_terminated() {
+                "connection terminated"
+            } else {
+                "idle timeout"
+            };
+            debug!("Reconnecting ({}) to: {:?}", reason, conn.item);
+            let new_conn = self.config.new_conn(self.state.next_conn_id(), host)?;
+            let _ = conn.item.shutdown();
+            conn.item = new_conn;
+        }
+        conn.last_checkout = now;
+        Ok(())
+    }
+
+    pub fn get_conn(&mut self, host: &str, now: Instant) -> Result<&mut KafkaConnection> {
+        let idx = if let Some(&idx) = self.host_index.get(host) {
+            idx
+        } else {
+            self.allocate_slot(host, now)?
+        };
+
+        self.ensure_connected(idx, host, now)?;
+        Ok(&mut self.conns[idx].item)
     }
 
     pub fn get_conn_any(&mut self, now: Instant) -> Option<&mut KafkaConnection> {
-        for (host, conn) in &mut self.conns {
-            let needs_reconnect =
-                now.duration_since(conn.last_checkout) >= self.config.idle_timeout
-                    || conn.item.is_terminated();
-            if needs_reconnect {
-                let reason = if conn.item.is_terminated() {
-                    "connection terminated"
-                } else {
-                    "idle timeout"
-                };
-                debug!("Reconnecting ({}) to: {:?}", reason, conn.item);
-                let new_conn_id = self.state.next_conn_id();
-                let new_conn = match self.config.new_conn(new_conn_id, host.as_str()) {
-                    Ok(new_conn) => {
-                        let _ = conn.item.shutdown();
-                        new_conn
-                    }
-                    Err(e) => {
-                        warn!("Failed to reconnect to {}: {:?}", host, e);
-                        continue;
-                    }
-                };
-                conn.item = new_conn;
+        let mut best_idx: Option<usize> = None;
+        let mut best_checkout: Option<Instant> = None;
+
+        let hosts: Vec<String> = self.host_index.keys().cloned().collect();
+        for host in &hosts {
+            let idx = self.host_index[host];
+            if let Err(e) = self.ensure_connected(idx, host, now) {
+                warn!("Failed to reconnect to {}: {:?}", host, e);
+                continue;
             }
-            conn.last_checkout = now;
-            let kconn: &mut KafkaConnection = &mut conn.item;
-            return Some(kconn);
+            let conn = &self.conns[idx];
+            if best_checkout.is_none()
+                || conn.last_checkout < best_checkout.unwrap()
+            {
+                best_idx = Some(idx);
+                best_checkout = Some(conn.last_checkout);
+            }
         }
-        None
+
+        best_idx.map(|idx| &mut self.conns[idx].item)
     }
 }
 

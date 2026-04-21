@@ -242,10 +242,10 @@ impl Config {
             compression: match m.opt_str("compression") {
                 None => Compression::NONE,
                 Some(ref s) if s.eq_ignore_ascii_case("none") => Compression::NONE,
-                #[cfg(feature = "gzip")]
                 Some(ref s) if s.eq_ignore_ascii_case("gzip") => Compression::GZIP,
-                #[cfg(feature = "snappy")]
                 Some(ref s) if s.eq_ignore_ascii_case("snappy") => Compression::SNAPPY,
+                Some(ref s) if s.eq_ignore_ascii_case("lz4") => Compression::LZ4,
+                Some(ref s) if s.eq_ignore_ascii_case("zstd") => Compression::ZSTD,
                 Some(s) => {
                     return Err(anyhow!(
                         "Error {:?}",

@@ -1,46 +1,10 @@
-//! Compression codecs for Kafka messages.
+//! Compression types for Kafka messages.
 //!
 //! Kafka supports pluggable compression at the message-set level. The
 //! compression type is encoded in the lower 3 bits of the `attributes`
 //! field in each [`Message`](crate::protocol::produce::MessageProduceRequest).
 //!
-//! This crate provides the following codecs, each gated behind a Cargo feature:
-//!
-//! | Codec  | Attribute | Feature  | Crate      |
-//! |--------|-----------|----------|------------|
-//! | None   | `0`       | —        | —          |
-//! | GZIP   | `1`       | `gzip`   | `flate2`   |
-//! | Snappy | `2`       | `snappy` | `snap`     |
-//! | LZ4    | `3`       | `lz4`    | `lz4_flex` |
-//! | ZSTD   | `4`       | `zstd`   | `zstd`     |
-//!
-//! All features except `gzip` are enabled by default. To trim dependencies,
-//! disable the default features and re-enable only what you need:
-//!
-//! ```toml
-//! [dependencies]
-//! rustfs-kafka = { version = "0.20", default-features = false, features = ["gzip"] }
-//! ```
-
-#[cfg(feature = "gzip")]
-#[allow(dead_code)]
-pub mod gzip;
-
-#[cfg(feature = "lz4")]
-#[allow(dead_code)]
-pub mod lz4;
-
-#[cfg(feature = "snappy")]
-#[allow(dead_code)]
-pub mod snappy;
-
-#[cfg(feature = "lz4_native")]
-#[allow(dead_code)]
-pub mod lz4_native;
-
-#[cfg(feature = "zstd")]
-#[allow(dead_code)]
-pub mod zstd;
+//! Actual compression and decompression is handled by the `kafka-protocol` crate.
 
 /// Compression types supported by Kafka.
 ///
@@ -61,15 +25,11 @@ pub enum Compression {
     #[default]
     NONE = 0,
     /// GZIP compression (RFC 1952). Higher compression ratio but slower.
-    #[cfg(feature = "gzip")]
     GZIP = 1,
     /// Snappy compression. Good balance of speed and ratio.
-    #[cfg(feature = "snappy")]
     SNAPPY = 2,
     /// LZ4 compression. Fastest compression and decompression speed.
-    #[cfg(feature = "lz4")]
     LZ4 = 3,
     /// ZSTD compression. Excellent balance of ratio and speed.
-    #[cfg(feature = "zstd")]
     ZSTD = 4,
 }

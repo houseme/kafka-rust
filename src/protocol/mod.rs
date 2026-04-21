@@ -29,13 +29,9 @@ pub const API_VERSION_FIND_COORDINATOR: i16 = 1;
 pub fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {
     match c {
         Compression::NONE => kafka_protocol::records::Compression::None,
-        #[cfg(feature = "gzip")]
         Compression::GZIP => kafka_protocol::records::Compression::Gzip,
-        #[cfg(feature = "snappy")]
         Compression::SNAPPY => kafka_protocol::records::Compression::Snappy,
-        #[cfg(feature = "lz4")]
         Compression::LZ4 => kafka_protocol::records::Compression::Lz4,
-        #[cfg(feature = "zstd")]
         Compression::ZSTD => kafka_protocol::records::Compression::Zstd,
     }
 }
