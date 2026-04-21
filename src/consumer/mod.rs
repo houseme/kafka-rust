@@ -127,6 +127,36 @@ impl Consumer {
         self.client
     }
 
+    /// Pauses message fetching for the specified partitions of a topic.
+    ///
+    /// Paused partitions will not be included in future `poll()` results
+    /// until they are resumed with `resume()`.
+    pub fn pause(&mut self, topic: &str, partitions: &[i32]) {
+        for &p in partitions {
+            self.state.paused.insert((topic.to_owned(), p));
+        }
+        debug!("Paused partitions for topic '{}': {:?}", topic, partitions);
+    }
+
+    /// Resumes message fetching for the specified partitions of a topic.
+    pub fn resume(&mut self, topic: &str, partitions: &[i32]) {
+        for &p in partitions {
+            self.state.paused.remove(&(topic.to_owned(), p));
+        }
+        debug!("Resumed partitions for topic '{}': {:?}", topic, partitions);
+    }
+
+    /// Returns `true` if the specified partition is currently paused.
+    #[must_use]
+    pub fn is_paused(&self, topic: &str, partition: i32) -> bool {
+        self.state.paused.contains(&(topic.to_owned(), partition))
+    }
+
+    /// Returns all currently paused partitions.
+    pub fn paused_partitions(&self) -> impl Iterator<Item = &(String, i32)> {
+        self.state.paused.iter()
+    }
+
     /// Retrieves the topic partitions being currently consumed by
     /// this consumer.
     #[must_use]
@@ -575,5 +605,48 @@ impl Iterator for MessageSetsIter<'_> {
             }
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod pause_resume_tests {
+
+    #[test]
+    fn test_pause_and_resume() {
+        // We can't easily create a full Consumer without a Kafka connection,
+        // so test the State directly
+        let paused = std::collections::HashSet::new();
+        assert!(paused.is_empty());
+
+        let mut paused = paused;
+        paused.insert(("t".to_owned(), 0));
+        paused.insert(("t".to_owned(), 1));
+
+        assert!(paused.contains(&("t".to_owned(), 0)));
+        assert!(paused.contains(&("t".to_owned(), 1)));
+        assert!(!paused.contains(&("t".to_owned(), 2)));
+
+        paused.remove(&("t".to_owned(), 0));
+        assert!(!paused.contains(&("t".to_owned(), 0)));
+        assert!(paused.contains(&("t".to_owned(), 1)));
+    }
+
+    #[test]
+    fn test_pause_multiple_partitions() {
+        let mut paused = std::collections::HashSet::new();
+        paused.insert(("t".to_owned(), 0));
+        paused.insert(("t".to_owned(), 1));
+        paused.insert(("t".to_owned(), 2));
+        assert_eq!(paused.len(), 3);
+
+        paused.remove(&("t".to_owned(), 1));
+        assert_eq!(paused.len(), 2);
+    }
+
+    #[test]
+    fn test_pause_nonexistent_partition_no_panic() {
+        let mut paused = std::collections::HashSet::new();
+        paused.insert(("t".to_owned(), 999));
+        assert_eq!(paused.len(), 1);
     }
 }

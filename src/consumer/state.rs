@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::BuildHasherDefault;
 
@@ -56,6 +55,9 @@ pub struct State {
     /// Contains the offsets of messages marked as "consumed" (to be
     /// committed)
     pub consumed_offsets: HashMap<TopicPartition, ConsumedOffset, PartitionHasher>,
+
+    /// Set of (topic, partition) pairs that are currently paused.
+    pub paused: HashSet<(String, i32)>,
 }
 
 impl fmt::Debug for State {
@@ -103,6 +105,7 @@ impl State {
             fetch_offsets,
             retry_partitions: VecDeque::new(),
             consumed_offsets,
+            paused: HashSet::new(),
         })
     }
 
