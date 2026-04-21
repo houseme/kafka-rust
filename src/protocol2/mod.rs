@@ -4,6 +4,7 @@
 //! types and the `kafka_protocol` crate's generated types. During migration, both
 //! the old `protocol` module and this module coexist.
 
+pub mod api_versions;
 pub mod consumer;
 pub mod fetch;
 pub mod metadata;

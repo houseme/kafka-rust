@@ -31,7 +31,7 @@ use crate::protocol;
 use crate::client_internals::KafkaClientInternals;
 
 pub mod metadata;
-mod network;
+pub(crate) mod network;
 mod state;
 
 /// Owned fetch response types from the kafka-protocol adapter.
@@ -104,6 +104,9 @@ pub struct KafkaClient {
 
     // ~ the current state of this client
     state: state::ClientState,
+
+    // ~ negotiated API versions per broker
+    api_versions: crate::protocol2::api_versions::ApiVersionCache,
 }
 
 #[derive(Debug)]
@@ -411,6 +414,7 @@ impl KafkaClient {
                 Duration::from_millis(DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS),
             ),
             state: state::ClientState::new(),
+            api_versions: crate::protocol2::api_versions::ApiVersionCache::new(),
         }
     }
 
@@ -461,6 +465,7 @@ impl KafkaClient {
                 Some(security),
             ),
             state: state::ClientState::new(),
+            api_versions: crate::protocol2::api_versions::ApiVersionCache::new(),
         }
     }
 
@@ -825,6 +830,22 @@ impl KafkaClient {
             debug!("fetch_metadata_kp: requesting metadata from {}", host);
             match self.conn_pool.get_conn(host, now) {
                 Ok(conn) => {
+                    // Negotiate API versions on first connection to each broker
+                    if !self.api_versions.contains(host) {
+                        let av_correlation = self.state.next_correlation_id();
+                        match crate::protocol2::api_versions::fetch_api_versions(
+                            conn, av_correlation, &self.config.client_id,
+                        ) {
+                            Ok(versions) => {
+                                self.api_versions.insert(host.clone(), versions);
+                            }
+                            Err(e) => debug!(
+                                "fetch_metadata_kp: API version negotiation failed for {}: {}",
+                                host, e
+                            ),
+                        }
+                    }
+
                     let (header, request) =
                         crate::protocol2::metadata::build_metadata_request(correlation, &self.config.client_id, Some(&topic_strs));
                     match __kp_send_request(conn, &header, &request, crate::protocol2::API_VERSION_METADATA) {
