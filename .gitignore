@@ -16,3 +16,6 @@ Thumbs.db
 
 # Environment
 .env.local
+docs/refactoring.md
+docs/tasks
+docs/architecture-improvement-plan.md

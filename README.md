@@ -6,6 +6,28 @@ A Rust client for Apache Kafka, forked from [kafka-rust](https://github.com/kafk
 
 - This library is primarily documented through examples in its [API documentation](https://docs.rs/rustfs-kafka/).
 - Documentation about Kafka itself can be found at [its project home page](http://kafka.apache.org/).
+- Architecture guides and improvement plans are available in the [docs directory](docs/).
+
+## Project Structure
+
+```
+kafka-rust/
+├── src/                        # Core library
+│   ├── client/                 # KafkaClient — mid-level API
+│   ├── consumer/               # Consumer — high-level consumer API
+│   ├── producer/               # Producer — high-level producer API
+│   ├── protocol/               # Kafka wire protocol implementations
+│   ├── network/                # TCP/TLS connections and pooling
+│   ├── compression/            # Compression codec (NONE, SNAPPY, GZIP)
+│   ├── error.rs                # Error types
+│   └── utils.rs                # Shared utilities
+├── crates/
+│   └── rustfs-kafka-async/     # Async client built on tokio
+├── benches/                    # Criterion benchmarks
+├── examples/                   # Standalone example programs
+├── tests/                      # Integration tests (Docker-based)
+└── docs/                       # Architecture guides and task plans
+```
 
 ## Installation
 
@@ -15,6 +37,19 @@ rustfs-kafka = "0.22"
 ```
 
 To build the usual `cargo build` should suffice. The crate supports various features which can be turned off at compile time.
+
+### Feature Flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `security` | Yes | TLS via rustls with aws-lc-rs crypto provider |
+| `security-ring` | No | TLS via rustls with ring crypto provider |
+| `snappy` | Yes | Snappy compression support |
+| `gzip` | Yes | GZIP compression support |
+| `producer_timestamp` | No | Include timestamps in producer records (requires chrono) |
+| `metrics` | No | Prometheus-compatible metrics support |
+| `nightly` | No | Enable nightly-only optimizations |
+| `integration_tests` | No | Compile integration tests |
 
 ### TLS Support
 
@@ -38,7 +73,7 @@ To use `ring` instead of `aws-lc-rs`:
 
 ```toml
 [dependencies]
-rustfs-kafka = { version = "0.20", default-features = false, features = ["snappy", "gzip", "security-ring"] }
+rustfs-kafka = { version = "0.22", default-features = false, features = ["snappy", "gzip", "security-ring"] }
 ```
 
 Benefits of rustls:
@@ -56,24 +91,41 @@ To build without any TLS support:
 
 ```toml
 [dependencies]
-rustfs-kafka = { version = "0.20", default-features = false, features = ["snappy", "gzip"] }
+rustfs-kafka = { version = "0.22", default-features = false, features = ["snappy", "gzip"] }
 ```
 
 ## Supported Kafka version
 
-`rustfs-kafka` is tested for compatibility with a select few Kafka versions from 0.8.2 to 3.8.0. However, not all features from Kafka 0.9 and newer are supported yet.
+`rustfs-kafka` is tested against Kafka 3.9.2, 4.1.2, and 4.2.0. Kafka 4.x uses KRaft mode (no ZooKeeper), while 3.x uses the traditional ZooKeeper-based mode.
 
 ## Examples
 
-As mentioned, the [cargo generated documentation](https://docs.rs/rustfs-kafka/) contains some examples. Further, standalone, compilable example programs are provided in the [examples directory](examples/).
+As mentioned, the [cargo generated documentation](https://docs.rs/rustfs-kafka/) contains some examples. Further, standalone, compilable example programs are provided in the [examples directory](examples/):
+
+- `example-produce.rs` — Basic message production
+- `example-consume.rs` — Basic message consumption
+- `example-fetch.rs` — Low-level fetch API usage
+- `console-producer.rs` — Read from stdin and produce to Kafka
+- `console-consumer.rs` — Consume from Kafka and print to stdout
+- `offset-monitor.rs` — Monitor consumer group offsets
+- `example-rustls.rs` — TLS connection example
+
+### Async API
+
+The `rustfs-kafka-async` crate provides an async wrapper built on tokio:
+
+```toml
+[dependencies]
+rustfs-kafka-async = "0.22"
+```
 
 ## Consumer
 
-This is a higher-level consumer API for Kafka and is provided by the module `rustfs_kafka::consumer`. It provides convenient offset management support on behalf of a specified group.
+This is a higher-level consumer API for Kafka and is provided by the module `rustfs_kafka::consumer`. Features include automatic offset management with consumer group coordination, configurable fallback offset, partition assignment strategies, and manual or automatic offset committing.
 
 ## Producer
 
-This is a higher-level producer API for Kafka and is provided by the module `rustfs_kafka::producer`. It provides convenient automatic partition assignment capabilities through partitioners.
+This is a higher-level producer API for Kafka and is provided by the module `rustfs_kafka::producer`. Features include automatic partition assignment through pluggable partitioners, batch producer for efficient message grouping, transactional producer for exactly-once semantics, and configurable compression.
 
 ## KafkaClient
 
@@ -92,7 +144,18 @@ There's still a lot of room for improvement. Not everything works right at the m
 
 ### Integration tests
 
-When working locally, the integration tests require Docker (1.10.0+) and docker-compose (1.6.0+). Run the tests via the included `run-all-tests` script in the `tests` directory.
+When working locally, the integration tests require Docker and docker-compose. Run the tests via the included `run-all-tests` script in the `tests` directory:
+
+```bash
+# Run against all default Kafka versions (3.9.2, 4.1.2, 4.2.0)
+./tests/run-all-tests
+
+# Run against a specific version
+./tests/run-all-tests 4.2.0
+
+# Run only non-secure tests
+SECURES= ./tests/run-all-tests 3.9.2
+```
 
 ## Creating a topic
 
