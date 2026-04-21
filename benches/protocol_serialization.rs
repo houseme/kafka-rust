@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use rustfs_kafka::producer::{Compression, Record};
 use std::hint::black_box;
-use rustfs_kafka::producer::{Record, Compression};
 
 fn bench_record_serialization(c: &mut Criterion) {
     let mut group = c.benchmark_group("record_creation");
@@ -8,7 +8,11 @@ fn bench_record_serialization(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
             let value = vec![0u8; size];
             b.iter(|| {
-                black_box(Record::from_key_value("bench-topic", black_box(b"key"), black_box(&value)));
+                black_box(Record::from_key_value(
+                    "bench-topic",
+                    black_box(b"key"),
+                    black_box(&value),
+                ));
             });
         });
     }

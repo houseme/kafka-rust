@@ -319,7 +319,10 @@ impl ClientState {
 
     /// Updates self.brokers from the given metadata returning an
     /// index `NodeId -> BrokerRef`
-    fn update_brokers(&mut self, md: &protocol::metadata::MetadataResponseData) -> HashMap<i32, BrokerRef> {
+    fn update_brokers(
+        &mut self,
+        md: &protocol::metadata::MetadataResponseData,
+    ) -> HashMap<i32, BrokerRef> {
         // ~ build an index of the already loaded brokers -- if any
         let mut brokers = HashMap::with_capacity(self.brokers.len() + md.brokers.len());
         for (i, broker) in (0u32..).zip(self.brokers.iter()) {

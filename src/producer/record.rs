@@ -231,15 +231,13 @@ mod tests {
 
     #[test]
     fn test_record_with_single_header() {
-        let r = Record::from_value("topic", b"value")
-            .with_header("content-type", b"json");
+        let r = Record::from_value("topic", b"value").with_header("content-type", b"json");
         assert_eq!(r.headers.len(), 1);
     }
 
     #[test]
     fn test_record_from_key_value_with_headers() {
-        let r = Record::from_key_value("topic", "key", b"value")
-            .with_header("h1", b"v1");
+        let r = Record::from_key_value("topic", "key", b"value").with_header("h1", b"v1");
         assert_eq!(r.key, "key");
         assert_eq!(r.headers.len(), 1);
     }

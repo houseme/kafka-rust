@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use rustfs_kafka::producer::{Headers, Record};
 use std::hint::black_box;
-use rustfs_kafka::producer::{Record, Headers};
 
 fn bench_record_creation(c: &mut Criterion) {
     c.bench_function("record_from_value", |b| {
@@ -11,7 +11,11 @@ fn bench_record_creation(c: &mut Criterion) {
 
     c.bench_function("record_from_key_value", |b| {
         b.iter(|| {
-            black_box(Record::from_key_value("bench-topic", black_box(b"key"), black_box(b"value")));
+            black_box(Record::from_key_value(
+                "bench-topic",
+                black_box(b"key"),
+                black_box(b"value"),
+            ));
         })
     });
 
@@ -20,7 +24,9 @@ fn bench_record_creation(c: &mut Criterion) {
             let mut headers = Headers::new();
             headers.insert("trace-id", b"abc-123-def");
             headers.insert("content-type", b"application/json");
-            black_box(Record::from_key_value("bench-topic", b"key", b"value").with_headers(headers));
+            black_box(
+                Record::from_key_value("bench-topic", b"key", b"value").with_headers(headers),
+            );
         })
     });
 }
@@ -55,5 +61,10 @@ fn bench_headers(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_record_creation, bench_batch_record_creation, bench_headers);
+criterion_group!(
+    benches,
+    bench_record_creation,
+    bench_batch_record_creation,
+    bench_headers
+);
 criterion_main!(benches);

@@ -1,13 +1,18 @@
 use kafka_protocol::messages::{
-    ApiKey, FindCoordinatorRequest, FindCoordinatorResponse,
-    GroupId, OffsetCommitRequest, OffsetFetchRequest, RequestHeader, TopicName,
+    ApiKey, FindCoordinatorRequest, FindCoordinatorResponse, GroupId, OffsetCommitRequest,
+    OffsetFetchRequest, RequestHeader, TopicName,
 };
 use kafka_protocol::protocol::StrBytes;
 
-use kafka_protocol::messages::offset_commit_request::{OffsetCommitRequestPartition, OffsetCommitRequestTopic};
+use kafka_protocol::messages::offset_commit_request::{
+    OffsetCommitRequestPartition, OffsetCommitRequestTopic,
+};
 use kafka_protocol::messages::offset_fetch_request::OffsetFetchRequestTopic;
 
-use super::{API_VERSION_FIND_COORDINATOR, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH, HeaderResponse};
+use super::{
+    API_VERSION_FIND_COORDINATOR, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH,
+    HeaderResponse,
+};
 
 // -- FindCoordinator --
 
@@ -38,7 +43,9 @@ pub fn convert_find_coordinator_response(
     let port = kp_resp.port;
 
     GroupCoordinatorResponse {
-        header: HeaderResponse { correlation: correlation_id },
+        header: HeaderResponse {
+            correlation: correlation_id,
+        },
         error: kp_resp.error_code,
         broker_id: node_id,
         port,
@@ -63,8 +70,7 @@ pub fn build_offset_commit_request(
         .with_request_api_version(API_VERSION_OFFSET_COMMIT)
         .with_correlation_id(correlation_id);
 
-    let mut topic_map
-        : std::collections::HashMap<&str, Vec<OffsetCommitRequestPartition>> =
+    let mut topic_map: std::collections::HashMap<&str, Vec<OffsetCommitRequestPartition>> =
         std::collections::HashMap::new();
 
     for (topic, partition, offset, metadata) in offsets {
@@ -100,7 +106,9 @@ pub fn convert_offset_commit_response(
     correlation_id: i32,
 ) -> OffsetCommitResponse {
     OffsetCommitResponse {
-        header: HeaderResponse { correlation: correlation_id },
+        header: HeaderResponse {
+            correlation: correlation_id,
+        },
         topic_partitions: kp_resp
             .topics
             .into_iter()
@@ -133,9 +141,7 @@ pub fn build_offset_fetch_request(
         .with_request_api_version(API_VERSION_OFFSET_FETCH)
         .with_correlation_id(correlation_id);
 
-    let mut topic_map
-        : std::collections::HashMap<&str, Vec<i32>> =
-        std::collections::HashMap::new();
+    let mut topic_map: std::collections::HashMap<&str, Vec<i32>> = std::collections::HashMap::new();
 
     for (topic, partition) in partitions {
         topic_map.entry(topic).or_default().push(*partition);
@@ -162,7 +168,9 @@ pub fn convert_offset_fetch_response(
     correlation_id: i32,
 ) -> OffsetFetchResponse {
     OffsetFetchResponse {
-        header: HeaderResponse { correlation: correlation_id },
+        header: HeaderResponse {
+            correlation: correlation_id,
+        },
         topic_partitions: kp_resp
             .topics
             .into_iter()
@@ -236,12 +244,10 @@ pub struct PartitionOffsetFetchResponse {
 impl PartitionOffsetFetchResponse {
     pub fn get_offsets(&self) -> Result<PartitionOffset> {
         match Error::from_protocol(self.error) {
-            Some(Error::Kafka(KafkaCode::UnknownTopicOrPartition)) => {
-                Ok(PartitionOffset {
-                    partition: self.partition,
-                    offset: -1,
-                })
-            }
+            Some(Error::Kafka(KafkaCode::UnknownTopicOrPartition)) => Ok(PartitionOffset {
+                partition: self.partition,
+                offset: -1,
+            }),
             Some(e) => Err(e),
             None => Ok(PartitionOffset {
                 partition: self.partition,

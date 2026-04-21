@@ -44,9 +44,7 @@ fn main() {
                                 println!(
                                     "topic: {} / partition: {} / latest available message \
                                           offset: {}",
-                                    t.topic,
-                                    p.partition,
-                                    data.highwatermark_offset
+                                    t.topic, p.partition, data.highwatermark_offset
                                 );
                                 for msg in &data.messages {
                                     println!(

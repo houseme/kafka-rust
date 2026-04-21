@@ -1,9 +1,11 @@
 //! InitProducerId protocol (API key 22) for idempotent/transactional producer support.
 
 use bytes::BytesMut;
-use kafka_protocol::messages::{InitProducerIdRequest, InitProducerIdResponse, RequestHeader, ResponseHeader};
-use kafka_protocol::protocol::{Decodable, Encodable};
+use kafka_protocol::messages::{
+    InitProducerIdRequest, InitProducerIdResponse, RequestHeader, ResponseHeader,
+};
 use kafka_protocol::protocol::StrBytes;
+use kafka_protocol::protocol::{Decodable, Encodable};
 
 use crate::error::{Error, Result};
 use crate::network::KafkaConnection;
@@ -39,9 +41,9 @@ pub fn fetch_init_producer_id(
 
     let mut req = InitProducerIdRequest::default();
     if let Some(tid) = transactional_id {
-        req = req.with_transactional_id(Some(
-            kafka_protocol::messages::TransactionalId(StrBytes::from_string(tid.to_owned()))
-        ));
+        req = req.with_transactional_id(Some(kafka_protocol::messages::TransactionalId(
+            StrBytes::from_string(tid.to_owned()),
+        )));
     }
 
     let header = RequestHeader::default()
@@ -51,10 +53,13 @@ pub fn fetch_init_producer_id(
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
 
     let mut header_buf = BytesMut::new();
-    header.encode(&mut header_buf, version).map_err(|_| Error::codec())?;
+    header
+        .encode(&mut header_buf, version)
+        .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
-    req.encode(&mut body_buf, version).map_err(|_| Error::codec())?;
+    req.encode(&mut body_buf, version)
+        .map_err(|_| Error::codec())?;
 
     let total_len = (header_buf.len() + body_buf.len()) as i32;
     let mut out = BytesMut::with_capacity(4 + total_len as usize);
@@ -73,7 +78,8 @@ pub fn fetch_init_producer_id(
     let mut bytes = bytes::Bytes::from(resp_bytes);
     let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
 
-    let kp_resp = InitProducerIdResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
+    let kp_resp =
+        InitProducerIdResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
     InitProducerIdResponseData::from_response(kp_resp)
 }
 

@@ -1,8 +1,10 @@
-use kafka_protocol::messages::{ApiKey, BrokerId, ListOffsetsRequest, ListOffsetsResponse, RequestHeader, TopicName};
+use kafka_protocol::messages::{
+    ApiKey, BrokerId, ListOffsetsRequest, ListOffsetsResponse, RequestHeader, TopicName,
+};
 use kafka_protocol::protocol::StrBytes;
 
-use kafka_protocol::messages::list_offsets_request::ListOffsetsTopic;
 use kafka_protocol::messages::list_offsets_request::ListOffsetsPartition;
+use kafka_protocol::messages::list_offsets_request::ListOffsetsTopic;
 
 use super::{API_VERSION_LIST_OFFSETS, HeaderResponse};
 use crate::error::KafkaCode;
@@ -52,7 +54,9 @@ pub fn convert_list_offsets_response(
     correlation_id: i32,
 ) -> OffsetResponseData {
     OffsetResponseData {
-        header: HeaderResponse { correlation: correlation_id },
+        header: HeaderResponse {
+            correlation: correlation_id,
+        },
         topic_partitions: kp_resp
             .topics
             .into_iter()

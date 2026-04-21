@@ -2,8 +2,8 @@
 
 use bytes::{Buf, BufMut, BytesMut};
 use kafka_protocol::messages::{RequestHeader, ResponseHeader};
-use kafka_protocol::protocol::{Decodable, Encodable};
 use kafka_protocol::protocol::StrBytes;
+use kafka_protocol::protocol::{Decodable, Encodable};
 
 use crate::error::{Error, Result};
 use crate::network::KafkaConnection;
@@ -141,7 +141,9 @@ pub fn build_create_topics_request(
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
 
     let mut header_buf = BytesMut::new();
-    header.encode(&mut header_buf, version).map_err(|_| Error::codec())?;
+    header
+        .encode(&mut header_buf, version)
+        .map_err(|_| Error::codec())?;
 
     let total_len = (header_buf.len() + body.len()) as i32;
     let mut out = BytesMut::with_capacity(4 + total_len as usize);

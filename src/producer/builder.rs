@@ -36,7 +36,10 @@ pub struct Builder<P = DefaultPartitioner> {
 }
 
 impl Builder {
-    pub(crate) fn new(client: Option<KafkaClient>, hosts: Vec<String>) -> Builder<DefaultPartitioner> {
+    pub(crate) fn new(
+        client: Option<KafkaClient>,
+        hosts: Vec<String>,
+    ) -> Builder<DefaultPartitioner> {
         let mut b = Builder {
             client,
             hosts,

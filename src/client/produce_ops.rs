@@ -6,10 +6,10 @@ use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
 
 use super::config::ClientConfig;
-use crate::network::Connections;
 use super::state::ClientState;
 use super::transport;
 use super::{ProduceConfirm, ProduceMessage, RequiredAcks};
+use crate::network::Connections;
 
 #[tracing::instrument(skip(conn_pool, state, config, messages), fields(acks = ?acks))]
 pub(crate) fn internal_produce_messages_kp<'a, 'b, I, J>(
@@ -29,8 +29,16 @@ where
 
     // Collect messages into (broker, Vec<(topic, partition, key, value, headers)>)
     // We extract broker info first, then bundle with header references.
-    let mut broker_msgs: HashMap<String, Vec<(&str, i32, Option<&'b [u8]>, Option<&'b [u8]>, &'b [(String, Vec<u8>)])>> =
-        HashMap::new();
+    let mut broker_msgs: HashMap<
+        String,
+        Vec<(
+            &str,
+            i32,
+            Option<&'b [u8]>,
+            Option<&'b [u8]>,
+            &'b [(String, Vec<u8>)],
+        )>,
+    > = HashMap::new();
     let mut total_bytes: usize = 0;
     let mut message_count: usize = 0;
     for msg in messages {
@@ -45,16 +53,24 @@ where
             }
             Some(b) => b.to_owned(),
         };
-        broker_msgs
-            .entry(broker)
-            .or_default()
-            .push((msg.topic, msg.partition, msg.key, msg.value, msg.headers));
+        broker_msgs.entry(broker).or_default().push((
+            msg.topic,
+            msg.partition,
+            msg.key,
+            msg.value,
+            msg.headers,
+        ));
     }
 
     let result = __produce_messages_kp(
-        conn_pool, correlation, &config.client_id,
-        acks as i16, protocol::to_millis_i32(ack_timeout)?,
-        config.compression, broker_msgs, acks as i16 == 0,
+        conn_pool,
+        correlation,
+        &config.client_id,
+        acks as i16,
+        protocol::to_millis_i32(ack_timeout)?,
+        config.compression,
+        broker_msgs,
+        acks as i16 == 0,
     );
 
     #[cfg(feature = "metrics")]
@@ -63,7 +79,12 @@ where
         match &result {
             Ok(confirms) => {
                 for confirm in confirms {
-                    crate::metrics::record_produce(&confirm.topic, total_bytes, message_count, elapsed);
+                    crate::metrics::record_produce(
+                        &confirm.topic,
+                        total_bytes,
+                        message_count,
+                        elapsed,
+                    );
                 }
                 if confirms.is_empty() && message_count > 0 {
                     // no-acks mode: record without specific topic
@@ -88,35 +109,69 @@ fn __produce_messages_kp(
     required_acks: i16,
     ack_timeout_ms: i32,
     compression: Compression,
-    broker_msgs: HashMap<String, Vec<(&str, i32, Option<&[u8]>, Option<&[u8]>, &[(String, Vec<u8>)])>>,
+    broker_msgs: HashMap<
+        String,
+        Vec<(
+            &str,
+            i32,
+            Option<&[u8]>,
+            Option<&[u8]>,
+            &[(String, Vec<u8>)],
+        )>,
+    >,
     no_acks: bool,
 ) -> Result<Vec<ProduceConfirm>> {
     let now = Instant::now();
     if no_acks {
         for (host, msgs) in broker_msgs {
-            let conn = conn_pool.get_conn(&host, now)
+            let conn = conn_pool
+                .get_conn(&host, now)
                 .map_err(|e| e.with_broker_context(&host, "Produce"))?;
             let (header, request) = crate::protocol::produce::build_produce_request(
-                correlation_id, client_id, required_acks, ack_timeout_ms, compression, &msgs,
+                correlation_id,
+                client_id,
+                required_acks,
+                ack_timeout_ms,
+                compression,
+                &msgs,
             );
-            transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_PRODUCE)
-                .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+            transport::kp_send_request(
+                conn,
+                &header,
+                &request,
+                crate::protocol::API_VERSION_PRODUCE,
+            )
+            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
         }
         Ok(vec![])
     } else {
         let mut res: Vec<ProduceConfirm> = vec![];
         for (host, msgs) in broker_msgs {
-            let conn = conn_pool.get_conn(&host, now)
+            let conn = conn_pool
+                .get_conn(&host, now)
                 .map_err(|e| e.with_broker_context(&host, "Produce"))?;
             let (header, request) = crate::protocol::produce::build_produce_request(
-                correlation_id, client_id, required_acks, ack_timeout_ms, compression, &msgs,
+                correlation_id,
+                client_id,
+                required_acks,
+                ack_timeout_ms,
+                compression,
+                &msgs,
             );
-            transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_PRODUCE)
-                .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+            transport::kp_send_request(
+                conn,
+                &header,
+                &request,
+                crate::protocol::API_VERSION_PRODUCE,
+            )
+            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
             let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ProduceResponse>(
-                conn, crate::protocol::API_VERSION_PRODUCE,
-            ).map_err(|e| e.with_broker_context(&host, "Produce"))?;
-            let our_resp = crate::protocol::produce::convert_produce_response(kp_resp, correlation_id);
+                conn,
+                crate::protocol::API_VERSION_PRODUCE,
+            )
+            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+            let our_resp =
+                crate::protocol::produce::convert_produce_response(kp_resp, correlation_id);
             for tpo in our_resp.get_response() {
                 res.push(tpo);
             }

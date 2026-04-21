@@ -3,11 +3,11 @@ use std::time::Instant;
 
 use crate::error::Result;
 
+use super::FetchPartition;
 use super::config::ClientConfig;
-use crate::network::Connections;
 use super::state::ClientState;
 use super::transport;
-use super::FetchPartition;
+use crate::network::Connections;
 
 #[tracing::instrument(skip(conn_pool, state, config, input))]
 pub fn fetch_messages_kp<'a, I, J>(
@@ -66,7 +66,12 @@ where
                                 }
                             }
                         }
-                        crate::metrics::record_fetch(&t.topic, total_bytes, total_messages, elapsed);
+                        crate::metrics::record_fetch(
+                            &t.topic,
+                            total_bytes,
+                            total_messages,
+                            elapsed,
+                        );
                     }
                 }
             }
@@ -91,7 +96,8 @@ fn __fetch_messages_kp(
     let now = Instant::now();
     let mut res = Vec::with_capacity(broker_partitions.len());
     for (host, partitions) in broker_partitions {
-        let conn = conn_pool.get_conn(host, now)
+        let conn = conn_pool
+            .get_conn(host, now)
             .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let (header, request) = crate::protocol::fetch::build_fetch_request(
             correlation_id,
@@ -107,7 +113,8 @@ fn __fetch_messages_kp(
         let kp_resp = transport::kp_get_response::<kafka_protocol::messages::FetchResponse>(
             conn,
             crate::protocol::API_VERSION_FETCH,
-        ).map_err(|e| e.with_broker_context(host, "Fetch"))?;
+        )
+        .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
         res.push(owned);
     }

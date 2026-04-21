@@ -38,29 +38,6 @@
 //! }
 //! ```
 //!
-//! # Example
-//! ```no_run
-//! use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
-//!
-//! let mut consumer =
-//!    Consumer::from_hosts(vec!("localhost:9092".to_owned()))
-//!       .with_topic_partitions("my-topic".to_owned(), &[0, 1])
-//!       .with_fallback_offset(FetchOffset::Earliest)
-//!       .with_group("my-group".to_owned())
-//!       .with_offset_storage(Some(GroupOffsetStorage::Kafka))
-//!       .create()
-//!       .unwrap();
-//! loop {
-//!   for ms in consumer.poll().unwrap().iter() {
-//!     for m in ms.messages() {
-//!       println!("{:?}", m);
-//!     }
-//!     consumer.consume_messageset(&ms);
-//!   }
-//!   consumer.commit_consumed().unwrap();
-//! }
-//! ```
-//!
 //! Please refer to the documentation of the individual "with" methods
 //! used to set up the consumer. These contain further information or
 //! links to such.
@@ -269,7 +246,10 @@ impl Consumer {
         let topic_ref = self.state.topic_ref(topic);
         match topic_ref {
             Some(topic_ref) => {
-                let tp = TopicPartition { topic_ref, partition };
+                let tp = TopicPartition {
+                    topic_ref,
+                    partition,
+                };
                 let maybe_entry = self.state.fetch_offsets.entry(tp);
                 match maybe_entry {
                     Entry::Occupied(mut e) => {
@@ -311,16 +291,17 @@ impl Consumer {
                 "fetching messages: (fetch-offsets: {:?})",
                 state.fetch_offsets_debug()
             );
-            let reqs: Vec<FetchPartition<'_>> = state.fetch_offsets.iter().map(|(tp, s)| {
-                let topic = state.topic_name(tp.topic_ref);
-                FetchPartition::new(topic, tp.partition, s.offset).with_max_bytes(s.max_bytes)
-            }).collect();
+            let reqs: Vec<FetchPartition<'_>> = state
+                .fetch_offsets
+                .iter()
+                .map(|(tp, s)| {
+                    let topic = state.topic_name(tp.topic_ref);
+                    FetchPartition::new(topic, tp.partition, s.offset).with_max_bytes(s.max_bytes)
+                })
+                .collect();
             #[allow(clippy::cast_possible_truncation)] // partition count won't exceed u32
             let num_partitions = state.fetch_offsets.len() as u32;
-            (
-                num_partitions,
-                client.fetch_messages_kp(reqs.iter()),
-            )
+            (num_partitions, client.fetch_messages_kp(reqs.iter()))
         }
     }
 
@@ -375,8 +356,10 @@ impl Consumer {
                         debug!(
                             "no data received for {}:{} (max_bytes: {} / fetch_offset: {} / \
                                 highwatermark_offset: {})",
-                            &t.topic, tp.partition,
-                            fetch_state.max_bytes, fetch_state.offset,
+                            &t.topic,
+                            tp.partition,
+                            fetch_state.max_bytes,
+                            fetch_state.offset,
                             data.highwatermark_offset
                         );
 
@@ -446,7 +429,10 @@ impl Consumer {
         };
         match self.state.consumed_offsets.entry(tp) {
             Entry::Vacant(v) => {
-                v.insert(state::ConsumedOffset { offset, dirty: true });
+                v.insert(state::ConsumedOffset {
+                    offset,
+                    dirty: true,
+                });
             }
             Entry::Occupied(mut v) => {
                 let o = v.get_mut();
@@ -613,14 +599,15 @@ impl Iterator for MessageSetsIter<'_> {
             // Try the next partition in the current topic
             if let Some(p) = self.partitions.as_mut().and_then(Iterator::next) {
                 if let Ok(data) = p.data()
-                    && !data.messages.is_empty() {
-                        let topic = self.curr_topic.unwrap_or("").to_owned();
-                        return Some(MessageSet {
-                            topic,
-                            partition: p.partition,
-                            messages: data.messages.clone(),
-                        });
-                    }
+                    && !data.messages.is_empty()
+                {
+                    let topic = self.curr_topic.unwrap_or("").to_owned();
+                    return Some(MessageSet {
+                        topic,
+                        partition: p.partition,
+                        messages: data.messages.clone(),
+                    });
+                }
                 continue;
             }
             // Advance to next topic

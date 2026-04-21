@@ -60,9 +60,18 @@ fn test_kafka_code_from_protocol() {
     }
 
     assert!(KafkaCode::from_protocol(0).is_none());
-    assert_kafka_code!(KafkaCode::OffsetOutOfRange, KafkaCode::OffsetOutOfRange as i16);
-    assert_kafka_code!(KafkaCode::IllegalGeneration, KafkaCode::IllegalGeneration as i16);
-    assert_kafka_code!(KafkaCode::UnsupportedVersion, KafkaCode::UnsupportedVersion as i16);
+    assert_kafka_code!(
+        KafkaCode::OffsetOutOfRange,
+        KafkaCode::OffsetOutOfRange as i16
+    );
+    assert_kafka_code!(
+        KafkaCode::IllegalGeneration,
+        KafkaCode::IllegalGeneration as i16
+    );
+    assert_kafka_code!(
+        KafkaCode::UnsupportedVersion,
+        KafkaCode::UnsupportedVersion as i16
+    );
     assert_kafka_code!(KafkaCode::Unknown, KafkaCode::Unknown as i16);
     assert_kafka_code!(KafkaCode::Unknown, i16::MAX);
     assert_kafka_code!(KafkaCode::Unknown, i16::MIN);
@@ -115,7 +124,10 @@ fn test_to_kp_compression() {
 
     assert_eq!(to_kp_compression(Compression::NONE), KpCompression::None);
     assert_eq!(to_kp_compression(Compression::GZIP), KpCompression::Gzip);
-    assert_eq!(to_kp_compression(Compression::SNAPPY), KpCompression::Snappy);
+    assert_eq!(
+        to_kp_compression(Compression::SNAPPY),
+        KpCompression::Snappy
+    );
     assert_eq!(to_kp_compression(Compression::LZ4), KpCompression::Lz4);
     assert_eq!(to_kp_compression(Compression::ZSTD), KpCompression::Zstd);
 }

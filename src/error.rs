@@ -146,7 +146,9 @@ impl From<Arc<Self>> for Error {
                 Self::Connection(ConnectionError::Tls(s)) => {
                     Self::Connection(ConnectionError::Tls(s.clone()))
                 }
-                Self::Connection(ConnectionError::Timeout(d)) => Self::Connection(ConnectionError::Timeout(*d)),
+                Self::Connection(ConnectionError::Timeout(d)) => {
+                    Self::Connection(ConnectionError::Timeout(*d))
+                }
                 Self::Connection(ConnectionError::NoHostReachable) => {
                     Self::Connection(ConnectionError::NoHostReachable)
                 }
@@ -154,14 +156,20 @@ impl From<Arc<Self>> for Error {
                 Self::Kafka(c) => Self::Kafka(*c),
                 Self::Config(s) => Self::Config(s.clone()),
                 Self::Consumer(c) => Self::Consumer(c.clone()),
-                Self::TopicPartitionError { topic_name, partition_id, error_code } => {
-                    Self::TopicPartitionError {
-                        topic_name: topic_name.clone(),
-                        partition_id: *partition_id,
-                        error_code: *error_code,
-                    }
-                }
-                Self::BrokerRequestError { broker, api_key, source: _ } => Self::BrokerRequestError {
+                Self::TopicPartitionError {
+                    topic_name,
+                    partition_id,
+                    error_code,
+                } => Self::TopicPartitionError {
+                    topic_name: topic_name.clone(),
+                    partition_id: *partition_id,
+                    error_code: *error_code,
+                },
+                Self::BrokerRequestError {
+                    broker,
+                    api_key,
+                    source: _,
+                } => Self::BrokerRequestError {
                     broker: broker.clone(),
                     api_key,
                     source: Box::new(Self::from(Arc::clone(&arc))),
@@ -489,10 +497,13 @@ mod tests {
 
     #[test]
     fn test_is_retriable_connection_errors() {
-        assert!(Error::Connection(ConnectionError::Io(
-            io::Error::new(ErrorKind::ConnectionReset, "reset")
-        ))
-        .is_retriable());
+        assert!(
+            Error::Connection(ConnectionError::Io(io::Error::new(
+                ErrorKind::ConnectionReset,
+                "reset"
+            )))
+            .is_retriable()
+        );
         assert!(Error::Connection(ConnectionError::Timeout(Duration::from_secs(5))).is_retriable());
         assert!(Error::Connection(ConnectionError::NoHostReachable).is_retriable());
         #[cfg(feature = "security")]
@@ -540,10 +551,10 @@ mod tests {
 
     #[test]
     fn test_error_category_queries() {
-        assert!(Error::Connection(ConnectionError::Io(
-            io::Error::new(ErrorKind::Other, "err")
-        ))
-        .is_connection_error());
+        assert!(
+            Error::Connection(ConnectionError::Io(io::Error::new(ErrorKind::Other, "err")))
+                .is_connection_error()
+        );
         assert!(!Error::codec().is_connection_error());
         assert!(Error::codec().is_protocol_error());
         assert!(Error::no_topics_assigned().is_consumer_error());
@@ -551,30 +562,50 @@ mod tests {
 
     #[test]
     fn test_protocol_error_variants() {
-        assert!(Error::Protocol(ProtocolError::UnsupportedVersion)
-            .to_string()
-            .contains("version"));
-        assert!(Error::Protocol(ProtocolError::UnsupportedCompression)
-            .to_string()
-            .contains("compression"));
-        assert!(Error::Protocol(ProtocolError::Codec).to_string().contains("Encoding"));
-        assert!(Error::Protocol(ProtocolError::StringDecode).to_string().contains("String"));
-        assert!(Error::Protocol(ProtocolError::InvalidDuration)
-            .to_string()
-            .contains("duration"));
+        assert!(
+            Error::Protocol(ProtocolError::UnsupportedVersion)
+                .to_string()
+                .contains("version")
+        );
+        assert!(
+            Error::Protocol(ProtocolError::UnsupportedCompression)
+                .to_string()
+                .contains("compression")
+        );
+        assert!(
+            Error::Protocol(ProtocolError::Codec)
+                .to_string()
+                .contains("Encoding")
+        );
+        assert!(
+            Error::Protocol(ProtocolError::StringDecode)
+                .to_string()
+                .contains("String")
+        );
+        assert!(
+            Error::Protocol(ProtocolError::InvalidDuration)
+                .to_string()
+                .contains("duration")
+        );
     }
 
     #[test]
     fn test_consumer_error_variants() {
-        assert!(Error::Consumer(ConsumerError::NoTopicsAssigned)
-            .to_string()
-            .contains("topic"));
-        assert!(Error::Consumer(ConsumerError::UnsetOffsetStorage)
-            .to_string()
-            .contains("Offset"));
-        assert!(Error::Consumer(ConsumerError::UnsetGroupId)
-            .to_string()
-            .contains("Group"));
+        assert!(
+            Error::Consumer(ConsumerError::NoTopicsAssigned)
+                .to_string()
+                .contains("topic")
+        );
+        assert!(
+            Error::Consumer(ConsumerError::UnsetOffsetStorage)
+                .to_string()
+                .contains("Offset")
+        );
+        assert!(
+            Error::Consumer(ConsumerError::UnsetGroupId)
+                .to_string()
+                .contains("Group")
+        );
     }
 }
 

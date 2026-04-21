@@ -127,16 +127,10 @@ impl Connections {
         }
     }
 
-    fn ensure_connected(
-        &mut self,
-        idx: usize,
-        host: &str,
-        now: Instant,
-    ) -> Result<()> {
+    fn ensure_connected(&mut self, idx: usize, host: &str, now: Instant) -> Result<()> {
         let conn = &mut self.conns[idx];
-        let needs_reconnect =
-            now.duration_since(conn.last_checkout) >= self.config.idle_timeout
-                || conn.item.is_terminated();
+        let needs_reconnect = now.duration_since(conn.last_checkout) >= self.config.idle_timeout
+            || conn.item.is_terminated();
         if needs_reconnect {
             let reason = if conn.item.is_terminated() {
                 "connection terminated"
@@ -186,9 +180,7 @@ impl Connections {
                 continue;
             }
             let conn = &self.conns[idx];
-            if best_checkout.is_none()
-                || conn.last_checkout < best_checkout.unwrap()
-            {
+            if best_checkout.is_none() || conn.last_checkout < best_checkout.unwrap() {
                 best_idx = Some(idx);
                 best_checkout = Some(conn.last_checkout);
             }

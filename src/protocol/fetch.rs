@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use kafka_protocol::messages::{ApiKey, BrokerId, FetchRequest, FetchResponse, RequestHeader, TopicName};
+use kafka_protocol::messages::{
+    ApiKey, BrokerId, FetchRequest, FetchResponse, RequestHeader, TopicName,
+};
 use kafka_protocol::protocol::StrBytes;
 use kafka_protocol::records::RecordBatchDecoder;
 
@@ -94,7 +96,9 @@ pub fn build_fetch_request(
         .into_iter()
         .map(|(topic_name, fetch_partitions)| {
             KpFetchTopic::default()
-                .with_topic(TopicName::from(StrBytes::from_string(topic_name.to_string())))
+                .with_topic(TopicName::from(StrBytes::from_string(
+                    topic_name.to_string(),
+                )))
                 .with_partitions(fetch_partitions)
         })
         .collect();
@@ -110,10 +114,7 @@ pub fn build_fetch_request(
     (header, request)
 }
 
-pub fn convert_fetch_response(
-    kp_resp: FetchResponse,
-    correlation_id: i32,
-) -> OwnedFetchResponse {
+pub fn convert_fetch_response(kp_resp: FetchResponse, correlation_id: i32) -> OwnedFetchResponse {
     let topics = kp_resp
         .responses
         .into_iter()
@@ -185,8 +186,16 @@ mod tests {
         let data = OwnedData {
             highwatermark_offset: 100,
             messages: vec![
-                OwnedMessage { offset: 0, key: Bytes::new(), value: Bytes::from_static(b"a") },
-                OwnedMessage { offset: 1, key: Bytes::new(), value: Bytes::from_static(b"b") },
+                OwnedMessage {
+                    offset: 0,
+                    key: Bytes::new(),
+                    value: Bytes::from_static(b"a"),
+                },
+                OwnedMessage {
+                    offset: 1,
+                    key: Bytes::new(),
+                    value: Bytes::from_static(b"b"),
+                },
             ],
         };
         assert_eq!(data.highwatermark_offset, 100);
@@ -216,9 +225,11 @@ mod tests {
             partition: 3,
             data: Ok(OwnedData {
                 highwatermark_offset: 200,
-                messages: vec![
-                    OwnedMessage { offset: 10, key: Bytes::new(), value: Bytes::from_static(b"hello") },
-                ],
+                messages: vec![OwnedMessage {
+                    offset: 10,
+                    key: Bytes::new(),
+                    value: Bytes::from_static(b"hello"),
+                }],
             }),
         };
         assert_eq!(partition.partition, 3);
@@ -244,11 +255,17 @@ mod tests {
             partitions: vec![
                 OwnedPartition {
                     partition: 0,
-                    data: Ok(OwnedData { highwatermark_offset: 10, messages: vec![] }),
+                    data: Ok(OwnedData {
+                        highwatermark_offset: 10,
+                        messages: vec![],
+                    }),
                 },
                 OwnedPartition {
                     partition: 1,
-                    data: Ok(OwnedData { highwatermark_offset: 20, messages: vec![] }),
+                    data: Ok(OwnedData {
+                        highwatermark_offset: 20,
+                        messages: vec![],
+                    }),
                 },
             ],
         };
@@ -262,17 +279,16 @@ mod tests {
     fn owned_fetch_response_construction() {
         let resp = OwnedFetchResponse {
             correlation_id: 42,
-            topics: vec![
-                OwnedTopic {
-                    topic: "orders".to_string(),
-                    partitions: vec![
-                        OwnedPartition {
-                            partition: 0,
-                            data: Ok(OwnedData { highwatermark_offset: 5, messages: vec![] }),
-                        },
-                    ],
-                },
-            ],
+            topics: vec![OwnedTopic {
+                topic: "orders".to_string(),
+                partitions: vec![OwnedPartition {
+                    partition: 0,
+                    data: Ok(OwnedData {
+                        highwatermark_offset: 5,
+                        messages: vec![],
+                    }),
+                }],
+            }],
         };
         assert_eq!(resp.correlation_id, 42);
         assert_eq!(resp.topics.len(), 1);
@@ -314,7 +330,9 @@ fn decode_partition_records(
 }
 
 /// Safe entry point for fuzzing fetch response data — catches all panics.
-pub(crate) fn decode_records_safe(records: &[u8]) -> Result<Vec<OwnedMessage>, crate::error::Error> {
+pub(crate) fn decode_records_safe(
+    records: &[u8],
+) -> Result<Vec<OwnedMessage>, crate::error::Error> {
     const MAX_INPUT_SIZE: usize = 1_048_576;
     if records.len() > MAX_INPUT_SIZE {
         return Err(crate::error::Error::codec());

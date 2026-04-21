@@ -14,10 +14,13 @@ pub(crate) fn kp_send_request(
     use kafka_protocol::protocol::Encodable;
 
     let mut header_buf = BytesMut::new();
-    header.encode(&mut header_buf, api_version).map_err(|_| Error::codec())?;
+    header
+        .encode(&mut header_buf, api_version)
+        .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version).map_err(|_| Error::codec())?;
+    body.encode(&mut body_buf, api_version)
+        .map_err(|_| Error::codec())?;
 
     let total_len = (header_buf.len() + body_buf.len()) as i32;
     let mut out = BytesMut::with_capacity(4 + total_len as usize);
@@ -42,7 +45,8 @@ pub(crate) fn kp_get_response<R: kafka_protocol::protocol::Decodable>(
     let resp_bytes = conn.read_exact_alloc(size as u64)?;
 
     let mut bytes = Bytes::from(resp_bytes);
-    let _resp_header = ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
 
     R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
 }

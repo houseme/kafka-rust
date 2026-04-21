@@ -59,12 +59,12 @@ pub mod builder;
 pub mod config;
 pub(crate) mod fetch_ops;
 mod internals;
+pub mod metadata;
 pub(crate) mod metadata_ops;
 pub(crate) mod offset_ops;
 pub(crate) mod produce_ops;
-pub(crate) mod transport;
-pub mod metadata;
 mod state;
+pub(crate) mod transport;
 
 use crate::network;
 
@@ -697,13 +697,24 @@ impl KafkaClient {
     {
         let correlation_id = self.state.next_correlation_id();
         offset_ops::commit_offsets_kp(
-            offsets, group, correlation_id, &self.config.client_id,
-            &mut self.state, &mut self.conn_pool, &self.config,
+            offsets,
+            group,
+            correlation_id,
+            &self.config.client_id,
+            &mut self.state,
+            &mut self.conn_pool,
+            &self.config,
         )
     }
 
     /// Commit a single offset using the kafka-protocol adapter.
-    pub fn commit_offset_kp(&mut self, group: &str, topic: &str, partition: i32, offset: i64) -> Result<()> {
+    pub fn commit_offset_kp(
+        &mut self,
+        group: &str,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> Result<()> {
         self.commit_offsets_kp(group, &[CommitOffset::new(topic, partition, offset)])
     }
 
@@ -719,8 +730,13 @@ impl KafkaClient {
     {
         let correlation_id = self.state.next_correlation_id();
         offset_ops::fetch_group_offsets_kp(
-            partitions, group, correlation_id, &self.config.client_id,
-            &mut self.state, &mut self.conn_pool, &self.config,
+            partitions,
+            group,
+            correlation_id,
+            &self.config.client_id,
+            &mut self.state,
+            &mut self.conn_pool,
+            &self.config,
         )
     }
 
@@ -741,8 +757,13 @@ impl KafkaClient {
             }
         }
         offset_ops::fetch_group_offsets_kp(
-            partition_vec, group, correlation_id, &self.config.client_id,
-            &mut self.state, &mut self.conn_pool, &self.config,
+            partition_vec,
+            group,
+            correlation_id,
+            &self.config.client_id,
+            &mut self.state,
+            &mut self.conn_pool,
+            &self.config,
         )
         .map(|mut m| m.remove(topic).unwrap_or_default())
     }

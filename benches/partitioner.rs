@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rustfs_kafka::producer::{DefaultPartitioner, RoundRobinPartitioner};
 use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 use std::hint::black_box;
@@ -32,5 +32,9 @@ fn bench_hash_computation(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_default_partitioner_construction, bench_hash_computation);
+criterion_group!(
+    benches,
+    bench_default_partitioner_construction,
+    bench_hash_computation
+);
 criterion_main!(benches);

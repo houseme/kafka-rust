@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use crate::client::{self, KafkaClient, KafkaClientInternals, ProduceConfirm};
 use crate::error::Result;
 
-use super::config::{Config, DEFAULT_ACK_TIMEOUT_MILLIS, DEFAULT_REQUIRED_ACKS};
 use super::config::BatchConfig;
+use super::config::{Config, DEFAULT_ACK_TIMEOUT_MILLIS, DEFAULT_REQUIRED_ACKS};
 use super::partitioner::{DefaultPartitioner, Partitioner, Topics};
 use super::{Compression, Record, RequiredAcks, State};
 
@@ -21,7 +21,11 @@ impl BatchRecord {
     fn byte_size(&self) -> usize {
         self.key.as_ref().map_or(0, |k| k.len())
             + self.value.as_ref().map_or(0, |v| v.len())
-            + self.headers.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+            + self
+                .headers
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>()
     }
 }
 
@@ -80,16 +84,19 @@ impl<P: Partitioner> BatchProducer<P> {
             partition: record.partition,
             headers: &record.headers.0,
         };
-        self.state.partitioner.partition(
-            Topics::new(&self.state.partitions),
-            &mut msg,
-        );
+        self.state
+            .partitioner
+            .partition(Topics::new(&self.state.partitions), &mut msg);
 
         let topic = msg.topic.to_owned();
         let partition = msg.partition;
         let record_bytes = msg.key.as_ref().map_or(0, |k| k.len())
             + msg.value.as_ref().map_or(0, |v| v.len())
-            + msg.headers.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
+            + msg
+                .headers
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>();
 
         let batch_record = BatchRecord {
             key: msg.key.map(|k| k.to_vec()),
@@ -191,11 +198,7 @@ impl<P: Partitioner> BatchProducer<P> {
 }
 
 fn to_option(data: &[u8]) -> Option<&[u8]> {
-    if data.is_empty() {
-        None
-    } else {
-        Some(data)
-    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 // --------------------------------------------------------------------
@@ -224,7 +227,10 @@ pub struct BatchProducerBuilder<P = DefaultPartitioner> {
 }
 
 impl BatchProducerBuilder {
-    pub(crate) fn new(client: Option<KafkaClient>, hosts: Vec<String>) -> BatchProducerBuilder<DefaultPartitioner> {
+    pub(crate) fn new(
+        client: Option<KafkaClient>,
+        hosts: Vec<String>,
+    ) -> BatchProducerBuilder<DefaultPartitioner> {
         let mut b = BatchProducerBuilder {
             client,
             hosts,
@@ -396,8 +402,8 @@ impl<P> BatchProducerBuilder<P> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::{DEFAULT_BATCH_SIZE, DEFAULT_LINGER_MS, DEFAULT_MAX_BATCH_BYTES};
+    use super::*;
 
     #[test]
     fn test_batch_config_default() {
@@ -490,11 +496,14 @@ mod tests {
     #[test]
     fn test_clear_resets_state() {
         let mut bp = make_test_producer(BatchConfig::default());
-        bp.buffer.insert(("t".to_string(), 0), vec![BatchRecord {
-            key: Some(vec![1]),
-            value: Some(vec![2]),
-            headers: vec![],
-        }]);
+        bp.buffer.insert(
+            ("t".to_string(), 0),
+            vec![BatchRecord {
+                key: Some(vec![1]),
+                value: Some(vec![2]),
+                headers: vec![],
+            }],
+        );
         bp.buffer_size = 1;
         bp.buffer_bytes = 3;
         bp.batch_start = Some(Instant::now());

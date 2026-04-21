@@ -42,16 +42,18 @@ mod partitioner;
 mod record;
 
 pub use self::batch::{BatchProducer, BatchProducerBuilder};
-pub use config::BatchConfig;
-pub use self::partitioner::{DefaultPartitioner, Partitioner, RoundRobinPartitioner, StickyPartitioner, UniformPartitioner};
+pub use self::partitioner::{
+    DefaultPartitioner, Partitioner, RoundRobinPartitioner, StickyPartitioner, UniformPartitioner,
+};
 pub use self::record::{AsBytes, Headers, Record};
+pub use config::BatchConfig;
 
 pub use crate::client::{Compression, ProduceConfirm, ProducePartitionConfirm, RequiredAcks};
 pub use config::DEFAULT_ACK_TIMEOUT_MILLIS;
 pub use config::DEFAULT_REQUIRED_ACKS;
 
-use crate::client::{self, KafkaClient};
 use crate::client::KafkaClientInternals;
+use crate::client::{self, KafkaClient};
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::slice::from_ref;

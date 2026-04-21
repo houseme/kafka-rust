@@ -1,4 +1,6 @@
-use kafka_protocol::messages::{ApiKey, MetadataRequest, MetadataResponse, RequestHeader, TopicName};
+use kafka_protocol::messages::{
+    ApiKey, MetadataRequest, MetadataResponse, RequestHeader, TopicName,
+};
 use kafka_protocol::protocol::StrBytes;
 
 use kafka_protocol::messages::metadata_request::MetadataRequestTopic;
@@ -20,9 +22,7 @@ pub fn build_metadata_request(
         ts.iter()
             .map(|t| {
                 MetadataRequestTopic::default()
-                    .with_name(Some(TopicName::from(StrBytes::from_string(
-                        t.to_string(),
-                    ))))
+                    .with_name(Some(TopicName::from(StrBytes::from_string(t.to_string()))))
             })
             .collect()
     }));
@@ -35,7 +35,9 @@ pub fn convert_metadata_response(
     correlation_id: i32,
 ) -> MetadataResponseData {
     MetadataResponseData {
-        header: HeaderResponse { correlation: correlation_id },
+        header: HeaderResponse {
+            correlation: correlation_id,
+        },
         brokers: kp_resp
             .brokers
             .into_iter()
@@ -50,10 +52,7 @@ pub fn convert_metadata_response(
             .into_iter()
             .map(|t| TopicMetadata {
                 error: t.error_code,
-                topic: t
-                    .name
-                    .map(|n| n.to_string())
-                    .unwrap_or_default(),
+                topic: t.name.map(|n| n.to_string()).unwrap_or_default(),
                 partitions: t
                     .partitions
                     .into_iter()

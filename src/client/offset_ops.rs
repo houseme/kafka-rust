@@ -91,8 +91,11 @@ fn __get_group_coordinator_kp<'a>(
         return Ok(unsafe { mem::transmute(host) });
     }
     let correlation_id = state.next_correlation_id();
-    let (header, request) =
-        crate::protocol::consumer::build_find_coordinator_request(correlation_id, &config.client_id, group);
+    let (header, request) = crate::protocol::consumer::build_find_coordinator_request(
+        correlation_id,
+        &config.client_id,
+        group,
+    );
     let mut attempt = 1;
     loop {
         let conn = conn_pool.get_conn_any(now).expect("available connection");
@@ -100,17 +103,26 @@ fn __get_group_coordinator_kp<'a>(
             "get_group_coordinator_kp: asking for coordinator of '{}' on: {:?}",
             group, conn
         );
-        __kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_FIND_COORDINATOR)
-            .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
+        __kp_send_request(
+            conn,
+            &header,
+            &request,
+            crate::protocol::API_VERSION_FIND_COORDINATOR,
+        )
+        .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::FindCoordinatorResponse>(
             conn,
             crate::protocol::API_VERSION_FIND_COORDINATOR,
-        ).map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
-        let r = crate::protocol::consumer::convert_find_coordinator_response(kp_resp, correlation_id);
+        )
+        .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
+        let r =
+            crate::protocol::consumer::convert_find_coordinator_response(kp_resp, correlation_id);
         let retry_code = match r.error {
             0 => {
                 let gc = protocol::consumer::GroupCoordinatorResponse {
-                    header: protocol::HeaderResponse { correlation: correlation_id },
+                    header: protocol::HeaderResponse {
+                        correlation: correlation_id,
+                    },
                     error: r.error,
                     broker_id: r.broker_id,
                     port: r.port,
@@ -156,7 +168,8 @@ fn __commit_offsets_kp(
         let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
         debug!("commit_offsets_kp: sending request to: {}", host);
 
-        let conn = conn_pool.get_conn(host, now)
+        let conn = conn_pool
+            .get_conn(host, now)
             .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
         let (header, request) = crate::protocol::consumer::build_offset_commit_request(
             correlation_id,
@@ -167,13 +180,20 @@ fn __commit_offsets_kp(
             -1,
             offsets,
         );
-        __kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_OFFSET_COMMIT)
-            .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
+        __kp_send_request(
+            conn,
+            &header,
+            &request,
+            crate::protocol::API_VERSION_OFFSET_COMMIT,
+        )
+        .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
-        ).map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
-        let our_resp = crate::protocol::consumer::convert_offset_commit_response(kp_resp, correlation_id);
+        )
+        .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
+        let our_resp =
+            crate::protocol::consumer::convert_offset_commit_response(kp_resp, correlation_id);
 
         let mut retry_code = None;
         'rproc: for tp in &our_resp.topic_partitions {
@@ -185,7 +205,10 @@ fn __commit_offsets_kp(
                         break 'rproc;
                     }
                     Some(e @ KafkaCode::NotCoordinatorForGroup) => {
-                        debug!("commit_offsets_kp: resetting group coordinator for '{}'", group);
+                        debug!(
+                            "commit_offsets_kp: resetting group coordinator for '{}'",
+                            group
+                        );
                         state.remove_group_coordinator(group);
                         retry_code = Some(e);
                         break 'rproc;
@@ -227,7 +250,8 @@ fn __fetch_group_offsets_kp(
         let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
         debug!("fetch_group_offsets_kp: sending request to: {}", host);
 
-        let conn = conn_pool.get_conn(host, now)
+        let conn = conn_pool
+            .get_conn(host, now)
             .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
         let (header, request) = crate::protocol::consumer::build_offset_fetch_request(
             correlation_id,
@@ -235,13 +259,20 @@ fn __fetch_group_offsets_kp(
             group,
             partitions,
         );
-        __kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_OFFSET_FETCH)
-            .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
+        __kp_send_request(
+            conn,
+            &header,
+            &request,
+            crate::protocol::API_VERSION_OFFSET_FETCH,
+        )
+        .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
         let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_FETCH,
-        ).map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
-        let our_resp = crate::protocol::consumer::convert_offset_fetch_response(kp_resp, correlation_id);
+        )
+        .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
+        let our_resp =
+            crate::protocol::consumer::convert_offset_fetch_response(kp_resp, correlation_id);
 
         let mut retry_code = None;
         let mut topic_map = HashMap::with_capacity(our_resp.topic_partitions.len());
@@ -261,7 +292,10 @@ fn __fetch_group_offsets_kp(
                         break 'rproc;
                     }
                     Some(e @ KafkaCode::NotCoordinatorForGroup) => {
-                        debug!("fetch_group_offsets_kp: resetting group coordinator for '{}'", group);
+                        debug!(
+                            "fetch_group_offsets_kp: resetting group coordinator for '{}'",
+                            group
+                        );
                         state.remove_group_coordinator(group);
                         retry_code = Some(e);
                         break 'rproc;
@@ -300,10 +334,13 @@ fn __kp_send_request(
     use kafka_protocol::protocol::Encodable;
 
     let mut header_buf = BytesMut::new();
-    header.encode(&mut header_buf, api_version).map_err(|_| Error::codec())?;
+    header
+        .encode(&mut header_buf, api_version)
+        .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version).map_err(|_| Error::codec())?;
+    body.encode(&mut body_buf, api_version)
+        .map_err(|_| Error::codec())?;
 
     let total_len = (header_buf.len() + body_buf.len()) as i32;
     let mut out = BytesMut::with_capacity(4 + total_len as usize);
@@ -327,7 +364,8 @@ fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
     let resp_bytes = conn.read_exact_alloc(size as u64)?;
 
     let mut bytes = Bytes::from(resp_bytes);
-    let _resp_header = ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
 
     R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
 }

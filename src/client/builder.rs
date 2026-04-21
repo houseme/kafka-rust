@@ -1,8 +1,8 @@
 use std::time::Duration;
 
+use crate::client::config::RetryPolicy;
 use crate::client::state::ClientState;
 use crate::client::{ClientConfig, GroupOffsetStorage, KafkaClient};
-use crate::client::config::RetryPolicy;
 use crate::compression::Compression;
 use crate::protocol::api_versions::ApiVersionCache;
 
@@ -215,7 +215,11 @@ impl KafkaClientBuilder {
 
         #[cfg(feature = "security")]
         let conn_pool = match self.security {
-            Some(security) => Connections::new_with_security(rw_timeout, config.connection.idle_timeout, Some(security)),
+            Some(security) => Connections::new_with_security(
+                rw_timeout,
+                config.connection.idle_timeout,
+                Some(security),
+            ),
             None => Connections::new(rw_timeout, config.connection.idle_timeout),
         };
 

@@ -268,7 +268,8 @@ impl KafkaConnection {
             std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
             std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
         };
-        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+        let socket =
+            socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
 
         socket.connect(&socket2::SockAddr::from(addr))?;
         configure_tcp_socket(&socket)?;
@@ -277,7 +278,11 @@ impl KafkaConnection {
     }
 
     #[cfg(not(feature = "security"))]
-    pub(crate) fn new(id: u32, host: &str, rw_timeout: Option<Duration>) -> Result<KafkaConnection> {
+    pub(crate) fn new(
+        id: u32,
+        host: &str,
+        rw_timeout: Option<Duration>,
+    ) -> Result<KafkaConnection> {
         KafkaConnection::from_stream(Self::new_tcp_stream(host)?, id, host, rw_timeout)
     }
 

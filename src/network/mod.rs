@@ -24,7 +24,10 @@ pub(crate) struct Pooled<T> {
 
 impl<T> Pooled<T> {
     pub(crate) fn new(last_checkout: std::time::Instant, item: T) -> Self {
-        Pooled { item, last_checkout }
+        Pooled {
+            item,
+            last_checkout,
+        }
     }
 }
 

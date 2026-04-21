@@ -11,8 +11,7 @@ use std::collections::HashMap;
 use crate::error::{Error, Result};
 use crate::protocol::{
     API_VERSION_FETCH, API_VERSION_FIND_COORDINATOR, API_VERSION_LIST_OFFSETS,
-    API_VERSION_METADATA, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH,
-    API_VERSION_PRODUCE,
+    API_VERSION_METADATA, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH, API_VERSION_PRODUCE,
 };
 use tracing::{debug, info};
 
@@ -41,9 +40,7 @@ pub struct BrokerApiVersions {
 
 impl BrokerApiVersions {
     /// Create from the parsed `ApiVersions` response.
-    fn from_response(
-        resp: kafka_protocol::messages::ApiVersionsResponse,
-    ) -> BrokerApiVersions {
+    fn from_response(resp: kafka_protocol::messages::ApiVersionsResponse) -> BrokerApiVersions {
         let mut versions = HashMap::new();
         for av in resp.api_keys {
             versions.insert(av.api_key, (av.min_version, av.max_version));
@@ -71,7 +68,10 @@ impl BrokerApiVersions {
                 fallback
             }
         } else {
-            debug!("API key {}: not supported by broker, using fallback {}", api_key, fallback);
+            debug!(
+                "API key {}: not supported by broker, using fallback {}",
+                api_key, fallback
+            );
             fallback
         }
     }
@@ -85,8 +85,8 @@ pub fn fetch_api_versions(
 ) -> Result<BrokerApiVersions> {
     use bytes::BytesMut;
     use kafka_protocol::messages::{ApiVersionsRequest, RequestHeader, ResponseHeader};
-    use kafka_protocol::protocol::{Decodable, Encodable};
     use kafka_protocol::protocol::StrBytes;
+    use kafka_protocol::protocol::{Decodable, Encodable};
 
     let request = ApiVersionsRequest::default()
         .with_client_software_name(StrBytes::from_static_str("rustfs-kafka"));
@@ -98,11 +98,13 @@ pub fn fetch_api_versions(
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
 
     let mut header_buf = BytesMut::new();
-    header.encode(&mut header_buf, API_VERSIONS_REQUEST_VERSION)
+    header
+        .encode(&mut header_buf, API_VERSIONS_REQUEST_VERSION)
         .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
-    request.encode(&mut body_buf, API_VERSIONS_REQUEST_VERSION)
+    request
+        .encode(&mut body_buf, API_VERSIONS_REQUEST_VERSION)
         .map_err(|_| Error::codec())?;
 
     let total_len = (header_buf.len() + body_buf.len()) as i32;
@@ -216,12 +218,7 @@ impl ApiVersionCache {
 
 /// Resolve the effective API version for a given API key using cached negotiations.
 /// Falls back to hardcoded defaults if no negotiation has occurred.
-pub fn resolve_api_version(
-    cache: &ApiVersionCache,
-    host: &str,
-    api_key: i16,
-    default: i16,
-) -> i16 {
+pub fn resolve_api_version(cache: &ApiVersionCache, host: &str, api_key: i16, default: i16) -> i16 {
     cache.negotiate(host, api_key, default)
 }
 
@@ -231,10 +228,30 @@ pub fn resolve_all_api_versions(cache: &ApiVersionCache, host: &str) -> ApiVersi
         produce: resolve_api_version(cache, host, api_key::PRODUCE, API_VERSION_PRODUCE),
         fetch: resolve_api_version(cache, host, api_key::FETCH, API_VERSION_FETCH),
         metadata: resolve_api_version(cache, host, api_key::METADATA, API_VERSION_METADATA),
-        list_offsets: resolve_api_version(cache, host, api_key::LIST_OFFSETS, API_VERSION_LIST_OFFSETS),
-        find_coordinator: resolve_api_version(cache, host, api_key::FIND_COORDINATOR, API_VERSION_FIND_COORDINATOR),
-        offset_commit: resolve_api_version(cache, host, api_key::OFFSET_COMMIT, API_VERSION_OFFSET_COMMIT),
-        offset_fetch: resolve_api_version(cache, host, api_key::OFFSET_FETCH, API_VERSION_OFFSET_FETCH),
+        list_offsets: resolve_api_version(
+            cache,
+            host,
+            api_key::LIST_OFFSETS,
+            API_VERSION_LIST_OFFSETS,
+        ),
+        find_coordinator: resolve_api_version(
+            cache,
+            host,
+            api_key::FIND_COORDINATOR,
+            API_VERSION_FIND_COORDINATOR,
+        ),
+        offset_commit: resolve_api_version(
+            cache,
+            host,
+            api_key::OFFSET_COMMIT,
+            API_VERSION_OFFSET_COMMIT,
+        ),
+        offset_fetch: resolve_api_version(
+            cache,
+            host,
+            api_key::OFFSET_FETCH,
+            API_VERSION_OFFSET_FETCH,
+        ),
     }
 }
 
@@ -309,7 +326,9 @@ mod tests {
     #[test]
     fn api_version_cache_insert_and_contains() {
         let mut cache = ApiVersionCache::new();
-        let bv = BrokerApiVersions::from_response(kafka_protocol::messages::ApiVersionsResponse::default());
+        let bv = BrokerApiVersions::from_response(
+            kafka_protocol::messages::ApiVersionsResponse::default(),
+        );
         cache.insert("broker1:9092".to_string(), bv);
         assert!(cache.contains("broker1:9092"));
         assert!(!cache.contains("broker2:9092"));
@@ -318,7 +337,9 @@ mod tests {
     #[test]
     fn api_version_cache_invalidate() {
         let mut cache = ApiVersionCache::new();
-        let bv = BrokerApiVersions::from_response(kafka_protocol::messages::ApiVersionsResponse::default());
+        let bv = BrokerApiVersions::from_response(
+            kafka_protocol::messages::ApiVersionsResponse::default(),
+        );
         cache.insert("broker1:9092".to_string(), bv);
         assert!(cache.contains("broker1:9092"));
         cache.invalidate("broker1:9092");
@@ -381,13 +402,34 @@ mod tests {
 
     #[test]
     fn fallback_version_known_apis() {
-        assert_eq!(ApiVersionCache::fallback_version(api_key::PRODUCE), API_VERSION_PRODUCE);
-        assert_eq!(ApiVersionCache::fallback_version(api_key::FETCH), API_VERSION_FETCH);
-        assert_eq!(ApiVersionCache::fallback_version(api_key::METADATA), API_VERSION_METADATA);
-        assert_eq!(ApiVersionCache::fallback_version(api_key::LIST_OFFSETS), API_VERSION_LIST_OFFSETS);
-        assert_eq!(ApiVersionCache::fallback_version(api_key::FIND_COORDINATOR), API_VERSION_FIND_COORDINATOR);
-        assert_eq!(ApiVersionCache::fallback_version(api_key::OFFSET_COMMIT), API_VERSION_OFFSET_COMMIT);
-        assert_eq!(ApiVersionCache::fallback_version(api_key::OFFSET_FETCH), API_VERSION_OFFSET_FETCH);
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::PRODUCE),
+            API_VERSION_PRODUCE
+        );
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::FETCH),
+            API_VERSION_FETCH
+        );
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::METADATA),
+            API_VERSION_METADATA
+        );
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::LIST_OFFSETS),
+            API_VERSION_LIST_OFFSETS
+        );
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::FIND_COORDINATOR),
+            API_VERSION_FIND_COORDINATOR
+        );
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::OFFSET_COMMIT),
+            API_VERSION_OFFSET_COMMIT
+        );
+        assert_eq!(
+            ApiVersionCache::fallback_version(api_key::OFFSET_FETCH),
+            API_VERSION_OFFSET_FETCH
+        );
     }
 
     #[test]
@@ -399,7 +441,10 @@ mod tests {
     #[test]
     fn get_or_fallback_empty_cache_returns_fallback() {
         let cache = ApiVersionCache::new();
-        assert_eq!(cache.get_or_fallback("unknown:9092", api_key::PRODUCE), API_VERSION_PRODUCE);
+        assert_eq!(
+            cache.get_or_fallback("unknown:9092", api_key::PRODUCE),
+            API_VERSION_PRODUCE
+        );
     }
 
     #[test]
@@ -416,7 +461,13 @@ mod tests {
         cache.insert("broker1:9092".to_string(), bv);
 
         // Should negotiate within range, using fallback if API key unknown
-        assert_eq!(cache.get_or_fallback("broker1:9092", api_key::PRODUCE), API_VERSION_PRODUCE);
-        assert_eq!(cache.get_or_fallback("broker1:9092", api_key::FETCH), API_VERSION_FETCH);
+        assert_eq!(
+            cache.get_or_fallback("broker1:9092", api_key::PRODUCE),
+            API_VERSION_PRODUCE
+        );
+        assert_eq!(
+            cache.get_or_fallback("broker1:9092", api_key::FETCH),
+            API_VERSION_FETCH
+        );
     }
 }

@@ -48,22 +48,21 @@ pub fn list_offsets<T: AsRef<str>>(
     topics: &[T],
     offset: FetchOffset,
 ) -> Result<HashMap<String, Vec<TimestampedPartitionOffset>>> {
-    fetch_offsets_kp(client, topics, offset)
-        .map(|m| {
-            m.into_iter()
-                .map(|(topic, offsets)| {
-                    let timestamped = offsets
-                        .into_iter()
-                        .map(|po| TimestampedPartitionOffset {
-                            offset: po.offset,
-                            partition: po.partition,
-                            time: 0,
-                        })
-                        .collect();
-                    (topic, timestamped)
-                })
-                .collect()
-        })
+    fetch_offsets_kp(client, topics, offset).map(|m| {
+        m.into_iter()
+            .map(|(topic, offsets)| {
+                let timestamped = offsets
+                    .into_iter()
+                    .map(|po| TimestampedPartitionOffset {
+                        offset: po.offset,
+                        partition: po.partition,
+                        time: 0,
+                    })
+                    .collect();
+                (topic, timestamped)
+            })
+            .collect()
+    })
 }
 
 pub fn fetch_topic_offsets<T: AsRef<str>>(
@@ -111,17 +110,27 @@ pub fn fetch_offsets_kp<T: AsRef<str>>(
     let now = Instant::now();
     let mut res: HashMap<String, Vec<PartitionOffset>> = HashMap::with_capacity(n_topics);
     for (host, partitions) in broker_partitions {
-        let conn = client.conn_pool.get_conn(host, now)
+        let conn = client
+            .conn_pool
+            .get_conn(host, now)
             .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
         let (header, request) = crate::protocol::offset::build_list_offsets_request(
-            correlation, &config.client_id, &partitions,
+            correlation,
+            &config.client_id,
+            &partitions,
         );
-        transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_LIST_OFFSETS)
-            .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
+        transport::kp_send_request(
+            conn,
+            &header,
+            &request,
+            crate::protocol::API_VERSION_LIST_OFFSETS,
+        )
+        .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
         let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ListOffsetsResponse>(
             conn,
             crate::protocol::API_VERSION_LIST_OFFSETS,
-        ).map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
+        )
+        .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
         let our_resp = crate::protocol::offset::convert_list_offsets_response(kp_resp, correlation);
 
         for tp in our_resp.topic_partitions {
@@ -178,7 +187,9 @@ fn fetch_metadata_kp<T: AsRef<str>>(
                 if !client.api_versions.contains(host) {
                     let av_correlation = client.state.next_correlation_id();
                     match crate::protocol::api_versions::fetch_api_versions(
-                        conn, av_correlation, &client.config.client_id,
+                        conn,
+                        av_correlation,
+                        &client.config.client_id,
                     ) {
                         Ok(versions) => {
                             client.api_versions.insert(host.clone(), versions);
@@ -190,13 +201,27 @@ fn fetch_metadata_kp<T: AsRef<str>>(
                     }
                 }
 
-                let (header, request) =
-                    crate::protocol::metadata::build_metadata_request(correlation, &client.config.client_id, Some(&topic_strs));
-                match transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_METADATA) {
+                let (header, request) = crate::protocol::metadata::build_metadata_request(
+                    correlation,
+                    &client.config.client_id,
+                    Some(&topic_strs),
+                );
+                match transport::kp_send_request(
+                    conn,
+                    &header,
+                    &request,
+                    crate::protocol::API_VERSION_METADATA,
+                ) {
                     Ok(()) => {
-                        match transport::kp_get_response::<kafka_protocol::messages::MetadataResponse>(conn, crate::protocol::API_VERSION_METADATA) {
+                        match transport::kp_get_response::<kafka_protocol::messages::MetadataResponse>(
+                            conn,
+                            crate::protocol::API_VERSION_METADATA,
+                        ) {
                             Ok(kp_resp) => {
-                                return Ok(crate::protocol::metadata::convert_metadata_response(kp_resp, correlation));
+                                return Ok(crate::protocol::metadata::convert_metadata_response(
+                                    kp_resp,
+                                    correlation,
+                                ));
                             }
                             Err(e) => debug!(
                                 "fetch_metadata_kp: failed to decode metadata from {}: {}",
