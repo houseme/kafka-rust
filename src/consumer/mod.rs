@@ -184,6 +184,7 @@ impl Consumer {
     ///
     /// Returns an error if fetching messages from Kafka fails or if
     /// the response cannot be decoded.
+    #[tracing::instrument(skip(self))]
     pub fn poll(&mut self) -> Result<MessageSets> {
         let (n, resps) = self.fetch_messages();
         let resps = resps?;

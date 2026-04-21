@@ -62,6 +62,7 @@ impl OwnedPartition {
 // ---------------------------------------------------------------------------
 // Build functions
 
+#[tracing::instrument(skip(partitions), fields(correlation_id = correlation_id))]
 pub fn build_fetch_request(
     correlation_id: i32,
     client_id: &str,

@@ -9,6 +9,7 @@ use super::state::ClientState;
 use super::transport;
 use super::FetchPartition;
 
+#[tracing::instrument(skip(conn_pool, state, config, input))]
 pub fn fetch_messages_kp<'a, I, J>(
     conn_pool: &mut Connections,
     state: &mut ClientState,

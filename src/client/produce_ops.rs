@@ -11,6 +11,7 @@ use super::state::ClientState;
 use super::transport;
 use super::{ProduceConfirm, ProduceMessage, RequiredAcks};
 
+#[tracing::instrument(skip(conn_pool, state, config, messages), fields(acks = ?acks))]
 pub(crate) fn internal_produce_messages_kp<'a, 'b, I, J>(
     conn_pool: &mut Connections,
     state: &mut ClientState,

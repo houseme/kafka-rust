@@ -152,6 +152,7 @@ impl Connections {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, now), fields(broker = %host))]
     pub fn get_conn(&mut self, host: &str, now: Instant) -> Result<&mut KafkaConnection> {
         let idx = if let Some(&idx) = self.host_index.get(host) {
             idx

@@ -10,6 +10,7 @@ use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 /// A message to produce: (topic, partition, key, value, headers).
 pub type ProduceMessageRef<'a> = (&'a str, i32, Option<&'a [u8]>, Option<&'a [u8]>, &'a [(String, Vec<u8>)]);
 
+#[tracing::instrument(skip(messages), fields(correlation_id = correlation_id))]
 pub fn build_produce_request(
     correlation_id: i32,
     client_id: &str,

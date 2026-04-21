@@ -10,11 +10,13 @@ use crate::utils::{PartitionOffset, TimestampedPartitionOffset};
 use super::transport;
 use super::{FetchOffset, KafkaClient};
 
+#[tracing::instrument(skip(client))]
 pub fn load_metadata_all(client: &mut KafkaClient) -> Result<()> {
     client.reset_metadata();
     load_metadata_kp(client, &[] as &[&str])
 }
 
+#[tracing::instrument(skip(client, topics), fields(topic_count = topics.len()))]
 pub fn load_metadata<T: AsRef<str>>(client: &mut KafkaClient, topics: &[T]) -> Result<()> {
     load_metadata_kp(client, topics)
 }
@@ -32,6 +34,7 @@ pub fn reset_metadata(client: &mut KafkaClient) {
     client.state.clear_metadata();
 }
 
+#[tracing::instrument(skip(client, topics))]
 pub fn fetch_offsets<T: AsRef<str>>(
     client: &mut KafkaClient,
     topics: &[T],
