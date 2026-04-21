@@ -312,3 +312,33 @@ fn decode_partition_records(
         messages,
     })
 }
+
+/// Safe entry point for fuzzing fetch response data — catches all panics.
+pub(crate) fn decode_records_safe(records: &[u8]) -> Result<Vec<OwnedMessage>, crate::error::Error> {
+    const MAX_INPUT_SIZE: usize = 1_048_576;
+    if records.len() > MAX_INPUT_SIZE {
+        return Err(crate::error::Error::codec());
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut buf = Bytes::from(records.to_vec());
+        match RecordBatchDecoder::decode(&mut buf) {
+            Ok(record_set) => {
+                let messages: Vec<OwnedMessage> = record_set
+                    .records
+                    .iter()
+                    .map(|r| OwnedMessage {
+                        offset: r.offset,
+                        key: r.key.clone().unwrap_or_default(),
+                        value: r.value.clone().unwrap_or_default(),
+                    })
+                    .collect();
+                Ok(messages)
+            }
+            Err(_) => Err(crate::error::Error::codec()),
+        }
+    }));
+    match result {
+        Ok(r) => r,
+        Err(_) => Err(crate::error::Error::codec()),
+    }
+}

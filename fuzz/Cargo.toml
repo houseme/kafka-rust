@@ -1,0 +1,13 @@
+[package]
+name = "rustfs-kafka-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rustfs-kafka = { path = ".." }
+libfuzzer-sys = "0.4"
+
+[profile.release]
+opt-level = 3
+debug = false
