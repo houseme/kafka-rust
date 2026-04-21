@@ -119,13 +119,13 @@ rustfs-kafka = "0.21"
 To use `ring` instead of `aws-lc-rs`:
 
 ```toml
-rustfs-kafka = { version = "0.21", default-features = false, features = ["snappy", "gzip", "security-ring"] }
+rustfs-kafka = { version = "0.21", default-features = false, features = ["security-ring"] }
 ```
 
 To build without TLS:
 
 ```toml
-rustfs-kafka = { version = "0.21", default-features = false, features = ["snappy", "gzip"] }
+rustfs-kafka = { version = "0.21", default-features = false }
 ```
 
 Update your code imports:
