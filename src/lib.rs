@@ -10,7 +10,6 @@
 #![recursion_limit = "128"]
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
-// Pedantic lint relaxations kept intentionally for protocol-heavy code paths.
 
 pub mod client;
 mod compression;
