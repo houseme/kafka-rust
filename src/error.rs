@@ -418,7 +418,7 @@ impl KafkaCode {
             return None;
         }
         if n >= KafkaCode::OffsetOutOfRange as i16 && n <= KafkaCode::UnsupportedVersion as i16 {
-            return Some(unsafe { std::mem::transmute(n as i8) });
+            return Some(unsafe { std::mem::transmute::<i8, KafkaCode>(n as i8) });
         }
         Some(KafkaCode::Unknown)
     }

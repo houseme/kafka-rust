@@ -4,8 +4,6 @@
 //! used during metadata requests; full per-request version negotiation will
 //! be wired up in a future release.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
@@ -18,6 +16,7 @@ use tracing::{debug, info};
 use crate::network::KafkaConnection;
 
 /// API key numbers as defined by the Kafka protocol.
+#[allow(dead_code)]
 pub mod api_key {
     pub const PRODUCE: i16 = 0;
     pub const FETCH: i16 = 1;
@@ -35,6 +34,7 @@ const API_VERSIONS_REQUEST_VERSION: i16 = 3;
 /// Negotiated API version ranges for a single broker.
 #[derive(Debug, Clone)]
 pub struct BrokerApiVersions {
+    #[allow(dead_code)]
     versions: HashMap<i16, (i16, i16)>, // api_key -> (min_version, max_version)
 }
 
@@ -50,6 +50,7 @@ impl BrokerApiVersions {
 
     /// Get the best version for the given API key, clamped to the requested range.
     /// Returns `fallback` if the broker doesn't support the API.
+    #[allow(dead_code)]
     pub fn negotiate(&self, api_key: i16, fallback: i16) -> i16 {
         if let Some(&(min, max)) = self.versions.get(&api_key) {
             if fallback < min {
@@ -160,6 +161,7 @@ impl ApiVersionCache {
     }
 
     /// Get or fetch API versions for a broker.
+    #[allow(dead_code)]
     pub fn get_or_fetch(
         &mut self,
         host: &str,
@@ -175,11 +177,13 @@ impl ApiVersionCache {
     }
 
     /// Invalidate cached versions for a broker (e.g., after reconnect).
+    #[allow(dead_code)]
     pub fn invalidate(&mut self, host: &str) {
         self.broker_versions.remove(host);
     }
 
     /// Negotiate the best API version for a specific broker and API key.
+    #[allow(dead_code)]
     pub fn negotiate(&self, host: &str, api_key: i16, fallback: i16) -> i16 {
         self.broker_versions
             .get(host)
@@ -188,6 +192,7 @@ impl ApiVersionCache {
 
     /// Returns the negotiated version for the given API key,
     /// falling back to a safe default if no version information is available.
+    #[allow(dead_code)]
     pub fn get_or_fallback(&self, host: &str, api_key: i16) -> i16 {
         let fallback = Self::fallback_version(api_key);
         self.negotiate(host, api_key, fallback)
@@ -195,6 +200,7 @@ impl ApiVersionCache {
 
     /// Returns the fallback (minimum supported) version for an API key.
     #[must_use]
+    #[allow(dead_code)]
     pub fn fallback_version(api_key: i16) -> i16 {
         match api_key {
             api_key::PRODUCE => API_VERSION_PRODUCE,
@@ -210,6 +216,7 @@ impl ApiVersionCache {
 
     /// Returns true if no broker versions have been cached.
     #[must_use]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.broker_versions.is_empty()
     }
@@ -217,11 +224,13 @@ impl ApiVersionCache {
 
 /// Resolve the effective API version for a given API key using cached negotiations.
 /// Falls back to hardcoded defaults if no negotiation has occurred.
+#[allow(dead_code)]
 pub fn resolve_api_version(cache: &ApiVersionCache, host: &str, api_key: i16, default: i16) -> i16 {
     cache.negotiate(host, api_key, default)
 }
 
 /// Resolve all our API versions for a given broker.
+#[allow(dead_code)]
 pub fn resolve_all_api_versions(cache: &ApiVersionCache, host: &str) -> ApiVersions {
     ApiVersions {
         produce: resolve_api_version(cache, host, api_key::PRODUCE, API_VERSION_PRODUCE),
@@ -256,6 +265,7 @@ pub fn resolve_all_api_versions(cache: &ApiVersionCache, host: &str) -> ApiVersi
 
 /// Resolved API versions for all supported Kafka APIs.
 #[derive(Debug, Copy, Clone)]
+#[allow(dead_code)]
 pub struct ApiVersions {
     pub produce: i16,
     pub fetch: i16,

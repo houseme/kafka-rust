@@ -1,58 +1,40 @@
 use std::time::Duration;
 
-use rustfs_kafka::error::Error as KafkaError;
 use rustfs_kafka::producer::{Headers, Producer, Record, RequiredAcks};
 
-/// This program demonstrates sending single message through a
-/// `Producer`.  This is a convenient higher-level client that will
-/// fit most use cases.
+/// Minimal producer example.
 fn main() {
     tracing_subscriber::fmt::init();
 
-    let broker = "localhost:9092";
-    let topic = "my-topic";
-
-    let data = "hello, kafka".as_bytes();
-
-    if let Err(e) = produce_message(data, topic, vec![broker.to_owned()]) {
-        println!("Failed producing messages: {}", e);
+    if let Err(e) = run() {
+        eprintln!("produce example failed: {e}");
+        std::process::exit(1);
     }
 }
 
-fn produce_message(data: &[u8], topic: &str, brokers: Vec<String>) -> Result<(), KafkaError> {
-    println!("About to publish a message at {:?} to: {}", brokers, topic);
+fn run() -> rustfs_kafka::Result<()> {
+    let brokers = vec!["localhost:9092".to_owned()];
+    let topic = "my-topic";
 
-    // ~ create a producer. this is a relatively costly operation, so
-    // you'll do this typically once in your application and re-use
-    // the instance many times.
     let mut producer = Producer::from_hosts(brokers)
-        // ~ give the brokers one second time to ack the message
         .with_ack_timeout(Duration::from_secs(1))
-        // ~ require only one broker to ack the message
         .with_required_acks(RequiredAcks::One)
-        // ~ build the producer with the above settings
+        .with_client_id("rustfs-kafka-example-produce".to_owned())
         .create()?;
 
-    // ~ now send a single message.  this is a synchronous/blocking
-    // operation.
+    // Value-only message.
+    producer.send(&Record::from_value(topic, b"hello, kafka".as_slice()))?;
 
-    // ~ we're sending 'data' as a 'value'. there will be no key
-    // associated with the sent message.
-
-    // ~ we leave the partition "unspecified" - this is a negative
-    // partition - which causes the producer to find out one on its
-    // own using its underlying partitioner.
+    // Key/value message with headers.
+    let mut headers = Headers::new();
+    headers.insert("trace-id", b"example-trace-id");
     producer.send(&Record {
         topic,
         partition: -1,
-        key: (),
-        value: data,
-        headers: Headers::new(),
+        key: b"demo-key".as_slice(),
+        value: b"hello with headers".as_slice(),
+        headers,
     })?;
-
-    // ~ we can achieve exactly the same as above in a shorter way with
-    // the following call
-    producer.send(&Record::from_value(topic, data))?;
 
     Ok(())
 }

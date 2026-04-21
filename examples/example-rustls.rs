@@ -4,86 +4,55 @@ fn main() {
 
 #[cfg(any(feature = "security", feature = "security-ring"))]
 mod example {
-    use rustfs_kafka;
-    use tracing::info;
+    use std::{env, process};
 
-    use std::env;
-    use std::process;
-
-    use self::rustfs_kafka::client::{FetchOffset, KafkaClient, SecurityConfig};
+    use rustfs_kafka::client::{FetchOffset, KafkaClient, SecurityConfig};
 
     pub fn main() {
         tracing_subscriber::fmt::init();
 
-        // ~ parse the command line arguments
         let cfg = match Config::from_cmdline() {
             Ok(cfg) => cfg,
             Err(e) => {
-                println!("{}", e);
+                eprintln!("{e}");
                 process::exit(1);
             }
         };
 
-        // ~ Create SecurityConfig with rustls
-        let mut security_config = SecurityConfig::new();
+        if let Err(e) = run(cfg) {
+            eprintln!("rustls example failed: {e}");
+            process::exit(1);
+        }
+    }
 
-        // Set hostname verification (default is true)
-        security_config = security_config.with_hostname_verification(cfg.verify_hostname);
+    fn run(cfg: Config) -> rustfs_kafka::Result<()> {
+        let mut security = SecurityConfig::new().with_hostname_verification(cfg.verify_hostname);
 
-        // Load CA certificate if provided
         if let Some(ca_cert) = cfg.ca_cert {
-            info!("loading ca-file={}", ca_cert);
-            security_config = security_config.with_ca_cert(ca_cert);
+            security = security.with_ca_cert(ca_cert);
         }
-
-        // Load client certificate and key if provided
         if let (Some(client_cert), Some(client_key)) = (cfg.client_cert, cfg.client_key) {
-            info!("loading cert-file={}, key-file={}", client_cert, client_key);
-            security_config = security_config.with_client_cert(client_cert, client_key);
+            security = security.with_client_cert(client_cert, client_key);
         }
 
-        // ~ instantiate KafkaClient with rustls TLS support
-        let mut client = KafkaClient::new_secure(cfg.brokers, security_config);
+        let mut client = KafkaClient::new_secure(cfg.brokers, security);
+        client.load_metadata_all()?;
 
-        // ~ communicate with the brokers
-        match client.load_metadata_all() {
-            Err(e) => {
-                println!("{:?}", e);
-                drop(client);
-                process::exit(1);
-            }
-            Ok(_) => {
-                // ~ at this point we have successfully loaded
-                // metadata via a secured connection to one of the
-                // specified brokers
+        let topics: Vec<String> = client.topics().names().map(ToOwned::to_owned).collect();
+        if topics.is_empty() {
+            println!("No topics available");
+            return Ok(());
+        }
 
-                if client.topics().is_empty() {
-                    println!("No topics available!");
-                } else {
-                    // ~ now let's communicate with all the brokers in
-                    // the cluster our topics are spread over
-
-                    let topics: Vec<String> = client.topics().names().map(Into::into).collect();
-                    match client.fetch_offsets(topics.as_slice(), FetchOffset::Latest) {
-                        Err(e) => {
-                            println!("{:?}", e);
-                            drop(client);
-                            process::exit(1);
-                        }
-                        Ok(toffsets) => {
-                            println!("Topic offsets:");
-                            for (topic, mut offs) in toffsets {
-                                offs.sort_by_key(|x| x.partition);
-                                println!("{}", topic);
-                                for off in offs {
-                                    println!("\t{}: {:?}", off.partition, off.offset);
-                                }
-                            }
-                        }
-                    }
-                }
+        let latest = client.fetch_offsets(&topics, FetchOffset::Latest)?;
+        for (topic, mut offsets) in latest {
+            offsets.sort_by_key(|x| x.partition);
+            println!("{topic}");
+            for off in offsets {
+                println!("  partition={} latest={}", off.partition, off.offset);
             }
         }
+        Ok(())
     }
 
     struct Config {
@@ -104,7 +73,7 @@ mod example {
                 "Specify kafka brokers (comma separated)",
                 "HOSTS",
             );
-            opts.optopt("", "ca-cert", "Specify the trusted CA certificates", "FILE");
+            opts.optopt("", "ca-cert", "Specify trusted CA certificates", "FILE");
             opts.optopt("", "client-cert", "Specify the client certificate", "FILE");
             opts.optopt(
                 "",
@@ -115,31 +84,30 @@ mod example {
             opts.optflag(
                 "",
                 "no-hostname-verification",
-                "Do not perform server hostname verification (insecure!)",
+                "Disable server hostname verification (insecure)",
             );
 
             let args: Vec<_> = env::args().collect();
-            let m = match opts.parse(&args[1..]) {
-                Ok(m) => m,
-                Err(e) => return Err(format!("{}", e)),
-            };
+            let m = opts.parse(&args[1..]).map_err(|e| e.to_string())?;
 
             if m.opt_present("help") {
                 let brief = format!("{} [options]", args[0]);
                 return Err(opts.usage(&brief));
-            };
+            }
 
-            let brokers = m
+            let brokers: Vec<String> = m
                 .opt_str("brokers")
                 .map(|s| {
                     s.split(',')
-                        .map(|s| s.trim().to_owned())
+                        .map(str::trim)
                         .filter(|s| !s.is_empty())
+                        .map(ToOwned::to_owned)
                         .collect()
                 })
-                .unwrap_or_else(|| vec!["localhost:9093".into()]);
+                .unwrap_or_else(|| vec!["localhost:9093".to_owned()]);
+
             if brokers.is_empty() {
-                return Err("Invalid --brokers specified!".to_owned());
+                return Err("Invalid --brokers specified".to_owned());
             }
 
             Ok(Config {
@@ -155,11 +123,10 @@ mod example {
 
 #[cfg(not(any(feature = "security", feature = "security-ring")))]
 mod example {
-    use std::process;
-
     pub fn main() {
-        println!("example relevant only with a rustls security feature enabled!");
-        println!("Try: cargo run --example example-rustls --features=security");
-        process::exit(1);
+        eprintln!(
+            "example-rustls requires a TLS feature. Try: cargo run --example example-rustls --features security"
+        );
+        std::process::exit(1);
     }
 }

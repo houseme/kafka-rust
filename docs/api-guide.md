@@ -1,14 +1,17 @@
 # rustfs-kafka API Guide
 
-## Quick Start
+This guide focuses on the current public APIs in `rustfs-kafka` (sync) and the most common usage patterns.
 
-### Producer
+## 1. Quick Start
+
+### 1.1 Producer
 
 ```rust,no_run
 use std::time::Duration;
 use rustfs_kafka::producer::{Producer, Record, RequiredAcks};
 
 let mut producer = Producer::from_hosts(vec!["localhost:9092".to_owned()])
+    .with_client_id("app-producer".to_owned())
     .with_ack_timeout(Duration::from_secs(1))
     .with_required_acks(RequiredAcks::One)
     .create()
@@ -17,31 +20,29 @@ let mut producer = Producer::from_hosts(vec!["localhost:9092".to_owned()])
 producer.send(&Record::from_value("my-topic", b"hello")).unwrap();
 ```
 
-### Consumer
+### 1.2 Consumer
 
 ```rust,no_run
 use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
 
 let mut consumer = Consumer::from_hosts(vec!["localhost:9092".to_owned()])
-    .with_topic_partitions("my-topic".to_owned(), &[0, 1])
-    .with_fallback_offset(FetchOffset::Earliest)
+    .with_topic("my-topic".to_owned())
     .with_group("my-group".to_owned())
+    .with_fallback_offset(FetchOffset::Earliest)
     .with_offset_storage(Some(GroupOffsetStorage::Kafka))
     .create()
     .unwrap();
 
-loop {
-    for ms in consumer.poll().unwrap().iter() {
-        for m in ms.messages() {
-            println!("{:?}", m);
-        }
-        consumer.consume_messageset(&ms);
+for ms in consumer.poll().unwrap() {
+    for m in ms.messages() {
+        println!("offset={} value={:?}", m.offset, m.value);
     }
-    consumer.commit_consumed().unwrap();
+    consumer.consume_messageset(&ms).unwrap();
 }
+consumer.commit_consumed().unwrap();
 ```
 
-### KafkaClient
+### 1.3 KafkaClient (mid-level)
 
 ```rust,no_run
 use rustfs_kafka::client::KafkaClient;
@@ -50,49 +51,25 @@ let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
 client.load_metadata_all().unwrap();
 ```
 
-## Producer API
+## 2. Producer APIs
 
-### Basic Send
+### 2.1 Single and batch send
 
-```rust,no_run
-use rustfs_kafka::producer::{Producer, Record};
+- `Producer::send(&Record)` sends one record.
+- `Producer::send_all(&[Record])` sends a batch synchronously.
 
-let mut producer = Producer::from_hosts(vec!["localhost:9092".to_owned()])
-    .create()
-    .unwrap();
+### 2.2 Partitioner selection
 
-// Send with value only
-producer.send(&Record::from_value("topic", b"hello")).unwrap();
+- `DefaultPartitioner` (default, key-hash based)
+- `RoundRobinPartitioner`
+- `StickyPartitioner`
+- `UniformPartitioner`
 
-// Send with key and value
-producer.send(&Record::from_key_value("topic", b"key", b"value")).unwrap();
-
-// Send with headers
-let record = Record::from_key_value("topic", b"key", b"value")
-    .with_header("trace-id", b"abc-123");
-producer.send(&record).unwrap();
-```
-
-### Batch Send
-
-```rust,no_run
-use rustfs_kafka::producer::{Producer, Record};
-
-let mut producer = Producer::from_hosts(vec!["localhost:9092".to_owned()])
-    .create()
-    .unwrap();
-
-let records = vec![
-    Record::from_value("topic", b"msg1"),
-    Record::from_value("topic", b"msg2"),
-];
-let confirms = producer.send_all(&records).unwrap();
-```
-
-### BatchProducer
+### 2.3 Batch producer
 
 ```rust,no_run
 use rustfs_kafka::producer::{BatchProducer, Record};
+use std::time::Duration;
 
 let mut batch = BatchProducer::from_hosts(vec!["localhost:9092".to_owned()])
     .with_batch_size(100)
@@ -100,256 +77,105 @@ let mut batch = BatchProducer::from_hosts(vec!["localhost:9092".to_owned()])
     .create()
     .unwrap();
 
-batch.send(Record::from_value("topic", b"msg1")).unwrap();
-batch.send(Record::from_value("topic", b"msg2")).unwrap();
-let confirms = batch.flush().unwrap();
+batch.send(Record::from_value("my-topic", b"msg-1")).unwrap();
+batch.send(Record::from_value("my-topic", b"msg-2")).unwrap();
+let _confirms = batch.flush().unwrap();
 ```
 
-### Custom Partitioner
+### 2.4 Transactional producer
+
+Use `TransactionalProducer` for exactly-once style workflows.
 
 ```rust,no_run
-use rustfs_kafka::producer::{Producer, RoundRobinPartitioner, Partitioner};
+use rustfs_kafka::producer::{TransactionalProducer, Record};
 
-let mut producer = Producer::from_hosts(vec!["localhost:9092".to_owned()])
-    .with_partitioner(RoundRobinPartitioner::new())
+let mut tx = TransactionalProducer::from_hosts(vec!["localhost:9092".to_owned()])
+    .with_transactional_id("txn-demo".to_owned())
     .create()
     .unwrap();
+
+tx.begin().unwrap();
+tx.send(&Record::from_value("my-topic", b"in-txn")).unwrap();
+tx.commit().unwrap();
 ```
 
-Available partitioners:
-- `DefaultPartitioner` — hash-based key partitioning (default)
-- `RoundRobinPartitioner` — round-robin for keyless messages
-- `StickyPartitioner` — sticks to one partition per batch
-- `UniformPartitioner` — random uniform distribution
+## 3. Consumer APIs
 
-### Compression
+### 3.1 Offset strategy
+
+- `FetchOffset::Earliest`
+- `FetchOffset::Latest`
+- `FetchOffset::ByTime(i64)`
+
+### 3.2 Pause/resume partitions
 
 ```rust,no_run
-use rustfs_kafka::producer::{Producer, Compression};
-
-let mut producer = Producer::from_hosts(vec!["localhost:9092".to_owned()])
-    .with_compression(Compression::GZIP)
-    .create()
-    .unwrap();
+// consumer.pause("my-topic", &[0, 1]);
+// consumer.resume("my-topic", &[1]);
 ```
 
-Available compression types: `NONE`, `GZIP`, `SNAPPY`, `LZ4`, `ZSTD`.
+### 3.3 Group offset APIs through `KafkaClient`
 
-### Acknowledgment Strategies
+- `commit_offset`, `commit_offsets`
+- `fetch_group_offsets`, `fetch_group_topic_offset`
 
-```rust,no_run
-use rustfs_kafka::producer::RequiredAcks;
+## 4. KafkaClient Administrative APIs
 
-RequiredAcks::None  // No acknowledgment (fire and forget)
-RequiredAcks::One   // Wait for leader write
-RequiredAcks::All   // Wait for all in-sync replicas
-```
+### 4.1 Topic metadata and offsets
 
-## Consumer API
+- `load_metadata_all`, `load_metadata`
+- `fetch_offsets`, `list_offsets`, `fetch_topic_offsets`
 
-### Basic Consumption
+### 4.2 Topic create/delete
 
 ```rust,no_run
-use rustfs_kafka::consumer::{Consumer, FetchOffset, GroupOffsetStorage};
+use std::time::Duration;
+use rustfs_kafka::client::{KafkaClient, TopicConfig};
 
-let mut consumer = Consumer::from_hosts(vec!["localhost:9092".to_owned()])
-    .with_topic("my-topic".to_owned())
-    .with_fallback_offset(FetchOffset::Latest)
-    .with_group("my-group".to_owned())
-    .with_offset_storage(Some(GroupOffsetStorage::Kafka))
-    .create()
-    .unwrap();
-```
-
-### Offset Management
-
-```rust,no_run
-// Fallback offset when no committed offset exists
-consumer.with_fallback_offset(FetchOffset::Earliest);
-consumer.with_fallback_offset(FetchOffset::Latest);
-
-// Seek to a specific offset
-consumer.seek("my-topic", 0, 42).unwrap();
-```
-
-### Pause/Resume Partitions
-
-```rust,no_run
-consumer.pause("my-topic", &[0, 1]);
-consumer.resume("my-topic", &[0]);
-
-if consumer.is_paused("my-topic", 1) {
-    println!("Partition 1 is paused");
-}
-```
-
-### Manual Offset Commit
-
-```rust,no_run
-// Mark messages as consumed
-consumer.consume_message("topic", 0, 42).unwrap();
-
-// Commit all consumed offsets
-consumer.commit_consumed().unwrap();
-```
-
-## KafkaClient API
-
-### Connection Management
-
-```rust,no_run
-use rustfs_kafka::client::{KafkaClient, SecurityConfig};
-
-// Plaintext
 let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
-
-// TLS
-let mut client = KafkaClient::new_secure(
-    vec!["localhost:9093".to_owned()],
-    SecurityConfig::new().with_ca_cert("ca.pem".to_owned()),
-);
-
-// Builder pattern
-let mut client = KafkaClient::builder()
-    .with_hosts(vec!["localhost:9092".to_owned()])
-    .with_client_id("my-app".to_owned())
-    .build();
-```
-
-### Metadata
-
-```rust,no_run
 client.load_metadata_all().unwrap();
-client.load_metadata(&["topic1", "topic2"]).unwrap();
 
-for topic in client.topics() {
-    println!("{}: {} partitions", topic.name(), topic.partitions().len());
-}
+let topics = vec![TopicConfig::new("demo-topic").with_partitions(3)];
+let _ = client.create_topics(&topics, Duration::from_secs(10)).unwrap();
+let _ = client.delete_topics(&["demo-topic"], Duration::from_secs(10)).unwrap();
 ```
 
-### Offset Operations
+## 5. TLS
 
-```rust,no_run
-use rustfs_kafka::client::FetchOffset;
+Enable TLS with default feature `security` (rustls + aws-lc-rs):
 
-let offsets = client.fetch_offsets(&["topic"], FetchOffset::Latest).unwrap();
-
-// Commit offsets
-client.commit_offset("group", "topic", 0, 42).unwrap();
-
-// Fetch group offsets
-let group_offsets = client.fetch_group_offsets(
-    "group",
-    &[rustfs_kafka::client::FetchGroupOffset::new("topic", 0)],
-).unwrap();
+```toml
+[dependencies]
+rustfs-kafka = "0.22"
 ```
 
-### Topic Management
+`security-ring` switches rustls crypto provider to `ring`:
 
-```rust,no_run
-// Create topics (requires admin protocol support)
-// Delete topics (requires admin protocol support)
+```toml
+[dependencies]
+rustfs-kafka = { version = "0.22", default-features = false, features = ["security-ring"] }
 ```
 
-## TLS Configuration
+## 6. Metrics
 
-### Basic TLS
-
-```rust,no_run
-use rustfs_kafka::client::{KafkaClient, SecurityConfig};
-
-let mut client = KafkaClient::new_secure(
-    vec!["localhost:9093".to_owned()],
-    SecurityConfig::new().with_ca_cert("ca.pem".to_owned()),
-);
-```
-
-### Mutual TLS (mTLS)
-
-```rust,no_run
-use rustfs_kafka::client::{KafkaClient, SecurityConfig};
-
-let mut client = KafkaClient::new_secure(
-    vec!["localhost:9093".to_owned()],
-    SecurityConfig::new()
-        .with_ca_cert("ca.pem".to_owned())
-        .with_client_cert("client.crt".to_owned(), "client.key".to_owned()),
-);
-```
-
-## Error Handling
-
-### Error Types
-
-```rust,no_run
-use rustfs_kafka::error::Error;
-
-match some_operation() {
-    Ok(result) => { /* ... */ }
-    Err(Error::Kafka(code)) => { /* Server error */ }
-    Err(Error::Connection(conn_err)) => { /* Network error */ }
-    Err(Error::Protocol(proto_err)) => { /* Protocol error */ }
-    Err(Error::Consumer(cons_err)) => { /* Consumer error */ }
-    Err(e) => { /* Other error */ }
-}
-```
-
-### Retriable Errors
-
-```rust,no_run
-use rustfs_kafka::error::Error;
-
-match some_operation() {
-    Err(e) if e.is_retriable() => {
-        // Retry the operation
-    }
-    Err(e) => {
-        // Non-retriable error
-    }
-    _ => {}
-}
-```
-
-### Broker Context
-
-```rust,no_run
-use rustfs_kafka::error::Error;
-
-// Errors from broker operations include context
-match producer.send(&record) {
-    Err(e) => {
-        // e.to_string() includes broker and API key context
-        println!("{}", e);
-    }
-    Ok(_) => {}
-}
-```
-
-## Configuration Reference
-
-### Feature Flags
-
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `security` | yes | TLS support via rustls (aws-lc-rs) |
-| `security-ring` | no | TLS with ring crypto backend |
-| `producer_timestamp` | no | Timestamp support for records |
-| `metrics` | no | Structured metrics via `metrics` crate |
-| `integration_tests` | no | Integration test utilities |
-
-### Metrics (Optional)
-
-Enable the `metrics` feature to collect structured metrics:
+Enable metrics feature:
 
 ```toml
 [dependencies]
 rustfs-kafka = { version = "0.22", features = ["metrics"] }
-metrics-exporter-prometheus = "0.16"
 ```
 
-```rust,no_run
-use metrics_exporter_prometheus::PrometheusBuilder;
+Metrics include produce/fetch/metadata refresh and connection-level counters/gauges.
 
-PrometheusBuilder::new().install().unwrap();
-// Metrics are now automatically recorded
-```
+## 7. Feature Flags
+
+- `security` (default)
+- `security-ring`
+- `producer_timestamp`
+- `metrics`
+- `nightly`
+- `integration_tests`
+
+## 8. Async crate
+
+For async wrappers built on tokio, see `crates/rustfs-kafka-async` and its README.

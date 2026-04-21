@@ -16,6 +16,10 @@ repository = "https://github.com/houseme/kafka-rust"
 description = "Rust client for Apache Kafka"
 rust-version = "1.93.0"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 byteorder = "1.5"
 socket2 = "0.6.3"

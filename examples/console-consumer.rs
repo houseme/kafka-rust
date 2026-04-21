@@ -53,10 +53,11 @@ fn process(cfg: Config) -> Result<()> {
     let mut buf = Vec::with_capacity(1024);
 
     loop {
-        for ms in c.poll()?.into_iter() {
+        let mss = c.poll()?;
+        for ms in mss.iter() {
             for m in ms.messages() {
                 // ~ clear the output buffer
-                unsafe { buf.set_len(0) };
+                buf.clear();
                 // ~ format the message for output
                 let _ = writeln!(buf, "{}:{}@{}:", ms.topic(), ms.partition(), m.offset);
                 buf.extend_from_slice(&m.value);
@@ -64,7 +65,7 @@ fn process(cfg: Config) -> Result<()> {
                 // ~ write to output channel
                 stdout.write_all(&buf)?;
             }
-            let _ = c.consume_messageset(&ms);
+            c.consume_messageset(&ms)?;
         }
         if cfg.commit {
             c.commit_consumed()?;

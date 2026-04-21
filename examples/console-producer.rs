@@ -197,7 +197,7 @@ impl Config {
         opts.optopt(
             "",
             "compression",
-            "Compress messages [NONE, GZIP, SNAPPY]",
+            "Compress messages [NONE, GZIP, SNAPPY, LZ4, ZSTD]",
             "TYPE",
         );
         opts.optopt(
@@ -247,10 +247,7 @@ impl Config {
                 Some(ref s) if s.eq_ignore_ascii_case("lz4") => Compression::LZ4,
                 Some(ref s) if s.eq_ignore_ascii_case("zstd") => Compression::ZSTD,
                 Some(s) => {
-                    return Err(anyhow!(
-                        "Error {:?}",
-                        format!("Unsupported compression type: {}", s)
-                    ));
+                    return Err(anyhow!("Unsupported compression type: {s}"));
                 }
             },
             required_acks: match m.opt_str("required-acks") {
@@ -259,10 +256,7 @@ impl Config {
                 Some(ref s) if s.eq_ignore_ascii_case("one") => RequiredAcks::One,
                 Some(ref s) if s.eq_ignore_ascii_case("all") => RequiredAcks::All,
                 Some(s) => {
-                    return Err(anyhow!(
-                        "{:?}",
-                        format!("Unknown --required-acks argument: {}", s)
-                    ));
+                    return Err(anyhow!("Unknown --required-acks argument: {s}"));
                 }
             },
             batch_size: to_number(m.opt_str("batch-size"), 1)?,
@@ -278,12 +272,12 @@ impl Config {
     }
 }
 
-fn to_number<N: FromStr>(s: Option<String>, _default: N) -> Result<N> {
+fn to_number<N: FromStr>(s: Option<String>, default_value: N) -> Result<N> {
     match s {
-        None => Ok(_default),
+        None => Ok(default_value),
         Some(s) => match s.parse::<N>() {
             Ok(n) => Ok(n),
-            Err(_) => Err(anyhow!("{:?}", format!("Not a number: {}", s))),
+            Err(_) => Err(anyhow!("Not a number: {s}")),
         },
     }
 }

@@ -94,7 +94,7 @@ fn get_group_coordinator<'a>(
     now: Instant,
 ) -> Result<&'a str> {
     if let Some(host) = state.group_coordinator(group) {
-        return Ok(unsafe { mem::transmute(host) });
+        return Ok(unsafe { mem::transmute::<&str, &'a str>(host) });
     }
     let correlation_id = state.next_correlation_id();
     let (header, request) = crate::protocol::consumer::build_find_coordinator_request(

@@ -111,6 +111,7 @@ standalone, compilable example programs are provided in the [examples directory]
 - `example-produce.rs` — Basic message production
 - `example-consume.rs` — Basic message consumption
 - `example-fetch.rs` — Low-level fetch API usage
+- `example-topic-admin.rs` — Topic create/delete admin API usage
 - `console-producer.rs` — Read from stdin and produce to Kafka
 - `console-consumer.rs` — Consume from Kafka and print to stdout
 - `offset-monitor.rs` — Monitor consumer group offsets
@@ -122,8 +123,10 @@ The `rustfs-kafka-async` crate provides an async wrapper built on tokio:
 
 ```toml
 [dependencies]
-rustfs-kafka-async = "0.22"
+rustfs-kafka-async = "0.1"
 ```
+
+See also: `crates/rustfs-kafka-async/README.md`.
 
 ## Consumer
 
