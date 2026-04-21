@@ -119,4 +119,28 @@ fn test_to_millis_i32() {
     assert_invalid(Duration::from_millis(u64::from(u32::MAX)));
     assert_invalid(Duration::from_millis(i32::MAX as u64 + 1));
     assert_valid(Duration::from_millis(i32::MAX as u64 - 1), i32::MAX - 1);
+    assert_valid(Duration::from_secs(1), 1_000);
+    assert_valid(Duration::ZERO, 0);
+}
+
+#[test]
+fn test_to_kp_compression() {
+    use kafka_protocol::records::Compression as KpCompression;
+
+    assert_eq!(to_kp_compression(Compression::NONE), KpCompression::None);
+    assert_eq!(to_kp_compression(Compression::GZIP), KpCompression::Gzip);
+    assert_eq!(to_kp_compression(Compression::SNAPPY), KpCompression::Snappy);
+    assert_eq!(to_kp_compression(Compression::LZ4), KpCompression::Lz4);
+    assert_eq!(to_kp_compression(Compression::ZSTD), KpCompression::Zstd);
+}
+
+#[test]
+fn test_api_version_constants_are_positive() {
+    assert!(API_VERSION_PRODUCE > 0);
+    assert!(API_VERSION_FETCH > 0);
+    assert!(API_VERSION_METADATA > 0);
+    assert!(API_VERSION_LIST_OFFSETS > 0);
+    assert!(API_VERSION_OFFSET_COMMIT > 0);
+    assert!(API_VERSION_OFFSET_FETCH > 0);
+    assert!(API_VERSION_FIND_COORDINATOR > 0);
 }

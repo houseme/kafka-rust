@@ -151,6 +151,134 @@ pub fn convert_fetch_response(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_message_construction_and_field_access() {
+        let msg = OwnedMessage {
+            offset: 42,
+            key: Bytes::from_static(b"my-key"),
+            value: Bytes::from_static(b"my-value"),
+        };
+        assert_eq!(msg.offset, 42);
+        assert_eq!(&*msg.key, b"my-key");
+        assert_eq!(&*msg.value, b"my-value");
+    }
+
+    #[test]
+    fn owned_message_with_empty_key_value() {
+        let msg = OwnedMessage {
+            offset: 0,
+            key: Bytes::new(),
+            value: Bytes::new(),
+        };
+        assert_eq!(msg.offset, 0);
+        assert!(msg.key.is_empty());
+        assert!(msg.value.is_empty());
+    }
+
+    #[test]
+    fn owned_data_construction() {
+        let data = OwnedData {
+            highwatermark_offset: 100,
+            messages: vec![
+                OwnedMessage { offset: 0, key: Bytes::new(), value: Bytes::from_static(b"a") },
+                OwnedMessage { offset: 1, key: Bytes::new(), value: Bytes::from_static(b"b") },
+            ],
+        };
+        assert_eq!(data.highwatermark_offset, 100);
+        assert_eq!(data.messages.len(), 2);
+        assert_eq!(data.messages[0].offset, 0);
+        assert_eq!(data.messages[1].offset, 1);
+    }
+
+    #[test]
+    fn owned_partition_ok_with_empty_messages() {
+        let partition = OwnedPartition {
+            partition: 0,
+            data: Ok(OwnedData {
+                highwatermark_offset: 50,
+                messages: vec![],
+            }),
+        };
+        assert_eq!(partition.partition, 0);
+        let data = partition.data().unwrap();
+        assert_eq!(data.highwatermark_offset, 50);
+        assert!(data.messages.is_empty());
+    }
+
+    #[test]
+    fn owned_partition_ok_with_messages() {
+        let partition = OwnedPartition {
+            partition: 3,
+            data: Ok(OwnedData {
+                highwatermark_offset: 200,
+                messages: vec![
+                    OwnedMessage { offset: 10, key: Bytes::new(), value: Bytes::from_static(b"hello") },
+                ],
+            }),
+        };
+        assert_eq!(partition.partition, 3);
+        let data = partition.data().unwrap();
+        assert_eq!(data.messages.len(), 1);
+        assert_eq!(&*data.messages[0].value, b"hello");
+    }
+
+    #[test]
+    fn owned_partition_err() {
+        let err = Arc::new(Error::CodecError);
+        let partition = OwnedPartition {
+            partition: 1,
+            data: Err(err.clone()),
+        };
+        assert!(partition.data().is_err());
+    }
+
+    #[test]
+    fn owned_topic_construction() {
+        let topic = OwnedTopic {
+            topic: "test-topic".to_string(),
+            partitions: vec![
+                OwnedPartition {
+                    partition: 0,
+                    data: Ok(OwnedData { highwatermark_offset: 10, messages: vec![] }),
+                },
+                OwnedPartition {
+                    partition: 1,
+                    data: Ok(OwnedData { highwatermark_offset: 20, messages: vec![] }),
+                },
+            ],
+        };
+        assert_eq!(topic.topic, "test-topic");
+        assert_eq!(topic.partitions.len(), 2);
+        assert_eq!(topic.partitions[0].partition, 0);
+        assert_eq!(topic.partitions[1].partition, 1);
+    }
+
+    #[test]
+    fn owned_fetch_response_construction() {
+        let resp = OwnedFetchResponse {
+            correlation_id: 42,
+            topics: vec![
+                OwnedTopic {
+                    topic: "orders".to_string(),
+                    partitions: vec![
+                        OwnedPartition {
+                            partition: 0,
+                            data: Ok(OwnedData { highwatermark_offset: 5, messages: vec![] }),
+                        },
+                    ],
+                },
+            ],
+        };
+        assert_eq!(resp.correlation_id, 42);
+        assert_eq!(resp.topics.len(), 1);
+        assert_eq!(resp.topics[0].topic, "orders");
+    }
+}
+
 fn decode_partition_records(
     records: Option<Bytes>,
     high_watermark: i64,

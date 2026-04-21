@@ -234,3 +234,119 @@ impl Default for ApiVersions {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn broker_api_versions_from_response_empty() {
+        // Simulate an empty ApiVersionsResponse (no api_keys).
+        let resp = kafka_protocol::messages::ApiVersionsResponse::default();
+        let bv = BrokerApiVersions::from_response(resp);
+        // Negotiating anything on an empty set should return the fallback.
+        assert_eq!(bv.negotiate(api_key::PRODUCE, 3), 3);
+        assert_eq!(bv.negotiate(api_key::FETCH, 4), 4);
+    }
+
+    #[test]
+    fn broker_api_versions_negotiate_clamps_to_range() {
+        use kafka_protocol::messages::api_versions_response::ApiVersion;
+        let resp = kafka_protocol::messages::ApiVersionsResponse::default().with_api_keys(vec![
+            ApiVersion::default()
+                .with_api_key(api_key::PRODUCE)
+                .with_min_version(3)
+                .with_max_version(8),
+        ]);
+        let bv = BrokerApiVersions::from_response(resp);
+
+        // Within range -> returned as-is.
+        assert_eq!(bv.negotiate(api_key::PRODUCE, 5), 5);
+        // Below min -> clamped up.
+        assert_eq!(bv.negotiate(api_key::PRODUCE, 1), 3);
+        // Above max -> clamped down.
+        assert_eq!(bv.negotiate(api_key::PRODUCE, 12), 8);
+        // Unknown key -> fallback.
+        assert_eq!(bv.negotiate(99, 7), 7);
+    }
+
+    #[test]
+    fn api_version_cache_new_is_empty() {
+        let cache = ApiVersionCache::new();
+        assert!(!cache.contains("broker1:9092"));
+        assert!(!cache.contains("any-host"));
+    }
+
+    #[test]
+    fn api_version_cache_insert_and_contains() {
+        let mut cache = ApiVersionCache::new();
+        let bv = BrokerApiVersions::from_response(kafka_protocol::messages::ApiVersionsResponse::default());
+        cache.insert("broker1:9092".to_string(), bv);
+        assert!(cache.contains("broker1:9092"));
+        assert!(!cache.contains("broker2:9092"));
+    }
+
+    #[test]
+    fn api_version_cache_invalidate() {
+        let mut cache = ApiVersionCache::new();
+        let bv = BrokerApiVersions::from_response(kafka_protocol::messages::ApiVersionsResponse::default());
+        cache.insert("broker1:9092".to_string(), bv);
+        assert!(cache.contains("broker1:9092"));
+        cache.invalidate("broker1:9092");
+        assert!(!cache.contains("broker1:9092"));
+    }
+
+    #[test]
+    fn api_version_cache_negotiate_falls_back_when_missing() {
+        let cache = ApiVersionCache::new();
+        // No broker in cache -> returns fallback.
+        assert_eq!(cache.negotiate("unknown:9092", api_key::FETCH, 4), 4);
+    }
+
+    #[test]
+    fn api_version_cache_negotiate_with_known_broker() {
+        use kafka_protocol::messages::api_versions_response::ApiVersion;
+        let mut cache = ApiVersionCache::new();
+        let resp = kafka_protocol::messages::ApiVersionsResponse::default().with_api_keys(vec![
+            ApiVersion::default()
+                .with_api_key(api_key::METADATA)
+                .with_min_version(1)
+                .with_max_version(12),
+        ]);
+        let bv = BrokerApiVersions::from_response(resp);
+        cache.insert("broker1:9092".to_string(), bv);
+
+        // Within range.
+        assert_eq!(cache.negotiate("broker1:9092", api_key::METADATA, 7), 7);
+        // Above max.
+        assert_eq!(cache.negotiate("broker1:9092", api_key::METADATA, 20), 12);
+        // Unknown API key for this broker -> fallback.
+        assert_eq!(cache.negotiate("broker1:9092", api_key::FETCH, 4), 4);
+    }
+
+    #[test]
+    fn api_versions_default_has_expected_fields() {
+        let v = ApiVersions::default();
+        assert_eq!(v.produce, API_VERSION_PRODUCE);
+        assert_eq!(v.fetch, API_VERSION_FETCH);
+        assert_eq!(v.metadata, API_VERSION_METADATA);
+        assert_eq!(v.list_offsets, API_VERSION_LIST_OFFSETS);
+        assert_eq!(v.find_coordinator, API_VERSION_FIND_COORDINATOR);
+        assert_eq!(v.offset_commit, API_VERSION_OFFSET_COMMIT);
+        assert_eq!(v.offset_fetch, API_VERSION_OFFSET_FETCH);
+    }
+
+    #[test]
+    fn resolve_all_api_versions_uses_defaults_for_unknown_broker() {
+        let cache = ApiVersionCache::new();
+        let v = resolve_all_api_versions(&cache, "unknown");
+        let d = ApiVersions::default();
+        assert_eq!(v.produce, d.produce);
+        assert_eq!(v.fetch, d.fetch);
+        assert_eq!(v.metadata, d.metadata);
+        assert_eq!(v.list_offsets, d.list_offsets);
+        assert_eq!(v.find_coordinator, d.find_coordinator);
+        assert_eq!(v.offset_commit, d.offset_commit);
+        assert_eq!(v.offset_fetch, d.offset_fetch);
+    }
+}

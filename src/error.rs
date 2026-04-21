@@ -213,3 +213,63 @@ impl Error {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn test_kafka_code_from_i32() {
+        // from_protocol(0) means "no error" -> None
+        assert!(KafkaCode::from_protocol(0).is_none());
+        assert_eq!(
+            KafkaCode::from_protocol(1),
+            Some(KafkaCode::OffsetOutOfRange)
+        );
+        assert_eq!(
+            KafkaCode::from_protocol(6),
+            Some(KafkaCode::NotLeaderForPartition)
+        );
+        assert_eq!(KafkaCode::from_protocol(999), Some(KafkaCode::Unknown));
+    }
+
+    #[test]
+    fn test_error_display() {
+        let msg = Error::Kafka(KafkaCode::LeaderNotAvailable).to_string();
+        assert!(msg.contains("LeaderNotAvailable"), "got: {msg}");
+
+        let msg = Error::NoHostReachable.to_string();
+        assert!(msg.contains("host"), "got: {msg}");
+
+        let msg = Error::UnexpectedEOF.to_string();
+        assert!(msg.contains("EOF"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_error_with_broker_context() {
+        let err = Error::Kafka(KafkaCode::NotLeaderForPartition)
+            .with_broker_context("broker1:9092", "Produce");
+        let msg = err.to_string();
+        assert!(msg.contains("broker1:9092"), "got: {msg}");
+        assert!(msg.contains("Produce"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_error_io_conversion() {
+        let io_err = io::Error::new(ErrorKind::ConnectionRefused, "refused");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
+    }
+
+    #[test]
+    fn test_topic_partition_error() {
+        let err = Error::TopicPartitionError {
+            topic_name: "test-topic".into(),
+            partition_id: 0,
+            error_code: KafkaCode::LeaderNotAvailable,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("test-topic"), "got: {msg}");
+    }
+}
