@@ -118,7 +118,8 @@ impl AsyncConsumer {
             .send(ConsumerCommand::Poll { response: tx })
             .await
             .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?;
-        rx.await.map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
+        rx.await
+            .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
     }
 
     /// Commits the current consumed offsets.
@@ -128,7 +129,8 @@ impl AsyncConsumer {
             .send(ConsumerCommand::Commit { response: tx })
             .await
             .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?;
-        rx.await.map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
+        rx.await
+            .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
     }
 
     /// Gracefully closes the consumer.

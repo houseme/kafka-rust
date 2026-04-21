@@ -82,8 +82,8 @@ pub use assignor::{PartitionAssignor, RangeAssignor, RoundRobinAssignor};
 pub use group_coordinator::GroupCoordinator;
 pub use rebalance::{RebalanceHandler, RebalanceListener};
 
-mod assignor;
 mod assignment;
+mod assignor;
 mod builder;
 mod config;
 mod group_coordinator;

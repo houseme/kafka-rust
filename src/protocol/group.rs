@@ -652,7 +652,11 @@ mod tests {
         let req = build_join_group_request(
             1, "client", "group", 10000, 300000, "", None, "consumer", &protocols,
         );
-        assert!(req.is_ok(), "build_join_group_request failed: {:?}", req.err());
+        assert!(
+            req.is_ok(),
+            "build_join_group_request failed: {:?}",
+            req.err()
+        );
         assert!(req.unwrap().len() > 4);
     }
 

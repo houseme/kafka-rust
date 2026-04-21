@@ -53,8 +53,7 @@ impl AsyncConnection {
 
     /// Reads exactly `n` bytes from the broker.
     pub async fn read_exact(&mut self, n: u64) -> Result<Vec<u8>> {
-        let n = usize::try_from(n)
-            .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
+        let n = usize::try_from(n).map_err(|_| Error::Protocol(ProtocolError::Codec))?;
         let mut buf = vec![0u8; n];
         self.stream
             .read_exact(&mut buf)

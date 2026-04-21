@@ -76,13 +76,7 @@ impl AsyncProducer {
                         partition,
                         response,
                     } => {
-                        let result = Self::do_send(
-                            &mut producer,
-                            &topic,
-                            &key,
-                            &value,
-                            partition,
-                        );
+                        let result = Self::do_send(&mut producer, &topic, &key, &value, partition);
                         let _ = response.send(result);
                     }
                     ProducerCommand::Flush { response } => {

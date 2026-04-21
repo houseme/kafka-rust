@@ -127,7 +127,9 @@ impl<P: Partitioner> TransactionalProducer<P> {
         V: AsBytes,
     {
         if !self.in_transaction {
-            return Err(Error::Config("not in a transaction; call begin() first".into()));
+            return Err(Error::Config(
+                "not in a transaction; call begin() first".into(),
+            ));
         }
 
         let key = if rec.key.as_bytes().is_empty() {
@@ -179,10 +181,7 @@ impl<P: Partitioner> TransactionalProducer<P> {
             }
         }
 
-        debug!(
-            "Sent message to {}:{} (seq: {})",
-            tp.0, tp.1, _seq
-        );
+        debug!("Sent message to {}:{} (seq: {})", tp.0, tp.1, _seq);
 
         Ok(())
     }
@@ -194,7 +193,9 @@ impl<P: Partitioner> TransactionalProducer<P> {
     /// consumers.
     pub fn commit(&mut self) -> Result<()> {
         if !self.in_transaction {
-            return Err(Error::Config("not in a transaction; call begin() first".into()));
+            return Err(Error::Config(
+                "not in a transaction; call begin() first".into(),
+            ));
         }
 
         self.end_txn(true)?;
@@ -215,7 +216,9 @@ impl<P: Partitioner> TransactionalProducer<P> {
     /// coordinator. All messages sent since `begin()` will be discarded.
     pub fn abort(&mut self) -> Result<()> {
         if !self.in_transaction {
-            return Err(Error::Config("not in a transaction; call begin() first".into()));
+            return Err(Error::Config(
+                "not in a transaction; call begin() first".into(),
+            ));
         }
 
         self.end_txn(false)?;
@@ -246,8 +249,8 @@ impl<P: Partitioner> TransactionalProducer<P> {
         )?;
 
         if resp.error_code != 0 {
-            let err = Error::from_protocol(resp.error_code)
-                .unwrap_or(Error::Kafka(KafkaCode::Unknown));
+            let err =
+                Error::from_protocol(resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
             return Err(err);
         }
 
@@ -275,8 +278,8 @@ impl<P: Partitioner> TransactionalProducer<P> {
         )?;
 
         if resp.error_code != 0 {
-            let err = Error::from_protocol(resp.error_code)
-                .unwrap_or(Error::Kafka(KafkaCode::Unknown));
+            let err =
+                Error::from_protocol(resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
             return Err(err);
         }
 
@@ -296,8 +299,7 @@ impl<P: Partitioner> TransactionalProducer<P> {
     }
 
     fn find_transaction_coordinator(&mut self) -> Result<String> {
-        self.client
-            .load_metadata_all()?;
+        self.client.load_metadata_all()?;
 
         self.client
             .group_coordinator_host(&self.transactional_id)
@@ -433,8 +435,7 @@ fn init_producer_id_for_txn(
     )?;
 
     if resp.error_code != 0 {
-        let err = Error::from_protocol(resp.error_code)
-            .unwrap_or(Error::Kafka(KafkaCode::Unknown));
+        let err = Error::from_protocol(resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
         return Err(err);
     }
 

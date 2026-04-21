@@ -82,7 +82,10 @@ impl RebalanceHandler {
 
     /// Handles a rebalance triggered by a heartbeat error or other event.
     pub fn handle_rebalance(&mut self) -> Result<MemberAssignment> {
-        debug!("Starting rebalance for group '{}'", self.coordinator.group_id());
+        debug!(
+            "Starting rebalance for group '{}'",
+            self.coordinator.group_id()
+        );
 
         // Notify listener of revocation
         if let Some(ref listener) = self.listener {
@@ -114,7 +117,10 @@ impl RebalanceHandler {
             listener.on_partitions_assigned(&assigned);
         }
 
-        debug!("Rebalance complete for group '{}'", self.coordinator.group_id());
+        debug!(
+            "Rebalance complete for group '{}'",
+            self.coordinator.group_id()
+        );
         Ok(assignment)
     }
 
@@ -209,14 +215,24 @@ mod tests {
 
     #[test]
     fn test_is_rebalance_error() {
-        assert!(is_rebalance_error(&Error::Kafka(KafkaCode::RebalanceInProgress)));
-        assert!(is_rebalance_error(&Error::Kafka(KafkaCode::IllegalGeneration)));
-        assert!(is_rebalance_error(&Error::Kafka(KafkaCode::UnknownMemberId)));
+        assert!(is_rebalance_error(&Error::Kafka(
+            KafkaCode::RebalanceInProgress
+        )));
+        assert!(is_rebalance_error(&Error::Kafka(
+            KafkaCode::IllegalGeneration
+        )));
+        assert!(is_rebalance_error(&Error::Kafka(
+            KafkaCode::UnknownMemberId
+        )));
         assert!(is_rebalance_error(&Error::Kafka(
             KafkaCode::GroupCoordinatorNotAvailable
         )));
-        assert!(!is_rebalance_error(&Error::Kafka(KafkaCode::UnknownTopicOrPartition)));
-        assert!(!is_rebalance_error(&Error::Kafka(KafkaCode::LeaderNotAvailable)));
+        assert!(!is_rebalance_error(&Error::Kafka(
+            KafkaCode::UnknownTopicOrPartition
+        )));
+        assert!(!is_rebalance_error(&Error::Kafka(
+            KafkaCode::LeaderNotAvailable
+        )));
     }
 
     // Note: Integration tests for join_group/rebalance require a live Kafka cluster.

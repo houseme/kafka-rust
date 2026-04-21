@@ -56,10 +56,8 @@ impl PartitionAssignor for RangeAssignor {
             .map(|(mid, topics)| (mid.as_str(), topics.as_slice()))
             .collect();
 
-        let mut assignments: HashMap<&str, Vec<TopicAssignment>> = members
-            .iter()
-            .map(|&m| (m, Vec::new()))
-            .collect();
+        let mut assignments: HashMap<&str, Vec<TopicAssignment>> =
+            members.iter().map(|&m| (m, Vec::new())).collect();
 
         for topic in topic_partitions.topics() {
             let partitions = topic_partitions.partitions_for(topic);
@@ -168,10 +166,8 @@ impl PartitionAssignor for RoundRobinAssignor {
 
         all_partitions.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
-        let mut member_topics: HashMap<&str, HashMap<String, Vec<i32>>> = members
-            .iter()
-            .map(|&m| (m, HashMap::new()))
-            .collect();
+        let mut member_topics: HashMap<&str, HashMap<String, Vec<i32>>> =
+            members.iter().map(|&m| (m, HashMap::new())).collect();
 
         let num_members = members.len();
         for (i, (topic, partition)) in all_partitions.into_iter().enumerate() {
@@ -273,19 +269,27 @@ mod tests {
         assert_eq!(assignments.len(), 2);
 
         let m1 = MemberAssignment::from_bytes(
-            &assignments.iter().find(|a| a.member_id == "m1").unwrap().assignment,
+            &assignments
+                .iter()
+                .find(|a| a.member_id == "m1")
+                .unwrap()
+                .assignment,
         )
         .unwrap();
         let m2 = MemberAssignment::from_bytes(
-            &assignments.iter().find(|a| a.member_id == "m2").unwrap().assignment,
+            &assignments
+                .iter()
+                .find(|a| a.member_id == "m2")
+                .unwrap()
+                .assignment,
         )
         .unwrap();
 
         assert_eq!(m1.topic_partitions.len(), 1);
         assert_eq!(m2.topic_partitions.len(), 1);
 
-        let total: usize = m1.topic_partitions[0].partitions.len()
-            + m2.topic_partitions[0].partitions.len();
+        let total: usize =
+            m1.topic_partitions[0].partitions.len() + m2.topic_partitions[0].partitions.len();
         assert_eq!(total, 4);
     }
 

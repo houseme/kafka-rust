@@ -3,8 +3,8 @@
 //! Handles JoinGroup, SyncGroup, Heartbeat, and LeaveGroup operations
 //! for a consumer participating in a consumer group.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -13,7 +13,9 @@ use tracing::{debug, info, warn};
 use super::assignor::{PartitionAssignor, SimpleTopicPartitions};
 use crate::client::KafkaClient;
 use crate::error::{Error, KafkaCode, Result};
-use crate::protocol::group::{self, GroupAssignment, GroupMember, MemberAssignment, ProtocolMetadata};
+use crate::protocol::group::{
+    self, GroupAssignment, GroupMember, MemberAssignment, ProtocolMetadata,
+};
 
 /// Manages the consumer group lifecycle.
 pub struct GroupCoordinator {
@@ -115,8 +117,8 @@ impl GroupCoordinator {
         )?;
 
         if join_resp.error_code != 0 {
-            let err =
-                Error::from_protocol(join_resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
+            let err = Error::from_protocol(join_resp.error_code)
+                .unwrap_or(Error::Kafka(KafkaCode::Unknown));
             return Err(err);
         }
 
@@ -127,10 +129,7 @@ impl GroupCoordinator {
 
         info!(
             "Joined group '{}' (generation: {}, member_id: {}, leader: {})",
-            self.group_id,
-            join_resp.generation_id,
-            join_resp.member_id,
-            join_resp.leader_id
+            self.group_id, join_resp.generation_id, join_resp.member_id, join_resp.leader_id
         );
 
         let correlation_id = self.client.next_correlation_id();
@@ -157,8 +156,8 @@ impl GroupCoordinator {
         )?;
 
         if sync_resp.error_code != 0 {
-            let err =
-                Error::from_protocol(sync_resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
+            let err = Error::from_protocol(sync_resp.error_code)
+                .unwrap_or(Error::Kafka(KafkaCode::Unknown));
             return Err(err);
         }
 
@@ -289,13 +288,10 @@ impl GroupCoordinator {
         let topics: Vec<(String, Vec<i32>)> = subscribed_topics
             .iter()
             .filter_map(|topic_name| {
-                self.client
-                    .topics()
-                    .partitions(topic_name)
-                    .map(|tp| {
-                        let ps: Vec<i32> = tp.iter().map(|p| p.id()).collect();
-                        (topic_name.clone(), ps)
-                    })
+                self.client.topics().partitions(topic_name).map(|tp| {
+                    let ps: Vec<i32> = tp.iter().map(|p| p.id()).collect();
+                    (topic_name.clone(), ps)
+                })
             })
             .collect();
         SimpleTopicPartitions::new(&topics)
