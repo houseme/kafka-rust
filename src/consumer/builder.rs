@@ -234,6 +234,10 @@ impl Builder {
     /// Fails with the `NoTopicsAssigned` error, if neither
     /// `with_topic` nor `with_topic_partitions` have been called to
     /// assign at least one topic for consumption.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if topic assignments are missing, metadata loading fails, or initial state bootstrap fails.
     pub fn create(self) -> Result<Consumer> {
         // ~ fail immediately if there's no topic to be consumed
         if self.assignments.is_empty() {

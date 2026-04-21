@@ -56,6 +56,11 @@ pub struct OwnedFetchResponse {
 }
 
 impl OwnedPartition {
+    /// Returns partition fetch data or the decoding error for this partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a reference to the stored error when decoding failed.
     pub fn data(&self) -> std::result::Result<&OwnedData, &Arc<Error>> {
         self.data.as_ref()
     }
@@ -165,9 +170,7 @@ fn decode_partition_records(
     };
 
     let raw_records = records_bytes.clone();
-    let record_set = if let Ok(rs) = RecordBatchDecoder::decode(&mut records_bytes) {
-        rs
-    } else {
+    let Ok(record_set) = RecordBatchDecoder::decode(&mut records_bytes) else {
         let messages = decode_records_safe(raw_records.as_ref()).map_err(Arc::new)?;
         return Ok(OwnedData {
             highwatermark_offset: high_watermark,

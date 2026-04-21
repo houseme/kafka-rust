@@ -64,6 +64,10 @@ impl RebalanceHandler {
     }
 
     /// Performs the initial join to the consumer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the coordinator join or assignment handling fails.
     pub fn join_group(&mut self) -> Result<MemberAssignment> {
         let assignment = self
             .coordinator
@@ -83,6 +87,10 @@ impl RebalanceHandler {
     }
 
     /// Handles a rebalance triggered by a heartbeat error or other event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if rejoining the group or assignment handling fails.
     pub fn handle_rebalance(&mut self) -> Result<MemberAssignment> {
         debug!(
             "Starting rebalance for group '{}'",
@@ -130,6 +138,10 @@ impl RebalanceHandler {
     ///
     /// Returns `Ok(true)` if the heartbeat was successful,
     /// `Ok(false)` if a rebalance is needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-rebalance heartbeat failures.
     pub fn heartbeat(&mut self) -> Result<bool> {
         match self.coordinator.heartbeat() {
             Ok(()) => Ok(true),
@@ -148,6 +160,10 @@ impl RebalanceHandler {
     }
 
     /// Gracefully leaves the consumer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying coordinator leave call fails.
     pub fn leave_group(&mut self) -> Result<()> {
         if let Some(ref listener) = self.listener
             && let Some(ref assignment) = self.current_assignment

@@ -410,6 +410,11 @@ impl KafkaClient {
     }
 
     #[inline]
+    /// Sets the max wait time used by fetch requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `max_wait_time` cannot be represented in protocol milliseconds.
     pub fn set_fetch_max_wait_time(&mut self, max_wait_time: Duration) -> Result<()> {
         self.config.fetch.max_wait_time = protocol::to_millis_i32(max_wait_time)?;
         Ok(())
@@ -512,18 +517,30 @@ impl KafkaClient {
     // -- metadata operations (delegated to metadata_ops.rs) --
 
     /// Resets and loads metadata for all topics from the underlying brokers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no broker is reachable or metadata loading fails.
     #[inline]
     pub fn load_metadata_all(&mut self) -> Result<()> {
         metadata_ops::load_metadata_all(self)
     }
 
     /// Reloads metadata for a list of supplied topics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no broker is reachable or metadata loading fails.
     #[inline]
     pub fn load_metadata<T: AsRef<str>>(&mut self, topics: &[T]) -> Result<()> {
         metadata_ops::load_metadata(self, topics)
     }
 
     /// Reloads metadata using the kafka-protocol adapter (v1 protocol).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no broker is reachable or metadata loading fails.
     pub fn load_metadata_kp<T: AsRef<str>>(&mut self, topics: &[T]) -> Result<()> {
         metadata_ops::load_metadata_kp(self, topics)
     }
@@ -535,6 +552,10 @@ impl KafkaClient {
     }
 
     /// Fetch offsets for a list of topics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata or list-offset requests fail.
     pub fn fetch_offsets<T: AsRef<str>>(
         &mut self,
         topics: &[T],
@@ -544,6 +565,10 @@ impl KafkaClient {
     }
 
     /// Fetch offsets for a list of topics with timestamps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata or list-offset requests fail.
     pub fn list_offsets<T: AsRef<str>>(
         &mut self,
         topics: &[T],
@@ -553,6 +578,10 @@ impl KafkaClient {
     }
 
     /// Fetch offset for a single topic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata or list-offset requests fail.
     pub fn fetch_topic_offsets<T: AsRef<str>>(
         &mut self,
         topic: T,
@@ -562,6 +591,10 @@ impl KafkaClient {
     }
 
     /// Fetch offsets using the kafka-protocol adapter (`ListOffsets` v1).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata or list-offset requests fail.
     pub fn fetch_offsets_kp<T: AsRef<str>>(
         &mut self,
         topics: &[T],
@@ -575,6 +608,10 @@ impl KafkaClient {
     /// Creates one or more topics.
     ///
     /// The request is attempted against configured brokers until one succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if timeout conversion fails, brokers are unreachable, or topic creation fails.
     pub fn create_topics(
         &mut self,
         topics: &[TopicConfig],
@@ -613,6 +650,10 @@ impl KafkaClient {
     /// Deletes one or more topics by name.
     ///
     /// The request is attempted against configured brokers until one succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if timeout conversion fails, brokers are unreachable, or topic deletion fails.
     pub fn delete_topics(
         &mut self,
         topic_names: &[&str],
@@ -651,6 +692,10 @@ impl KafkaClient {
     // -- fetch operations (delegated to fetch_ops.rs) --
 
     /// Fetch messages from Kafka (multiple topic, partitions).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata lookup, fetch request construction, or broker I/O fails.
     pub fn fetch_messages<'a, I, J>(
         &mut self,
         input: I,
@@ -663,6 +708,10 @@ impl KafkaClient {
     }
 
     /// Fetch messages from a single kafka partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata lookup, fetch request construction, or broker I/O fails.
     pub fn fetch_messages_for_partition(
         &mut self,
         req: &FetchPartition<'_>,
@@ -671,6 +720,10 @@ impl KafkaClient {
     }
 
     /// Fetch messages using the kafka-protocol adapter (protocol version 4).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata lookup, fetch request construction, or broker I/O fails.
     pub fn fetch_messages_kp<'a, I, J>(
         &mut self,
         input: I,
@@ -692,6 +745,10 @@ impl KafkaClient {
     // -- produce operations (delegated to produce_ops.rs) --
 
     /// Send a message to Kafka.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if partitioning, request serialization, or broker produce calls fail.
     pub fn produce_messages<'a, 'b, I, J>(
         &mut self,
         acks: RequiredAcks,
@@ -706,6 +763,10 @@ impl KafkaClient {
     }
 
     /// Produces messages using the kafka-protocol adapter (protocol version 3).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if partitioning, request serialization, or broker produce calls fail.
     pub fn produce_messages_kp<'a, 'b, I, J>(
         &mut self,
         acks: RequiredAcks,
@@ -729,6 +790,10 @@ impl KafkaClient {
     // -- offset operations (delegated to offset_ops.rs) --
 
     /// Commit offset for a topic partitions on behalf of a consumer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset commit request building or broker communication fails.
     pub fn commit_offsets<'a, J, I>(&mut self, group: &str, offsets: I) -> Result<()>
     where
         J: AsRef<CommitOffset<'a>>,
@@ -738,6 +803,10 @@ impl KafkaClient {
     }
 
     /// Commit offset of a particular topic partition on behalf of a consumer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset commit request building or broker communication fails.
     pub fn commit_offset(
         &mut self,
         group: &str,
@@ -749,6 +818,10 @@ impl KafkaClient {
     }
 
     /// Fetch offset for a specified list of topic partitions of a consumer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset fetch request building or broker communication fails.
     pub fn fetch_group_offsets<'a, J, I>(
         &mut self,
         group: &str,
@@ -762,6 +835,10 @@ impl KafkaClient {
     }
 
     /// Fetch offset for all partitions of a particular topic of a consumer group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset fetch request building or broker communication fails.
     pub fn fetch_group_topic_offset(
         &mut self,
         group: &str,
@@ -771,6 +848,10 @@ impl KafkaClient {
     }
 
     /// Commit offsets using the kafka-protocol adapter (`OffsetCommit` v2).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset commit request building or broker communication fails.
     pub fn commit_offsets_kp<'a, J, I>(&mut self, group: &str, offsets: I) -> Result<()>
     where
         J: AsRef<CommitOffset<'a>>,
@@ -789,6 +870,10 @@ impl KafkaClient {
     }
 
     /// Commit a single offset using the kafka-protocol adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset commit request building or broker communication fails.
     pub fn commit_offset_kp(
         &mut self,
         group: &str,
@@ -800,6 +885,10 @@ impl KafkaClient {
     }
 
     /// Fetch group offsets using the kafka-protocol adapter (`OffsetFetch` v2).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if offset fetch request building or broker communication fails.
     pub fn fetch_group_offsets_kp<'a, J, I>(
         &mut self,
         group: &str,
@@ -822,6 +911,10 @@ impl KafkaClient {
     }
 
     /// Fetch group topic offset using the kafka-protocol adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the topic is unknown or offset fetch broker calls fail.
     pub fn fetch_group_topic_offset_kp(
         &mut self,
         group: &str,
@@ -863,6 +956,10 @@ impl KafkaClient {
     }
 
     /// Gets a mutable connection to the specified host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if there is no reachable connection for the given host.
     pub fn get_conn_mut(&mut self, host: &str) -> Result<&mut network::KafkaConnection> {
         self.conn_pool.get_conn(host, std::time::Instant::now())
     }

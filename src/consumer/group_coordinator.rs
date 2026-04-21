@@ -84,6 +84,10 @@ impl GroupCoordinator {
     }
 
     /// Joins the consumer group and returns the assigned partitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if coordinator lookup, join/sync requests, or assignment decoding fails.
     pub fn join_group<A: PartitionAssignor + ?Sized>(
         &mut self,
         assignor: &A,
@@ -186,6 +190,10 @@ impl GroupCoordinator {
     }
 
     /// Sends a heartbeat to the group coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if coordinator lookup fails, heartbeat I/O fails, or broker returns a heartbeat error.
     pub fn heartbeat(&mut self) -> Result<()> {
         let coordinator_host = self.find_coordinator()?;
         let correlation_id = self.client.next_correlation_id();
@@ -215,6 +223,10 @@ impl GroupCoordinator {
     }
 
     /// Leaves the consumer group gracefully.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if coordinator lookup or leave-group network I/O fails.
     pub fn leave_group(&mut self) -> Result<()> {
         self.stop_heartbeat_thread();
 
@@ -256,6 +268,10 @@ impl GroupCoordinator {
     }
 
     /// Re-joins the group (for rebalancing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if leaving or re-joining the group fails.
     pub fn rejoin<A: PartitionAssignor + ?Sized>(
         &mut self,
         assignor: &A,

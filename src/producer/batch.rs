@@ -362,6 +362,10 @@ impl<P> BatchProducerBuilder<P> {
     }
 
     /// Creates/builds a new batch producer based on the so far supplied settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if timeout conversion fails, metadata loading fails, or producer state initialization fails.
     pub fn create(self) -> Result<BatchProducer<P>> {
         let (mut client, need_metadata) = match self.client {
             Some(client) => (client, false),

@@ -17,12 +17,11 @@ fn test_producer_send() {
 fn test_producer_send_non_existent_topic() {
     let mut producer = test_producer();
 
-    let error_code = match producer
+    let error::Error::Kafka(error_code) = producer
         .send(&Record::from_value("non-topic", "foo".as_bytes()))
         .unwrap_err()
-    {
-        error::Error::Kafka(code) => code,
-        _ => panic!("Should have received Kafka error"),
+    else {
+        panic!("Should have received Kafka error");
     };
 
     let correct_error_code = error::KafkaCode::UnknownTopicOrPartition;
@@ -63,9 +62,8 @@ fn test_producer_send_all_non_existent_topic() {
         Record::from_value("bar-topic", "bar".as_bytes()),
     ];
 
-    let error_code = match producer.send_all(records).unwrap_err() {
-        error::Error::Kafka(code) => code,
-        _ => panic!("Should have received Kafka error"),
+    let error::Error::Kafka(error_code) = producer.send_all(records).unwrap_err() else {
+        panic!("Should have received Kafka error");
     };
 
     let correct_error_code = error::KafkaCode::UnknownTopicOrPartition;

@@ -46,9 +46,8 @@ impl<H: BuildHasher + Send + Sync> Partitioner for DefaultPartitioner<H> {
         if rec.partition >= 0 {
             return;
         }
-        let partitions = match topics.partitions(rec.topic) {
-            None => return,
-            Some(partitions) => partitions,
+        let Some(partitions) = topics.partitions(rec.topic) else {
+            return;
         };
 
         if let Some(key) = rec.key {

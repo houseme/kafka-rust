@@ -100,6 +100,10 @@ impl<P: Partitioner> TransactionalProducer<P> {
     ///
     /// Clears any previous transaction state and prepares for new
     /// transactional writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if transactional state preparation fails.
     pub fn begin(&mut self) -> Result<()> {
         self.txn_epoch += 1;
         self.current_txn_partitions.clear();
@@ -190,6 +194,10 @@ impl<P: Partitioner> TransactionalProducer<P> {
     /// Sends an `EndTxn` request with `committed=true` to the transaction
     /// coordinator, making all messages sent since `begin()` visible to
     /// consumers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no transaction is active or broker commit calls fail.
     pub fn commit(&mut self) -> Result<()> {
         if !self.in_transaction {
             return Err(Error::Config(
@@ -213,6 +221,10 @@ impl<P: Partitioner> TransactionalProducer<P> {
     ///
     /// Sends an `EndTxn` request with `committed=false` to the transaction
     /// coordinator. All messages sent since `begin()` will be discarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no transaction is active or broker abort calls fail.
     pub fn abort(&mut self) -> Result<()> {
         if !self.in_transaction {
             return Err(Error::Config(

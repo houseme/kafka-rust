@@ -11,14 +11,12 @@
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
 // Pedantic lint relaxations kept intentionally for protocol-heavy code paths.
-#![allow(clippy::missing_errors_doc)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::needless_pass_by_value)]
-#![allow(clippy::manual_let_else)]
 
 pub mod client;
 mod compression;

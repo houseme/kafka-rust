@@ -31,9 +31,8 @@ impl Partitioner for RoundRobinPartitioner {
             return;
         }
 
-        let partitions = match topics.partitions(rec.topic) {
-            None => return,
-            Some(partitions) => partitions,
+        let Some(partitions) = topics.partitions(rec.topic) else {
+            return;
         };
 
         let avail = partitions.available_ids();
