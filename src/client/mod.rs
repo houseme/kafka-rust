@@ -178,6 +178,8 @@ pub struct ProduceMessage<'a, 'b> {
     /// The partition (of the corresponding topic) to produce this
     /// message to.
     pub partition: i32,
+    /// Optional headers for this message.
+    pub headers: &'b [(String, Vec<u8>)],
 }
 
 impl<'a, 'b> AsRef<ProduceMessage<'a, 'b>> for ProduceMessage<'a, 'b> {
@@ -201,6 +203,7 @@ impl<'a, 'b> ProduceMessage<'a, 'b> {
             value,
             topic,
             partition,
+            headers: &[],
         }
     }
 }

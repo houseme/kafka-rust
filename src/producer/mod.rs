@@ -41,7 +41,7 @@ mod partitioner;
 mod record;
 
 pub use self::partitioner::{DefaultPartitioner, Partitioner};
-pub use self::record::{AsBytes, Record};
+pub use self::record::{AsBytes, Headers, Record};
 
 pub use crate::client::{Compression, ProduceConfirm, ProducePartitionConfirm, RequiredAcks};
 pub use config::DEFAULT_ACK_TIMEOUT_MILLIS;
@@ -167,6 +167,7 @@ impl<P: Partitioner> Producer<P> {
                     value: to_option(r.value.as_bytes()),
                     topic: r.topic,
                     partition: r.partition,
+                    headers: &r.headers.0,
                 };
                 partitioner.partition(Topics::new(partitions), &mut m);
                 m

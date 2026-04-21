@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use rustfs_kafka::error::Error as KafkaError;
-use rustfs_kafka::producer::{Producer, Record, RequiredAcks};
+use rustfs_kafka::producer::{Headers, Producer, Record, RequiredAcks};
 
 /// This program demonstrates sending single message through a
 /// `Producer`.  This is a convenient higher-level client that will
@@ -47,6 +47,7 @@ fn produce_message(data: &[u8], topic: &str, brokers: Vec<String>) -> Result<(),
         partition: -1,
         key: (),
         value: data,
+        headers: Headers::new(),
     })?;
 
     // ~ we can achieve exactly the same as above in a shorter way with

@@ -7,8 +7,8 @@ use crate::compression::Compression;
 use crate::error::KafkaCode;
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
-/// A message to produce: (topic, partition, key, value).
-pub type ProduceMessageRef<'a> = (&'a str, i32, Option<&'a [u8]>, Option<&'a [u8]>);
+/// A message to produce: (topic, partition, key, value, headers).
+pub type ProduceMessageRef<'a> = (&'a str, i32, Option<&'a [u8]>, Option<&'a [u8]>, &'a [(String, Vec<u8>)]);
 
 pub fn build_produce_request(
     correlation_id: i32,
@@ -27,7 +27,12 @@ pub fn build_produce_request(
     let mut topic_map: std::collections::HashMap<&str, std::collections::HashMap<i32, Vec<Record>>> =
         std::collections::HashMap::new();
 
-    for (topic, partition, key, value) in messages {
+    for (topic, partition, key, value, headers) in messages {
+        let kp_headers: indexmap::IndexMap<kafka_protocol::protocol::StrBytes, Option<bytes::Bytes>> = headers
+            .iter()
+            .map(|(k, v)| (kafka_protocol::protocol::StrBytes::from(k.clone()), Some(bytes::Bytes::copy_from_slice(v))))
+            .collect();
+
         let record = Record {
             transactional: false,
             control: false,
@@ -40,7 +45,7 @@ pub fn build_produce_request(
             timestamp: 0,
             key: key.map(bytes::Bytes::copy_from_slice),
             value: value.map(bytes::Bytes::copy_from_slice),
-            headers: indexmap::IndexMap::new(),
+            headers: kp_headers,
         };
         topic_map
             .entry(topic)

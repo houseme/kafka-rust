@@ -169,6 +169,7 @@ mod default_partitioner_tests {
             value: None,
             topic,
             partition: -1,
+            headers: &[],
         };
         p.partition(Topics::new(topics), &mut msg);
         let num_partitions = topics.get(topic).unwrap().num_all() as i32;

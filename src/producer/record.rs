@@ -1,5 +1,56 @@
 use std::fmt;
 
+/// A collection of key-value headers attached to a Kafka record.
+///
+/// Headers are supported since Kafka 0.11.
+#[derive(Default, Clone, Debug)]
+pub struct Headers(pub(crate) Vec<(String, Vec<u8>)>);
+
+impl Headers {
+    /// Creates an empty headers collection.
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a header key-value pair.
+    pub fn insert(&mut self, key: impl Into<String>, value: impl AsRef<[u8]>) {
+        self.0.push((key.into(), value.as_ref().to_vec()));
+    }
+
+    /// Returns the number of headers.
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns `true` if there are no headers.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns an iterator over the headers.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &(String, Vec<u8>)> {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for Headers {
+    type Item = (String, Vec<u8>);
+    type IntoIter = std::vec::IntoIter<(String, Vec<u8>)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+// --------------------------------------------------------------------
+
 /// A trait used by `Producer` to obtain the bytes `Record::key` and
 /// `Record::value` represent.  This leaves the choice of the types
 /// for `key` and `value` with the client.
@@ -55,6 +106,9 @@ pub struct Record<'a, K, V> {
     /// "unspecified".  A `Producer` will then typically try to derive
     /// a partition on its own.
     pub partition: i32,
+
+    /// Optional headers attached to this record.
+    pub headers: Headers,
 }
 
 impl<'a, K, V> Record<'a, K, V> {
@@ -68,6 +122,7 @@ impl<'a, K, V> Record<'a, K, V> {
             value,
             topic,
             partition: -1,
+            headers: Headers::new(),
         }
     }
 
@@ -76,6 +131,22 @@ impl<'a, K, V> Record<'a, K, V> {
     #[must_use]
     pub fn with_partition(mut self, partition: i32) -> Self {
         self.partition = partition;
+        self
+    }
+
+    /// Sets the headers for this record.
+    #[inline]
+    #[must_use]
+    pub fn with_headers(mut self, headers: Headers) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    /// Adds a single header to this record.
+    #[inline]
+    #[must_use]
+    pub fn with_header(mut self, key: impl Into<String>, value: impl AsRef<[u8]>) -> Self {
+        self.headers.insert(key, value);
         self
     }
 }
@@ -91,6 +162,7 @@ impl<'a, V> Record<'a, (), V> {
             value,
             topic,
             partition: -1,
+            headers: Headers::new(),
         }
     }
 }
@@ -99,8 +171,76 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Record<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Record {{ topic: {}, partition: {}, key: {:?}, value: {:?} }}",
-            self.topic, self.partition, self.key, self.value
+            "Record {{ topic: {}, partition: {}, key: {:?}, value: {:?}, headers: {:?} }}",
+            self.topic, self.partition, self.key, self.value, self.headers
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_headers_empty_default() {
+        let h = Headers::new();
+        assert!(h.is_empty());
+        assert_eq!(h.len(), 0);
+    }
+
+    #[test]
+    fn test_headers_insert_and_iter() {
+        let mut h = Headers::new();
+        h.insert("key1", b"value1");
+        h.insert("key2", b"value2");
+
+        assert_eq!(h.len(), 2);
+        assert!(!h.is_empty());
+
+        let pairs: Vec<_> = h.iter().collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].0, "key1");
+        assert_eq!(pairs[1].0, "key2");
+    }
+
+    #[test]
+    fn test_headers_into_iterator() {
+        let mut h = Headers::new();
+        h.insert("a", b"1");
+        h.insert("b", b"2");
+
+        let pairs: Vec<_> = h.into_iter().collect();
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn test_record_default_no_headers() {
+        let r = Record::from_value("topic", b"value");
+        assert!(r.headers.is_empty());
+        assert_eq!(r.partition, -1);
+    }
+
+    #[test]
+    fn test_record_with_headers() {
+        let mut headers = Headers::new();
+        headers.insert("trace-id", b"abc123");
+
+        let r = Record::from_value("topic", b"value").with_headers(headers);
+        assert_eq!(r.headers.len(), 1);
+    }
+
+    #[test]
+    fn test_record_with_single_header() {
+        let r = Record::from_value("topic", b"value")
+            .with_header("content-type", b"json");
+        assert_eq!(r.headers.len(), 1);
+    }
+
+    #[test]
+    fn test_record_from_key_value_with_headers() {
+        let r = Record::from_key_value("topic", "key", b"value")
+            .with_header("h1", b"v1");
+        assert_eq!(r.key, "key");
+        assert_eq!(r.headers.len(), 1);
     }
 }
