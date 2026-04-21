@@ -77,6 +77,7 @@ pub fn convert_list_offsets_response(
 // --------------------------------------------------------------------
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct OffsetResponseData {
     pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionOffsetResponse>,

@@ -220,6 +220,7 @@ pub enum KafkaCode {
 
 impl Error {
     /// Wraps this error with broker request context (broker host and API key name).
+    #[must_use]
     pub fn with_broker_context(self, broker: impl Into<String>, api_key: &'static str) -> Self {
         Error::BrokerRequestError {
             broker: broker.into(),

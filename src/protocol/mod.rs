@@ -11,14 +11,6 @@ pub mod offset;
 pub mod produce;
 
 // Re-export key types for convenience
-pub use metadata::{BrokerMetadata, MetadataResponseData, PartitionMetadata, TopicMetadata};
-pub use produce::{PartitionProduceResponse, ProducerTimestamp, ProduceResponseData, TopicPartitionProduceResponse};
-pub use offset::{OffsetResponseData, PartitionOffsetResponse, TopicPartitionOffsetResponse};
-pub use consumer::{
-    GroupCoordinatorResponse, OffsetCommitResponse, OffsetFetchResponse,
-    PartitionOffsetCommitResponse, PartitionOffsetFetchResponse,
-    TopicPartitionOffsetCommitResponse, TopicPartitionOffsetFetchResponse,
-};
 
 use crate::compression::Compression;
 use crate::error::{Error, KafkaCode, Result};

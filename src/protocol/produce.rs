@@ -7,13 +7,16 @@ use crate::compression::Compression;
 use crate::error::KafkaCode;
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
+/// A message to produce: (topic, partition, key, value).
+pub type ProduceMessageRef<'a> = (&'a str, i32, Option<&'a [u8]>, Option<&'a [u8]>);
+
 pub fn build_produce_request(
     correlation_id: i32,
     client_id: &str,
     required_acks: i16,
     timeout_ms: i32,
     compression: Compression,
-    messages: &[(&str, i32, Option<&[u8]>, Option<&[u8]>)],
+    messages: &[ProduceMessageRef<'_>],
 ) -> (RequestHeader, ProduceRequest) {
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
@@ -121,6 +124,7 @@ pub enum ProducerTimestamp {
 }
 
 #[derive(Default, Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProduceResponseData {
     pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionProduceResponse>,

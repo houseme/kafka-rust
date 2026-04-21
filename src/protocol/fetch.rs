@@ -4,7 +4,7 @@ use kafka_protocol::protocol::StrBytes;
 use kafka_protocol::records::RecordBatchDecoder;
 
 use super::API_VERSION_FETCH;
-use crate::error::{Error, KafkaCode, Result};
+use crate::error::{Error, KafkaCode};
 use std::sync::Arc;
 
 // Re-exports of sub-types from kafka_protocol for convenience
@@ -112,7 +112,7 @@ pub fn build_fetch_request(
 pub fn convert_fetch_response(
     kp_resp: FetchResponse,
     correlation_id: i32,
-) -> Result<OwnedFetchResponse> {
+) -> OwnedFetchResponse {
     let topics = kp_resp
         .responses
         .into_iter()
@@ -145,10 +145,10 @@ pub fn convert_fetch_response(
         })
         .collect();
 
-    Ok(OwnedFetchResponse {
+    OwnedFetchResponse {
         correlation_id,
         topics,
-    })
+    }
 }
 
 fn decode_partition_records(
@@ -173,8 +173,8 @@ fn decode_partition_records(
     for record in &record_set.records {
         messages.push(OwnedMessage {
             offset: record.offset,
-            key: record.key.as_ref().cloned().unwrap_or_default(),
-            value: record.value.as_ref().cloned().unwrap_or_default(),
+            key: record.key.clone().unwrap_or_default(),
+            value: record.value.clone().unwrap_or_default(),
         });
     }
 

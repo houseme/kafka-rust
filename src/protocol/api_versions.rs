@@ -1,4 +1,10 @@
-//! API version negotiation via Kafka's ApiVersionsRequest (API key 18).
+//! API version negotiation via Kafka's `ApiVersionsRequest` (API key 18).
+//!
+//! Infrastructure for negotiating API versions with Kafka brokers. Currently
+//! used during metadata requests; full per-request version negotiation will
+//! be wired up in a future release.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -24,7 +30,7 @@ pub mod api_key {
     pub const API_VERSIONS: i16 = 18;
 }
 
-/// The version of the ApiVersions request we send.
+/// The version of the `ApiVersions` request we send.
 const API_VERSIONS_REQUEST_VERSION: i16 = 3;
 
 /// Negotiated API version ranges for a single broker.
@@ -34,7 +40,7 @@ pub struct BrokerApiVersions {
 }
 
 impl BrokerApiVersions {
-    /// Create from the parsed ApiVersions response.
+    /// Create from the parsed `ApiVersions` response.
     fn from_response(
         resp: kafka_protocol::messages::ApiVersionsResponse,
     ) -> BrokerApiVersions {
@@ -48,40 +54,37 @@ impl BrokerApiVersions {
     /// Get the best version for the given API key, clamped to the requested range.
     /// Returns `fallback` if the broker doesn't support the API.
     pub fn negotiate(&self, api_key: i16, fallback: i16) -> i16 {
-        match self.versions.get(&api_key) {
-            Some(&(min, max)) => {
-                if fallback < min {
-                    debug!(
-                        "API key {}: our version {} below broker min {}, using min",
-                        api_key, fallback, min
-                    );
-                    min
-                } else if fallback > max {
-                    debug!(
-                        "API key {}: our version {} above broker max {}, using max",
-                        api_key, fallback, max
-                    );
-                    max
-                } else {
-                    fallback
-                }
-            }
-            None => {
-                debug!("API key {}: not supported by broker, using fallback {}", api_key, fallback);
+        if let Some(&(min, max)) = self.versions.get(&api_key) {
+            if fallback < min {
+                debug!(
+                    "API key {}: our version {} below broker min {}, using min",
+                    api_key, fallback, min
+                );
+                min
+            } else if fallback > max {
+                debug!(
+                    "API key {}: our version {} above broker max {}, using max",
+                    api_key, fallback, max
+                );
+                max
+            } else {
                 fallback
             }
+        } else {
+            debug!("API key {}: not supported by broker, using fallback {}", api_key, fallback);
+            fallback
         }
     }
 }
 
-/// Send an ApiVersionsRequest and parse the response.
+/// Send an `ApiVersionsRequest` and parse the response.
 pub fn fetch_api_versions(
     conn: &mut KafkaConnection,
     correlation_id: i32,
     client_id: &str,
 ) -> Result<BrokerApiVersions> {
     use bytes::BytesMut;
-    use kafka_protocol::messages::{ApiVersionsRequest, RequestHeader};
+    use kafka_protocol::messages::{ApiVersionsRequest, RequestHeader, ResponseHeader};
     use kafka_protocol::protocol::{Decodable, Encodable};
     use kafka_protocol::protocol::StrBytes;
 
@@ -117,8 +120,6 @@ pub fn fetch_api_versions(
     };
     let resp_bytes = conn.read_exact_alloc(size as u64)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
-
-    use kafka_protocol::messages::ResponseHeader;
     let _resp_header = ResponseHeader::decode(&mut bytes, API_VERSIONS_REQUEST_VERSION)
         .map_err(|_| Error::CodecError)?;
 
@@ -180,8 +181,7 @@ impl ApiVersionCache {
     pub fn negotiate(&self, host: &str, api_key: i16, fallback: i16) -> i16 {
         self.broker_versions
             .get(host)
-            .map(|v| v.negotiate(api_key, fallback))
-            .unwrap_or(fallback)
+            .map_or(fallback, |v| v.negotiate(api_key, fallback))
     }
 }
 

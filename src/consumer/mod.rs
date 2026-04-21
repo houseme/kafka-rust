@@ -483,6 +483,11 @@ impl MessageSet {
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
+
+    #[inline]
+    pub fn iter(&self) -> slice::Iter<'_, Message> {
+        self.messages.iter()
+    }
 }
 
 impl<'a> IntoIterator for &'a MessageSet {
@@ -513,15 +518,15 @@ impl<'a> MessageSetsIter<'a> {
     }
 }
 
-impl<'a> Iterator for MessageSetsIter<'a> {
+impl Iterator for MessageSetsIter<'_> {
     type Item = MessageSet;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             // Try the next partition in the current topic
             if let Some(p) = self.partitions.as_mut().and_then(Iterator::next) {
-                if let Ok(data) = p.data() {
-                    if !data.messages.is_empty() {
+                if let Ok(data) = p.data()
+                    && !data.messages.is_empty() {
                         let topic = self.curr_topic.unwrap_or("").to_owned();
                         return Some(MessageSet {
                             topic,
@@ -529,7 +534,6 @@ impl<'a> Iterator for MessageSetsIter<'a> {
                             messages: data.messages.clone(),
                         });
                     }
-                }
                 continue;
             }
             // Advance to next topic

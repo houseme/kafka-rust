@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn test_non_repetitive_data() {
         let data: Vec<u8> = (0u32..1_000)
-            .flat_map(|i| i.to_le_bytes())
+            .flat_map(u32::to_le_bytes)
             .collect();
         let compressed = compress(&data).unwrap();
         let decompressed = uncompress(&compressed).unwrap();

@@ -23,18 +23,23 @@
 //! ```
 
 #[cfg(feature = "gzip")]
+#[allow(dead_code)]
 pub mod gzip;
 
 #[cfg(feature = "lz4")]
+#[allow(dead_code)]
 pub mod lz4;
 
 #[cfg(feature = "snappy")]
+#[allow(dead_code)]
 pub mod snappy;
 
 #[cfg(feature = "lz4_native")]
+#[allow(dead_code)]
 pub mod lz4_native;
 
 #[cfg(feature = "zstd")]
+#[allow(dead_code)]
 pub mod zstd;
 
 /// Compression types supported by Kafka.

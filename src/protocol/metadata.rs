@@ -61,8 +61,8 @@ pub fn convert_metadata_response(
                         error: p.error_code,
                         id: p.partition_index,
                         leader: i32::from(p.leader_id),
-                        replicas: p.replica_nodes.into_iter().map(|n| i32::from(n)).collect(),
-                        isr: p.isr_nodes.into_iter().map(|n| i32::from(n)).collect(),
+                        replicas: p.replica_nodes.into_iter().map(i32::from).collect(),
+                        isr: p.isr_nodes.into_iter().map(i32::from).collect(),
                     })
                     .collect(),
             })

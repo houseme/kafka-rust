@@ -191,6 +191,7 @@ use crate::error::{Error, KafkaCode, Result};
 use crate::utils::PartitionOffset;
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct GroupCoordinatorResponse {
     pub header: HeaderResponse,
     pub error: i16,
@@ -209,18 +210,21 @@ impl GroupCoordinatorResponse {
 }
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct OffsetFetchResponse {
     pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionOffsetFetchResponse>,
 }
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct TopicPartitionOffsetFetchResponse {
     pub topic: String,
     pub partitions: Vec<PartitionOffsetFetchResponse>,
 }
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct PartitionOffsetFetchResponse {
     pub partition: i32,
     pub offset: i64,
@@ -228,6 +232,7 @@ pub struct PartitionOffsetFetchResponse {
     pub error: i16,
 }
 
+#[allow(dead_code)]
 impl PartitionOffsetFetchResponse {
     pub fn get_offsets(&self) -> Result<PartitionOffset> {
         match Error::from_protocol(self.error) {
@@ -247,23 +252,27 @@ impl PartitionOffsetFetchResponse {
 }
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct OffsetCommitResponse {
     pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionOffsetCommitResponse>,
 }
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct TopicPartitionOffsetCommitResponse {
     pub topic: String,
     pub partitions: Vec<PartitionOffsetCommitResponse>,
 }
 
 #[derive(Default, Debug)]
+#[allow(dead_code)]
 pub struct PartitionOffsetCommitResponse {
     pub partition: i32,
     pub error: i16,
 }
 
+#[allow(dead_code)]
 impl PartitionOffsetCommitResponse {
     pub fn to_error(&self) -> Option<KafkaCode> {
         KafkaCode::from_protocol(self.error)

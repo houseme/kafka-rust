@@ -824,7 +824,7 @@ impl KafkaClient {
     ) -> Result<protocol::metadata::MetadataResponseData> {
         let correlation = self.state.next_correlation_id();
         let now = Instant::now();
-        let topic_strs: Vec<&str> = topics.iter().map(|t| t.as_ref()).collect();
+        let topic_strs: Vec<&str> = topics.iter().map(std::convert::AsRef::as_ref).collect();
 
         for host in &self.config.hosts {
             debug!("fetch_metadata_kp: requesting metadata from {}", host);
@@ -1134,6 +1134,7 @@ impl KafkaClient {
         self.internal_produce_messages_kp(acks as i16, protocol::to_millis_i32(ack_timeout)?, messages)
     }
 
+    #[allow(clippy::type_complexity)]
     fn internal_produce_messages_kp<'a, 'b, I, J>(
         &mut self,
         required_acks: i16,
@@ -1282,7 +1283,7 @@ impl KafkaClient {
     // kafka-protocol adapter methods (protocol2)
     // =====================================================================
 
-    /// Fetch offsets using the kafka-protocol adapter (ListOffsets v1).
+    /// Fetch offsets using the kafka-protocol adapter (`ListOffsets` v1).
     pub fn fetch_offsets_kp<T: AsRef<str>>(
         &mut self,
         topics: &[T],
@@ -1365,7 +1366,7 @@ impl KafkaClient {
         Ok(res)
     }
 
-    /// Commit offsets using the kafka-protocol adapter (OffsetCommit v2).
+    /// Commit offsets using the kafka-protocol adapter (`OffsetCommit` v2).
     pub fn commit_offsets_kp<'a, J, I>(&mut self, group: &str, offsets: I) -> Result<()>
     where
         J: AsRef<CommitOffset<'a>>,
@@ -1403,7 +1404,7 @@ impl KafkaClient {
         self.commit_offsets_kp(group, &[CommitOffset::new(topic, partition, offset)])
     }
 
-    /// Fetch group offsets using the kafka-protocol adapter (OffsetFetch v2).
+    /// Fetch group offsets using the kafka-protocol adapter (`OffsetFetch` v2).
     pub fn fetch_group_offsets_kp<'a, J, I>(
         &mut self,
         group: &str,
@@ -1499,7 +1500,7 @@ fn __fetch_messages_kp(
             -1,
             max_wait_ms,
             min_bytes,
-            0x7fffffff, // max_bytes for the whole fetch request
+            0x7fff_ffff, // max_bytes for the whole fetch request
             &partitions,
         );
         __kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_FETCH)
@@ -1508,14 +1509,14 @@ fn __fetch_messages_kp(
             conn,
             crate::protocol::API_VERSION_FETCH,
         ).map_err(|e| e.with_broker_context(host, "Fetch"))?;
-        let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id)?;
+        let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
         res.push(owned);
     }
     Ok(res)
 }
 
 /// ~ carries out the given produce requests and returns the response
-#[allow(clippy::similar_names)]
+#[allow(clippy::similar_names, clippy::too_many_arguments, clippy::type_complexity)]
 fn __produce_messages_kp(
     conn_pool: &mut network::Connections,
     correlation_id: i32,
