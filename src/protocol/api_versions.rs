@@ -16,7 +16,7 @@ use crate::protocol::{
 };
 use tracing::{debug, info};
 
-use crate::client::network::KafkaConnection;
+use crate::network::KafkaConnection;
 
 /// API key numbers as defined by the Kafka protocol.
 pub mod api_key {

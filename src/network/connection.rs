@@ -1,26 +1,21 @@
-//! Network related functionality for `KafkaClient`.
-//!
-//! This module is crate private and not exposed to the public except
-//! through re-exports of individual items from within
-//! `rustfs_kafka::client`.
-
-use crate::error::Result;
-use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::time::{Duration, Instant};
-use tracing::{debug, trace, warn};
+use std::time::Duration;
+use tracing::debug;
+
+use crate::error::Result;
+use crate::tls::{TlsConfig, TlsStream};
 
 #[cfg(feature = "security")]
-use crate::tls::{RustlsConnector, TlsConfig, TlsStream};
+use crate::tls::RustlsConnector;
 
 // --------------------------------------------------------------------
 
 /// Security relevant configuration options for `KafkaClient`.
 #[cfg(feature = "security")]
 pub struct SecurityConfig {
-    tls_config: TlsConfig,
+    pub(crate) tls_config: TlsConfig,
 }
 
 #[cfg(feature = "security")]
@@ -82,223 +77,16 @@ impl fmt::Debug for SecurityConfig {
 
 // --------------------------------------------------------------------
 
-struct Pooled<T> {
-    last_checkout: Instant,
-    item: T,
-}
-
-impl<T> Pooled<T> {
-    fn new(last_checkout: Instant, item: T) -> Self {
-        Pooled {
-            last_checkout,
-            item,
-        }
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for Pooled<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Pooled {{ last_checkout: {:?}, item: {:?} }}",
-            self.last_checkout, self.item
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct Config {
-    rw_timeout: Option<Duration>,
-    idle_timeout: Duration,
-    #[cfg(feature = "security")]
-    security_config: Option<SecurityConfig>,
-}
-
-impl Config {
-    #[cfg(not(feature = "security"))]
-    fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        KafkaConnection::new(id, host, self.rw_timeout).map(|c| {
-            debug!("Established: {:?}", c);
-            c
-        })
-    }
-
-    #[cfg(feature = "security")]
-    fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        KafkaConnection::new(
-            id,
-            host,
-            self.rw_timeout,
-            self.security_config.as_ref().map(|c| &c.tls_config),
-        )
-        .map(|c| {
-            debug!("Established: {:?}", c);
-            c
-        })
-    }
-}
-
-#[derive(Debug)]
-struct State {
-    num_conns: u32,
-}
-
-impl State {
-    fn new() -> State {
-        State { num_conns: 0 }
-    }
-
-    fn next_conn_id(&mut self) -> u32 {
-        let c = self.num_conns;
-        self.num_conns = self.num_conns.wrapping_add(1);
-        c
-    }
-}
-
-#[derive(Debug)]
-pub struct Connections {
-    conns: Vec<Pooled<KafkaConnection>>,
-    host_index: HashMap<String, usize>,
-    free_indices: Vec<usize>,
-    state: State,
-    config: Config,
-}
-
-impl Connections {
-    #[cfg(not(feature = "security"))]
-    pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
-        Connections {
-            conns: Vec::new(),
-            host_index: HashMap::new(),
-            free_indices: Vec::new(),
-            state: State::new(),
-            config: Config {
-                rw_timeout,
-                idle_timeout,
-            },
-        }
-    }
-
-    #[cfg(feature = "security")]
-    pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
-        Self::new_with_security(rw_timeout, idle_timeout, None)
-    }
-
-    #[cfg(feature = "security")]
-    pub fn new_with_security(
-        rw_timeout: Option<Duration>,
-        idle_timeout: Duration,
-        security: Option<SecurityConfig>,
-    ) -> Connections {
-        Connections {
-            conns: Vec::new(),
-            host_index: HashMap::new(),
-            free_indices: Vec::new(),
-            state: State::new(),
-            config: Config {
-                rw_timeout,
-                idle_timeout,
-                security_config: security,
-            },
-        }
-    }
-
-    pub fn set_idle_timeout(&mut self, idle_timeout: Duration) {
-        self.config.idle_timeout = idle_timeout;
-    }
-
-    pub fn idle_timeout(&self) -> Duration {
-        self.config.idle_timeout
-    }
-
-    fn allocate_slot(&mut self, host: &str, now: Instant) -> Result<usize> {
-        let cid = self.state.next_conn_id();
-        let conn = Pooled::new(now, self.config.new_conn(cid, host)?);
-
-        if let Some(idx) = self.free_indices.pop() {
-            self.conns[idx] = conn;
-            self.host_index.insert(host.to_owned(), idx);
-            Ok(idx)
-        } else {
-            let idx = self.conns.len();
-            self.conns.push(conn);
-            self.host_index.insert(host.to_owned(), idx);
-            Ok(idx)
-        }
-    }
-
-    fn ensure_connected(
-        &mut self,
-        idx: usize,
-        host: &str,
-        now: Instant,
-    ) -> Result<()> {
-        let conn = &mut self.conns[idx];
-        let needs_reconnect =
-            now.duration_since(conn.last_checkout) >= self.config.idle_timeout
-                || conn.item.is_terminated();
-        if needs_reconnect {
-            let reason = if conn.item.is_terminated() {
-                "connection terminated"
-            } else {
-                "idle timeout"
-            };
-            debug!("Reconnecting ({}) to: {:?}", reason, conn.item);
-            let new_conn = self.config.new_conn(self.state.next_conn_id(), host)?;
-            let _ = conn.item.shutdown();
-            conn.item = new_conn;
-        }
-        conn.last_checkout = now;
-        Ok(())
-    }
-
-    pub fn get_conn(&mut self, host: &str, now: Instant) -> Result<&mut KafkaConnection> {
-        let idx = if let Some(&idx) = self.host_index.get(host) {
-            idx
-        } else {
-            self.allocate_slot(host, now)?
-        };
-
-        self.ensure_connected(idx, host, now)?;
-        Ok(&mut self.conns[idx].item)
-    }
-
-    pub fn get_conn_any(&mut self, now: Instant) -> Option<&mut KafkaConnection> {
-        let mut best_idx: Option<usize> = None;
-        let mut best_checkout: Option<Instant> = None;
-
-        let hosts: Vec<String> = self.host_index.keys().cloned().collect();
-        for host in &hosts {
-            let idx = self.host_index[host];
-            if let Err(e) = self.ensure_connected(idx, host, now) {
-                warn!("Failed to reconnect to {}: {:?}", host, e);
-                continue;
-            }
-            let conn = &self.conns[idx];
-            if best_checkout.is_none()
-                || conn.last_checkout < best_checkout.unwrap()
-            {
-                best_idx = Some(idx);
-                best_checkout = Some(conn.last_checkout);
-            }
-        }
-
-        best_idx.map(|idx| &mut self.conns[idx].item)
-    }
-}
-
-// --------------------------------------------------------------------
-
 #[cfg(not(feature = "security"))]
-type KafkaStream = TcpStream;
+pub(crate) type KafkaStream = TcpStream;
 
 #[cfg(feature = "security")]
-enum KafkaStream {
+pub(crate) enum KafkaStream {
     Plain(TcpStream),
     Tls(Box<dyn TlsStream>),
 }
 
-trait StreamOps {
+pub(crate) trait StreamOps {
     fn is_secured(&self) -> bool;
     fn set_read_timeout(&mut self, dur: Option<Duration>) -> std::io::Result<()>;
     fn set_write_timeout(&mut self, dur: Option<Duration>) -> std::io::Result<()>;
@@ -382,6 +170,8 @@ impl Write for KafkaStream {
     }
 }
 
+// --------------------------------------------------------------------
+
 /// A TCP stream to a remote Kafka broker.
 pub struct KafkaConnection {
     id: u32,
@@ -392,11 +182,8 @@ pub struct KafkaConnection {
 
 /// Connection health state for detecting broken connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectionState {
-    /// Connection is healthy and ready for I/O.
+pub(crate) enum ConnectionState {
     Connected,
-    /// Connection was terminated (e.g., by broker, timeout, or error).
-    /// Next operation should trigger a reconnection.
     Terminated,
 }
 
@@ -427,25 +214,21 @@ fn configure_tcp_socket(socket: &socket2::Socket) -> std::io::Result<()> {
 
 impl KafkaConnection {
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
-        let r = self.stream.write(msg).map_err(|e| {
+        self.stream.write(msg).map_err(|e| {
             self.state = ConnectionState::Terminated;
             From::from(e)
-        });
-        trace!("Sent {} bytes to: {:?} => {:?}", msg.len(), self, r);
-        r
+        })
     }
 
-    fn is_terminated(&self) -> bool {
+    pub(crate) fn is_terminated(&self) -> bool {
         self.state == ConnectionState::Terminated
     }
 
     pub fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
-        let r = self.stream.read_exact(buf).map_err(|e| {
+        self.stream.read_exact(buf).map_err(|e| {
             self.state = ConnectionState::Terminated;
             From::from(e)
-        });
-        trace!("Read {} bytes from: {:?} => {:?}", buf.len(), self, r);
-        r
+        })
     }
 
     pub fn read_exact_alloc(&mut self, size: u64) -> Result<Vec<u8>> {
@@ -454,7 +237,7 @@ impl KafkaConnection {
         Ok(buffer)
     }
 
-    fn shutdown(&mut self) -> Result<()> {
+    pub(crate) fn shutdown(&mut self) -> Result<()> {
         self.state = ConnectionState::Terminated;
         let r = self.stream.shutdown(Shutdown::Both);
         debug!("Shut down: {:?} => {:?}", self, r);
@@ -494,12 +277,12 @@ impl KafkaConnection {
     }
 
     #[cfg(not(feature = "security"))]
-    fn new(id: u32, host: &str, rw_timeout: Option<Duration>) -> Result<KafkaConnection> {
+    pub(crate) fn new(id: u32, host: &str, rw_timeout: Option<Duration>) -> Result<KafkaConnection> {
         KafkaConnection::from_stream(Self::new_tcp_stream(host)?, id, host, rw_timeout)
     }
 
     #[cfg(feature = "security")]
-    fn new(
+    pub(crate) fn new(
         id: u32,
         host: &str,
         rw_timeout: Option<Duration>,

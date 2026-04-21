@@ -15,7 +15,7 @@ pub(crate) fn commit_offsets_kp<'a, J, I>(
     correlation_id: i32,
     client_id: &str,
     state: &mut super::state::ClientState,
-    conn_pool: &mut super::network::Connections,
+    conn_pool: &mut crate::network::Connections,
     config: &ClientConfig,
 ) -> Result<()>
 where
@@ -53,7 +53,7 @@ pub(crate) fn fetch_group_offsets_kp<'a, J, I>(
     correlation_id: i32,
     client_id: &str,
     state: &mut super::state::ClientState,
-    conn_pool: &mut super::network::Connections,
+    conn_pool: &mut crate::network::Connections,
     config: &ClientConfig,
 ) -> Result<HashMap<String, Vec<PartitionOffset>>>
 where
@@ -83,7 +83,7 @@ where
 fn __get_group_coordinator_kp<'a>(
     group: &str,
     state: &'a mut super::state::ClientState,
-    conn_pool: &mut super::network::Connections,
+    conn_pool: &mut crate::network::Connections,
     config: &ClientConfig,
     now: Instant,
 ) -> Result<&'a str> {
@@ -147,7 +147,7 @@ fn __commit_offsets_kp(
     correlation_id: i32,
     client_id: &str,
     state: &mut super::state::ClientState,
-    conn_pool: &mut super::network::Connections,
+    conn_pool: &mut crate::network::Connections,
     config: &ClientConfig,
 ) -> Result<()> {
     let mut attempt = 1;
@@ -218,7 +218,7 @@ fn __fetch_group_offsets_kp(
     correlation_id: i32,
     client_id: &str,
     state: &mut super::state::ClientState,
-    conn_pool: &mut super::network::Connections,
+    conn_pool: &mut crate::network::Connections,
     config: &ClientConfig,
 ) -> Result<HashMap<String, Vec<PartitionOffset>>> {
     let mut attempt = 1;
@@ -291,7 +291,7 @@ fn __fetch_group_offsets_kp(
 }
 
 fn __kp_send_request(
-    conn: &mut super::network::KafkaConnection,
+    conn: &mut crate::network::KafkaConnection,
     header: &kafka_protocol::messages::RequestHeader,
     body: &impl kafka_protocol::protocol::Encodable,
     api_version: i16,
@@ -316,7 +316,7 @@ fn __kp_send_request(
 }
 
 fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
-    conn: &mut super::network::KafkaConnection,
+    conn: &mut crate::network::KafkaConnection,
     api_version: i16,
 ) -> Result<R> {
     use bytes::Bytes;
@@ -332,7 +332,7 @@ fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
     R::decode(&mut bytes, api_version).map_err(|_| Error::CodecError)
 }
 
-fn __get_response_size(conn: &mut super::network::KafkaConnection) -> Result<i32> {
+fn __get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32> {
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     Ok(i32::from_be_bytes(buf))

@@ -14,7 +14,7 @@ use std::collections::hash_map::HashMap;
 use std::time::Duration;
 
 #[cfg(feature = "security")]
-pub use self::network::SecurityConfig;
+pub use crate::network::SecurityConfig;
 
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
@@ -25,12 +25,13 @@ pub mod builder;
 pub mod config;
 pub(crate) mod fetch_ops;
 pub(crate) mod metadata_ops;
-pub(crate) mod network;
 pub(crate) mod offset_ops;
 pub(crate) mod produce_ops;
 pub(crate) mod transport;
 pub mod metadata;
 mod state;
+
+use crate::network;
 
 pub use config::*;
 

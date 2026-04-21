@@ -26,6 +26,7 @@ mod client_internals;
 mod compression;
 pub mod consumer;
 pub mod error;
+mod network;
 pub mod producer;
 mod protocol;
 mod utils;

@@ -6,7 +6,7 @@ use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
 
 use super::config::ClientConfig;
-use super::network::Connections;
+use crate::network::Connections;
 use super::state::ClientState;
 use super::transport;
 use super::{ProduceConfirm, ProduceMessage, RequiredAcks};

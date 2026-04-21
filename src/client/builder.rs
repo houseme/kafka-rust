@@ -6,9 +6,9 @@ use crate::compression::Compression;
 use crate::protocol::api_versions::ApiVersionCache;
 
 #[cfg(feature = "security")]
-use crate::client::network::SecurityConfig;
+use crate::network::SecurityConfig;
 
-use crate::client::network::Connections;
+use crate::network::Connections;
 
 /// Builder for constructing [`KafkaClient`] instances.
 ///

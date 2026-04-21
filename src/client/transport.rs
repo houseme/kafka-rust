@@ -2,7 +2,7 @@ use tracing::trace;
 
 use crate::error::{Error, Result};
 
-use super::network::KafkaConnection;
+use crate::network::KafkaConnection;
 
 pub(crate) fn kp_send_request(
     conn: &mut KafkaConnection,

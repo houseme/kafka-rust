@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::error::Result;
 
 use super::config::ClientConfig;
-use super::network::Connections;
+use crate::network::Connections;
 use super::state::ClientState;
 use super::transport;
 use super::FetchPartition;
