@@ -160,6 +160,18 @@ impl<P: Partitioner> Producer<P> {
         K: AsBytes,
         V: AsBytes,
     {
+        if self.config.transactional_id.is_some() {
+            return Err(Error::Config(
+                "transactional_id is configured on Producer; use TransactionalProducer instead"
+                    .into(),
+            ));
+        }
+        if self.config.enable_idempotence {
+            return Err(Error::Config(
+                "idempotent mode is not supported by Producer; use TransactionalProducer".into(),
+            ));
+        }
+
         let partitioner = &mut self.state.partitioner;
         let partitions = &self.state.partitions;
         let client = &mut self.client;

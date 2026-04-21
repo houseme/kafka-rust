@@ -74,7 +74,7 @@ where
         ));
     }
 
-    let result = __produce_messages_kp(
+    let result = produce_messages_inner(
         conn_pool,
         correlation,
         &config.client_id,
@@ -114,7 +114,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn __produce_messages_kp(
+fn produce_messages_inner(
     conn_pool: &mut Connections,
     correlation_id: i32,
     client_id: &str,

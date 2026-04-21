@@ -41,7 +41,7 @@ where
         debug!("commit_offsets_kp: no offsets provided");
         Ok(())
     } else {
-        __commit_offsets_kp(
+        commit_offsets_inner(
             &offset_vec,
             group,
             correlation_id,
@@ -75,7 +75,7 @@ where
             return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
         }
     }
-    __fetch_group_offsets_kp(
+    fetch_group_offsets_inner(
         &partition_vec,
         group,
         correlation_id,
@@ -86,7 +86,7 @@ where
     )
 }
 
-fn __get_group_coordinator_kp<'a>(
+fn get_group_coordinator<'a>(
     group: &str,
     state: &'a mut super::state::ClientState,
     conn_pool: &mut crate::network::Connections,
@@ -109,14 +109,14 @@ fn __get_group_coordinator_kp<'a>(
             "get_group_coordinator_kp: asking for coordinator of '{}' on: {:?}",
             group, conn
         );
-        __kp_send_request(
+        kp_send_request(
             conn,
             &header,
             &request,
             crate::protocol::API_VERSION_FIND_COORDINATOR,
         )
         .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
-        let kp_resp = __kp_get_response::<kafka_protocol::messages::FindCoordinatorResponse>(
+        let kp_resp = kp_get_response::<kafka_protocol::messages::FindCoordinatorResponse>(
             conn,
             crate::protocol::API_VERSION_FIND_COORDINATOR,
         )
@@ -150,7 +150,7 @@ fn __get_group_coordinator_kp<'a>(
                 correlation_id, retry_code
             );
             attempt += 1;
-            __retry_sleep(config, attempt);
+            retry_sleep(config, attempt);
         } else {
             return Err(Error::Kafka(
                 KafkaCode::from_protocol(retry_code).unwrap_or(KafkaCode::Unknown),
@@ -159,7 +159,7 @@ fn __get_group_coordinator_kp<'a>(
     }
 }
 
-fn __commit_offsets_kp(
+fn commit_offsets_inner(
     offsets: &[(&str, i32, i64, Option<&str>)],
     group: &str,
     correlation_id: i32,
@@ -171,7 +171,7 @@ fn __commit_offsets_kp(
     let mut attempt = 1;
     loop {
         let now = Instant::now();
-        let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
+        let host = get_group_coordinator(group, state, conn_pool, config, now)?;
         debug!("commit_offsets_kp: sending request to: {}", host);
 
         let conn = conn_pool
@@ -186,14 +186,14 @@ fn __commit_offsets_kp(
             -1,
             offsets,
         );
-        __kp_send_request(
+        kp_send_request(
             conn,
             &header,
             &request,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
         )
         .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
-        let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
+        let kp_resp = kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
         )
@@ -231,7 +231,7 @@ fn __commit_offsets_kp(
                         correlation_id, e
                     );
                     attempt += 1;
-                    __retry_sleep(config, attempt);
+                    retry_sleep(config, attempt);
                 } else {
                     return Err(Error::Kafka(e));
                 }
@@ -241,7 +241,7 @@ fn __commit_offsets_kp(
     }
 }
 
-fn __fetch_group_offsets_kp(
+fn fetch_group_offsets_inner(
     partitions: &[(&str, i32)],
     group: &str,
     correlation_id: i32,
@@ -253,7 +253,7 @@ fn __fetch_group_offsets_kp(
     let mut attempt = 1;
     loop {
         let now = Instant::now();
-        let host = __get_group_coordinator_kp(group, state, conn_pool, config, now)?;
+        let host = get_group_coordinator(group, state, conn_pool, config, now)?;
         debug!("fetch_group_offsets_kp: sending request to: {}", host);
 
         let conn = conn_pool
@@ -265,14 +265,14 @@ fn __fetch_group_offsets_kp(
             group,
             partitions,
         );
-        __kp_send_request(
+        kp_send_request(
             conn,
             &header,
             &request,
             crate::protocol::API_VERSION_OFFSET_FETCH,
         )
         .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
-        let kp_resp = __kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
+        let kp_resp = kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_FETCH,
         )
@@ -320,7 +320,7 @@ fn __fetch_group_offsets_kp(
                         correlation_id, e
                     );
                     attempt += 1;
-                    __retry_sleep(config, attempt);
+                    retry_sleep(config, attempt);
                 } else {
                     return Err(Error::Kafka(e));
                 }
@@ -330,7 +330,7 @@ fn __fetch_group_offsets_kp(
     }
 }
 
-fn __kp_send_request(
+fn kp_send_request(
     conn: &mut crate::network::KafkaConnection,
     header: &kafka_protocol::messages::RequestHeader,
     body: &impl kafka_protocol::protocol::Encodable,
@@ -358,7 +358,7 @@ fn __kp_send_request(
     Ok(())
 }
 
-fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
+fn kp_get_response<R: kafka_protocol::protocol::Decodable>(
     conn: &mut crate::network::KafkaConnection,
     api_version: i16,
 ) -> Result<R> {
@@ -366,7 +366,7 @@ fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
     use kafka_protocol::messages::ResponseHeader;
     use kafka_protocol::protocol::Decodable;
 
-    let size = __get_response_size(conn)?;
+    let size = get_response_size(conn)?;
     let resp_bytes = conn.read_exact_alloc(size as u64)?;
 
     let mut bytes = Bytes::from(resp_bytes);
@@ -376,13 +376,13 @@ fn __kp_get_response<R: kafka_protocol::protocol::Decodable>(
     R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
 }
 
-fn __get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32> {
+fn get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32> {
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     Ok(i32::from_be_bytes(buf))
 }
 
-fn __retry_sleep(cfg: &ClientConfig, attempt: u32) {
+fn retry_sleep(cfg: &ClientConfig, attempt: u32) {
     if let Some(delay) = cfg.retry_policy().next_delay(attempt) {
         std::thread::sleep(delay);
     }

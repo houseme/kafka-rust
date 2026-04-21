@@ -126,6 +126,13 @@ impl GroupCoordinator {
         self.generation_id = Some(join_resp.generation_id);
         self.leader_id = Some(join_resp.leader_id.clone());
         self.protocol_name = join_resp.protocol_name.clone();
+        if let Some(protocol_type) = join_resp.protocol_type.as_deref() {
+            if protocol_type != "consumer" {
+                return Err(Error::Config(format!(
+                    "unsupported group protocol type: {protocol_type}"
+                )));
+            }
+        }
 
         info!(
             "Joined group '{}' (generation: {}, member_id: {}, leader: {})",
@@ -268,7 +275,12 @@ impl GroupCoordinator {
         let member_ids: Vec<&str> = members.iter().map(|m| m.member_id.as_str()).collect();
         let member_subscriptions: Vec<(String, Vec<String>)> = members
             .iter()
-            .map(|m| (m.member_id.clone(), subscribed_topics.to_vec()))
+            .map(|m| {
+                let topics = decode_member_subscription_topics(&m.metadata)
+                    .filter(|topics| !topics.is_empty())
+                    .unwrap_or_else(|| subscribed_topics.to_vec());
+                (m.member_id.clone(), topics)
+            })
             .collect();
 
         let assignments = assignor.assign(&member_ids, &member_subscriptions, &tp_data);
@@ -315,6 +327,13 @@ impl GroupCoordinator {
         self.heartbeat_stop.store(false, Ordering::Relaxed);
         let stop = Arc::clone(&self.heartbeat_stop);
         let interval_ms = self.heartbeat_interval_ms;
+        let max_poll_interval_ms = u64::try_from(self.max_poll_interval_ms).unwrap_or(0);
+        let effective_interval_ms = if max_poll_interval_ms > 0 {
+            let max_heartbeat = std::cmp::max(1, max_poll_interval_ms / 3);
+            interval_ms.min(max_heartbeat)
+        } else {
+            interval_ms
+        };
         let group_id = self.group_id.clone();
 
         let handle = thread::spawn(move || {
@@ -323,7 +342,7 @@ impl GroupCoordinator {
                     break;
                 }
 
-                let sleep_dur = Duration::from_millis(interval_ms);
+                let sleep_dur = Duration::from_millis(effective_interval_ms);
                 thread::sleep(sleep_dur);
 
                 if stop.load(Ordering::Relaxed) {
@@ -331,8 +350,8 @@ impl GroupCoordinator {
                 }
 
                 debug!(
-                    "Heartbeat thread tick for group '{}' (interval: {}ms)",
-                    group_id, interval_ms
+                    "Heartbeat thread tick for group '{}' (interval: {}ms, max_poll_interval: {}ms)",
+                    group_id, effective_interval_ms, max_poll_interval_ms
                 );
             }
         });
@@ -352,6 +371,44 @@ impl Drop for GroupCoordinator {
     fn drop(&mut self) {
         self.stop_heartbeat_thread();
     }
+}
+
+fn decode_member_subscription_topics(metadata: &[u8]) -> Option<Vec<String>> {
+    if metadata.len() < 6 {
+        return None;
+    }
+    let mut i = 0usize;
+    i += 2; // version
+    let topic_count = i32::from_be_bytes([
+        metadata[i],
+        metadata[i + 1],
+        metadata[i + 2],
+        metadata[i + 3],
+    ]);
+    if topic_count < 0 {
+        return None;
+    }
+    i += 4;
+
+    let mut topics = Vec::with_capacity(topic_count as usize);
+    for _ in 0..topic_count {
+        if i + 2 > metadata.len() {
+            return None;
+        }
+        let len = i16::from_be_bytes([metadata[i], metadata[i + 1]]);
+        i += 2;
+        if len < 0 {
+            return None;
+        }
+        let len = len as usize;
+        if i + len > metadata.len() {
+            return None;
+        }
+        let topic = std::str::from_utf8(&metadata[i..i + len]).ok()?.to_owned();
+        i += len;
+        topics.push(topic);
+    }
+    Some(topics)
 }
 
 #[cfg(test)]

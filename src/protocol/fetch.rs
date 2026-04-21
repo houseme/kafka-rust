@@ -307,10 +307,15 @@ fn decode_partition_records(
         });
     };
 
+    let raw_records = records_bytes.clone();
     let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
         Ok(rs) => rs,
         Err(_) => {
-            return Err(Arc::new(Error::codec()));
+            let messages = decode_records_safe(raw_records.as_ref()).map_err(Arc::new)?;
+            return Ok(OwnedData {
+                highwatermark_offset: high_watermark,
+                messages,
+            });
         }
     };
 

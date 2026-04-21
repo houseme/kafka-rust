@@ -46,7 +46,7 @@ where
         }
     }
 
-    let result = __fetch_messages_kp(
+    let result = fetch_messages_inner(
         conn_pool,
         correlation,
         &config.client_id,
@@ -91,7 +91,7 @@ where
     result
 }
 
-fn __fetch_messages_kp(
+fn fetch_messages_inner(
     conn_pool: &mut Connections,
     correlation_id: i32,
     client_id: &str,

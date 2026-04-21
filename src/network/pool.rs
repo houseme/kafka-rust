@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
-use super::connection::KafkaConnection;
 use super::Pooled;
 #[cfg(feature = "security")]
 use super::SecurityConfig;
+use super::connection::KafkaConnection;
 
 #[derive(Debug)]
 pub struct PoolConfig {

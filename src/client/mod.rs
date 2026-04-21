@@ -42,10 +42,10 @@
 
 // pub re-exports
 pub use crate::compression::Compression;
-#[cfg(feature = "producer_timestamp")]
-pub use crate::protocol::produce::ProducerTimestamp;
 pub use crate::protocol::create_topics::{CreateTopicsResponseData, TopicConfig, TopicResult};
 pub use crate::protocol::delete_topics::{DeleteTopicResult, DeleteTopicsResponseData};
+#[cfg(feature = "producer_timestamp")]
+pub use crate::protocol::produce::ProducerTimestamp;
 pub use crate::utils::PartitionOffset;
 use crate::utils::TimestampedPartitionOffset;
 use std::collections::hash_map::HashMap;

@@ -433,6 +433,17 @@ pub fn build_leave_group_request(
     group_id: &str,
     members: &[LeaveMemberRequest],
 ) -> Result<Vec<u8>> {
+    if members.is_empty() {
+        return Err(Error::Config(
+            "leave-group requires at least one member".into(),
+        ));
+    }
+    if members.iter().any(|m| m.group_instance_id.is_some()) {
+        return Err(Error::Config(
+            "group_instance_id in LeaveGroup is not supported for protocol v1".into(),
+        ));
+    }
+
     let version = API_VERSION_LEAVE_GROUP;
     let mut body = BytesMut::new();
 

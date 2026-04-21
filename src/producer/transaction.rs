@@ -248,6 +248,13 @@ impl<P: Partitioner> TransactionalProducer<P> {
             committed,
         )?;
 
+        if resp.throttle_time_ms > 0 {
+            debug!(
+                "EndTxn throttled by coordinator: {} ms (txn_id: {})",
+                resp.throttle_time_ms, self.transactional_id
+            );
+        }
+
         if resp.error_code != 0 {
             let err =
                 Error::from_protocol(resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
@@ -277,10 +284,28 @@ impl<P: Partitioner> TransactionalProducer<P> {
             &txn_partitions,
         )?;
 
+        if resp.throttle_time_ms > 0 {
+            debug!(
+                "AddPartitionsToTxn throttled by coordinator: {} ms (txn_id: {})",
+                resp.throttle_time_ms, self.transactional_id
+            );
+        }
+
         if resp.error_code != 0 {
             let err =
                 Error::from_protocol(resp.error_code).unwrap_or(Error::Kafka(KafkaCode::Unknown));
             return Err(err);
+        }
+
+        for result in &resp.results {
+            if result.error_code != 0 {
+                return Err(Error::TopicPartitionError {
+                    topic_name: result.topic.clone(),
+                    partition_id: *partition,
+                    error_code: KafkaCode::from_protocol(result.error_code)
+                        .unwrap_or(KafkaCode::Unknown),
+                });
+            }
         }
 
         debug!(
