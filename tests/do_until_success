@@ -1,15 +1,40 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# Wait for a command to succeed, with configurable retries and interval.
+#
+# Usage: ./do_until_success [--max N] [--interval N] <command...>
+#   --max N       Maximum attempts (default: 60)
+#   --interval N  Seconds between attempts (default: 2)
+
+set -euo pipefail
+
+max_attempts=60
+interval=2
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --max) max_attempts="$2"; shift 2 ;;
+        --interval) interval="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    echo "Usage: $0 [--max N] [--interval N] <command>" >&2
+    exit 1
+fi
 
 attempts=0
-max_attempts=60
-echo "Waiting for command '$@' to be successful..."
-while ! eval $@; do
-  attempts=$(($attempts+1))
+echo "Waiting for command to succeed (max ${max_attempts} attempts, ${interval}s interval)..."
 
-  if [[ $attempts -gt $max_attempts ]]; then
-    echo "command '$@' took too long to be successful"
-    exit 1
-  fi
-
-  sleep 1
+while ! eval "$@"; do
+    attempts=$((attempts + 1))
+    echo "  attempt ${attempts}/${max_attempts} failed, retrying in ${interval}s..."
+    if [[ $attempts -ge $max_attempts ]]; then
+        echo "Command '$*' did not succeed after ${max_attempts} attempts" >&2
+        exit 1
+    fi
+    sleep "$interval"
 done
+
+echo "Command succeeded after $((attempts + 1)) attempt(s)"
