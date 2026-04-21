@@ -427,23 +427,17 @@ impl KafkaClient {
 
     #[inline]
     pub fn set_retry_backoff_time(&mut self, time: Duration) {
-        self.config.retry.backoff = time;
-    }
-
-    #[must_use]
-    pub fn retry_backoff_time(&self) -> Duration {
-        self.config.retry.backoff
-    }
-
-    #[inline]
-    pub fn set_retry_max_attempts(&mut self, attempts: u32) {
-        self.config.retry.max_attempts = attempts;
+        match &mut self.config.retry.policy {
+            config::RetryPolicy::Exponential { initial, .. } => *initial = time,
+            config::RetryPolicy::Fixed { interval, .. } => *interval = time,
+            config::RetryPolicy::None => {}
+        }
     }
 
     #[inline]
     #[must_use]
     pub fn retry_max_attempts(&self) -> u32 {
-        self.config.retry.max_attempts
+        self.config.retry.policy.max_attempts()
     }
 
     #[inline]

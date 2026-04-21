@@ -132,7 +132,7 @@ fn __get_group_coordinator_kp<'a>(
                 correlation_id, retry_code
             );
             attempt += 1;
-            __retry_sleep(config);
+            __retry_sleep(config, attempt);
         } else {
             return Err(Error::Kafka(
                 KafkaCode::from_protocol(retry_code).unwrap_or(KafkaCode::Unknown),
@@ -202,7 +202,7 @@ fn __commit_offsets_kp(
                         correlation_id, e
                     );
                     attempt += 1;
-                    __retry_sleep(config);
+                    __retry_sleep(config, attempt);
                 } else {
                     return Err(Error::Kafka(e));
                 }
@@ -280,7 +280,7 @@ fn __fetch_group_offsets_kp(
                         correlation_id, e
                     );
                     attempt += 1;
-                    __retry_sleep(config);
+                    __retry_sleep(config, attempt);
                 } else {
                     return Err(Error::Kafka(e));
                 }
@@ -338,6 +338,8 @@ fn __get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32
     Ok(i32::from_be_bytes(buf))
 }
 
-fn __retry_sleep(cfg: &ClientConfig) {
-    std::thread::sleep(cfg.retry_backoff_time());
+fn __retry_sleep(cfg: &ClientConfig, attempt: u32) {
+    if let Some(delay) = cfg.retry_policy().next_delay(attempt) {
+        std::thread::sleep(delay);
+    }
 }

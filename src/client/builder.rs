@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::client::state::ClientState;
 use crate::client::{ClientConfig, GroupOffsetStorage, KafkaClient};
+use crate::client::config::RetryPolicy;
 use crate::compression::Compression;
 use crate::protocol::api_versions::ApiVersionCache;
 
@@ -38,8 +39,7 @@ pub struct KafkaClientBuilder {
     fetch_max_bytes_per_partition: i32,
     fetch_crc_validation: bool,
     offset_storage: Option<GroupOffsetStorage>,
-    retry_backoff_time_millis: u64,
-    retry_max_attempts: u32,
+    retry_policy: RetryPolicy,
     producer_timestamp: Option<crate::protocol::produce::ProducerTimestamp>,
     conn_rw_timeout_secs: u64,
     conn_idle_timeout_millis: u64,
@@ -58,8 +58,7 @@ impl KafkaClientBuilder {
             fetch_max_bytes_per_partition: super::DEFAULT_FETCH_MAX_BYTES_PER_PARTITION,
             fetch_crc_validation: super::DEFAULT_FETCH_CRC_VALIDATION,
             offset_storage: super::DEFAULT_GROUP_OFFSET_STORAGE,
-            retry_backoff_time_millis: super::DEFAULT_RETRY_BACKOFF_TIME_MILLIS,
-            retry_max_attempts: super::DEFAULT_RETRY_MAX_ATTEMPTS,
+            retry_policy: RetryPolicy::default(),
             producer_timestamp: super::DEFAULT_PRODUCER_TIMESTAMP,
             conn_rw_timeout_secs: super::DEFAULT_CONNECTION_RW_TIMEOUT_SECS,
             conn_idle_timeout_millis: super::DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS,
@@ -124,15 +123,31 @@ impl KafkaClientBuilder {
         self
     }
 
+    /// Sets the retry policy.
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
     /// Sets the retry backoff time (in milliseconds).
+    /// Only affects `RetryPolicy::Fixed` or `RetryPolicy::Exponential`.
     pub fn with_retry_backoff_time(mut self, millis: u64) -> Self {
-        self.retry_backoff_time_millis = millis;
+        let backoff = Duration::from_millis(millis);
+        match &mut self.retry_policy {
+            RetryPolicy::Exponential { initial, .. } => *initial = backoff,
+            RetryPolicy::Fixed { interval, .. } => *interval = backoff,
+            RetryPolicy::None => {}
+        }
         self
     }
 
     /// Sets the maximum number of retry attempts.
     pub fn with_retry_max_attempts(mut self, attempts: u32) -> Self {
-        self.retry_max_attempts = attempts;
+        match &mut self.retry_policy {
+            RetryPolicy::Exponential { max_attempts, .. } => *max_attempts = attempts,
+            RetryPolicy::Fixed { max_attempts, .. } => *max_attempts = attempts,
+            RetryPolicy::None => {}
+        }
         self
     }
 
@@ -179,8 +194,7 @@ impl KafkaClientBuilder {
                 crc_validation: self.fetch_crc_validation,
             },
             retry: super::config::RetryConfig {
-                backoff: Duration::from_millis(self.retry_backoff_time_millis),
-                max_attempts: self.retry_max_attempts,
+                policy: self.retry_policy,
             },
             connection: super::config::ConnectionConfig {
                 rw_timeout: Duration::from_secs(self.conn_rw_timeout_secs),
