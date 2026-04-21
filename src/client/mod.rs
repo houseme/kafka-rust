@@ -43,6 +43,11 @@ pub mod fetch_kp {
     };
 }
 
+pub mod fetch {
+    pub use crate::protocol2::fetch::OwnedFetchResponse as Response;
+    pub use crate::protocol2::fetch::{OwnedData, OwnedMessage, OwnedPartition, OwnedTopic};
+}
+
 const DEFAULT_CONNECTION_RW_TIMEOUT_SECS: u64 = 120;
 
 fn default_conn_rw_timeout() -> Option<Duration> {

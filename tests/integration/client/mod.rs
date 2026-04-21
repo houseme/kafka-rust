@@ -16,10 +16,10 @@ fn flatten_fetched_messages(resps: &Vec<Response>) -> Vec<(&str, i32, &[u8])> {
     let mut messages = Vec::new();
 
     for resp in resps {
-        for topic in resp.topics() {
-            for partition in topic.partitions() {
-                for msg in partition.data().as_ref().unwrap().messages() {
-                    messages.push((topic.topic(), partition.partition(), msg.value));
+        for topic in &resp.topics {
+            for partition in &topic.partitions {
+                for msg in &partition.data().as_ref().unwrap().messages {
+                    messages.push((topic.topic.as_str(), partition.partition, &msg.value[..]));
                 }
             }
         }

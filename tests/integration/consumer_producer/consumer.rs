@@ -37,7 +37,7 @@ fn test_consumer_poll() {
         "should only be one message"
     );
 
-    let message_content = message_set.messages()[0].value;
+    let message_content = &message_set.messages()[0].value;
     assert_eq!(
         correct_message_contents, message_content,
         "incorrect message contents"

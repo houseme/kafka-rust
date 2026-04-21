@@ -36,7 +36,7 @@ impl SecurityConfig {
 
     /// Create a `SecurityConfig` from a `TlsConfig`
     #[must_use]
-    pub fn from_tls_config(tls_config: TlsConfig) -> Self {
+    pub fn from_tls_config(tls_config: TlsConfig) -> SecurityConfig {
         SecurityConfig { tls_config }
     }
 
@@ -365,6 +365,18 @@ impl fmt::Debug for KafkaConnection {
     }
 }
 
+/// Configure a TCP socket with keepalive and nodelay for Kafka compatibility.
+fn configure_tcp_socket(socket: &socket2::Socket) -> std::io::Result<()> {
+    use socket2::TcpKeepalive;
+
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(10))
+        .with_interval(Duration::from_secs(20));
+    socket.set_tcp_keepalive(&keepalive)?;
+    socket.set_tcp_nodelay(true)?;
+    Ok(())
+}
+
 impl KafkaConnection {
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
         let r = self.stream.write(msg).map_err(From::from);
@@ -405,9 +417,25 @@ impl KafkaConnection {
         })
     }
 
+    fn new_tcp_stream(host: &str) -> std::io::Result<TcpStream> {
+        let addr: std::net::SocketAddr = host
+            .parse()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        let domain = match addr {
+            std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
+            std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
+        };
+        let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+
+        socket.connect(&socket2::SockAddr::from(addr))?;
+        configure_tcp_socket(&socket)?;
+
+        Ok(socket.into())
+    }
+
     #[cfg(not(feature = "security"))]
     fn new(id: u32, host: &str, rw_timeout: Option<Duration>) -> Result<KafkaConnection> {
-        KafkaConnection::from_stream(TcpStream::connect(host)?, id, host, rw_timeout)
+        KafkaConnection::from_stream(Self::new_tcp_stream(host)?, id, host, rw_timeout)
     }
 
     #[cfg(feature = "security")]
@@ -417,7 +445,7 @@ impl KafkaConnection {
         rw_timeout: Option<Duration>,
         tls_config: Option<&TlsConfig>,
     ) -> Result<KafkaConnection> {
-        let tcp_stream = TcpStream::connect(host)?;
+        let tcp_stream = Self::new_tcp_stream(host)?;
 
         let stream = match tls_config {
             Some(config) => {

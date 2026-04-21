@@ -14,11 +14,12 @@ rust-version = "1.93.0"
 
 [dependencies]
 byteorder = "1.5"
+socket2 = "0.6.3"
 fnv = "1.0.7"
 twox-hash = "2.1.2"
-bytes = "1.10"
-kafka-protocol = { version = "0.17", default-features = false, features = ["client"] }
-indexmap = "2"
+bytes = "1.11.1"
+kafka-protocol = { version = "0.17.0", default-features = false, features = ["client"] }
+indexmap = "2.14.0"
 
 flate2 = { version = "1.1.9", optional = true }
 snap = { version = "1.1.1", optional = true }
