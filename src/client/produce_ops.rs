@@ -1,3 +1,9 @@
+//! Produce message operations for [`KafkaClient`].
+//!
+//! Handles sending messages to Kafka brokers, grouping messages by their
+//! target broker, and supporting both fire-and-forget (acks=0) and
+//! acknowledged produce modes with optional metrics recording.
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 

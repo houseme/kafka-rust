@@ -1,3 +1,9 @@
+//! Low-level Kafka protocol transport utilities.
+//!
+//! Provides functions for sending requests and receiving responses over
+//! a [`KafkaConnection`], handling the Kafka wire protocol frame format
+//! (4-byte length prefix + header + body).
+
 use tracing::trace;
 
 use crate::error::{Error, Result};

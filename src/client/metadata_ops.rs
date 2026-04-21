@@ -1,3 +1,9 @@
+//! Metadata and offset operations for [`KafkaClient`].
+//!
+//! Handles loading cluster metadata (topic and partition info), fetching
+//! topic offsets (earliest, latest, by timestamp), and API version negotiation
+//! with brokers.
+
 use std::collections::hash_map;
 use std::collections::hash_map::HashMap;
 use std::time::Instant;

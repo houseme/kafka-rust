@@ -1,3 +1,8 @@
+//! Fetch message operations for [`KafkaClient`].
+//!
+//! Implements the logic for sending fetch requests to Kafka brokers,
+//! grouping partitions by their leader broker, and aggregating responses.
+
 use std::collections::HashMap;
 use std::time::Instant;
 

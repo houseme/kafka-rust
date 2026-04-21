@@ -1,3 +1,9 @@
+//! Consumer group offset operations for [`KafkaClient`].
+//!
+//! Implements committing and fetching consumer group offsets via the group
+//! coordinator, with retry logic for transient errors such as
+//! `GroupLoadInProgress` and `NotCoordinatorForGroup`.
+
 use std::collections::HashMap;
 use std::mem;
 use std::time::Instant;
