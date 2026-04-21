@@ -209,7 +209,7 @@ fn fetch_metadata_kp<T: AsRef<str>>(
             }
         }
     }
-    Err(Error::NoHostReachable)
+    Err(Error::no_host_reachable())
 }
 
 pub(crate) fn get_key_from_entry<'a, K: 'a, V: 'a>(entry: hash_map::Entry<'a, K, V>) -> K {

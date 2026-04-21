@@ -99,11 +99,11 @@ pub fn fetch_api_versions(
 
     let mut header_buf = BytesMut::new();
     header.encode(&mut header_buf, API_VERSIONS_REQUEST_VERSION)
-        .map_err(|_| Error::CodecError)?;
+        .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
     request.encode(&mut body_buf, API_VERSIONS_REQUEST_VERSION)
-        .map_err(|_| Error::CodecError)?;
+        .map_err(|_| Error::codec())?;
 
     let total_len = (header_buf.len() + body_buf.len()) as i32;
     let mut out = BytesMut::with_capacity(4 + total_len as usize);
@@ -121,13 +121,13 @@ pub fn fetch_api_versions(
     let resp_bytes = conn.read_exact_alloc(size as u64)?;
     let mut bytes = bytes::Bytes::from(resp_bytes);
     let _resp_header = ResponseHeader::decode(&mut bytes, API_VERSIONS_REQUEST_VERSION)
-        .map_err(|_| Error::CodecError)?;
+        .map_err(|_| Error::codec())?;
 
     let kp_resp = kafka_protocol::messages::ApiVersionsResponse::decode(
         &mut bytes,
         API_VERSIONS_REQUEST_VERSION,
     )
-    .map_err(|_| Error::CodecError)?;
+    .map_err(|_| Error::codec())?;
 
     let result = BrokerApiVersions::from_response(kp_resp);
     info!("Negotiated API versions: {:?}", result);

@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn owned_partition_err() {
-        let err = Arc::new(Error::CodecError);
+        let err = Arc::new(Error::codec());
         let partition = OwnedPartition {
             partition: 1,
             data: Err(err.clone()),
@@ -293,7 +293,7 @@ fn decode_partition_records(
     let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
         Ok(rs) => rs,
         Err(_) => {
-            return Err(Arc::new(Error::CodecError));
+            return Err(Arc::new(Error::codec()));
         }
     };
 

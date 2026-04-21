@@ -1,26 +1,97 @@
 //! Error struct and methods
 
+use std::time::Duration;
 use std::{io, result, sync::Arc};
+
 use thiserror::Error;
 
 pub type Result<T> = result::Result<T, Error>;
 
+// --------------------------------------------------------------------
+// Sub-error types
+// --------------------------------------------------------------------
+
+/// Errors from the network/connection layer.
 #[derive(Debug, Error)]
-pub enum Error {
-    #[error(transparent)]
+pub enum ConnectionError {
+    #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
     #[cfg(feature = "security")]
-    #[error("TLS Error: {0}")]
-    Rustls(String),
+    #[error("TLS error: {0}")]
+    Tls(String),
 
+    #[error("Connection timeout after {0:?}")]
+    Timeout(Duration),
+
+    #[error("No host reachable")]
+    NoHostReachable,
+}
+
+/// Errors from the protocol layer (encoding, decoding, version negotiation).
+#[derive(Debug, Clone, Error)]
+pub enum ProtocolError {
+    #[error("Unsupported protocol version")]
+    UnsupportedVersion,
+
+    #[error("Unsupported compression format")]
+    UnsupportedCompression,
+
+    #[error("Unexpected end of data")]
+    UnexpectedEOF,
+
+    #[error("Encoding/decoding error")]
+    Codec,
+
+    #[error("String decoding error")]
+    StringDecode,
+
+    #[error("Invalid duration")]
+    InvalidDuration,
+}
+
+/// Errors from the consumer layer.
+#[derive(Debug, Clone, Error)]
+pub enum ConsumerError {
+    #[error("No topic assigned")]
+    NoTopicsAssigned,
+
+    #[error("Offset storage not configured")]
+    UnsetOffsetStorage,
+
+    #[error("Group ID not configured")]
+    UnsetGroupId,
+}
+
+// --------------------------------------------------------------------
+// Main Error type
+// --------------------------------------------------------------------
+
+#[derive(Debug, Error)]
+pub enum Error {
+    // === Network layer ===
+    #[error("Connection error: {0}")]
+    Connection(#[source] ConnectionError),
+
+    // === Protocol layer ===
+    #[error("Protocol error: {0}")]
+    Protocol(#[source] ProtocolError),
+
+    // === Kafka server ===
     /// An error as reported by a remote Kafka server
     #[error("Kafka Error ({0:?})")]
     Kafka(KafkaCode),
 
+    // === Client configuration ===
+    #[error("Configuration error: {0}")]
+    Config(String),
+
+    // === Consumer ===
+    #[error("Consumer error: {0}")]
+    Consumer(#[source] ConsumerError),
+
+    // === Context wrappers ===
     /// An error when transmitting a request for a particular topic and partition.
-    /// Contains the topic and partition of the request that failed,
-    /// and the error code as reported by the Kafka server, respectively.
     #[error("Topic Partition Error ({topic_name:?}, {partition_id:?}, {error_code:?})")]
     TopicPartitionError {
         topic_name: String,
@@ -28,52 +99,7 @@ pub enum Error {
         error_code: KafkaCode,
     },
 
-    /// Failure to correctly parse the server response due to the
-    /// server speaking a newer protocol version (than the one this
-    /// library supports)
-    #[error("Unsupported protocol version")]
-    UnsupportedProtocol,
-
-    /// Failure to correctly parse the server response by this library
-    /// due to an unsupported compression format of the data
-    #[error("Unsupported compression format")]
-    UnsupportedCompression,
-
-    /// Failure to decode a response due to an insufficient number of bytes available
-    #[error("Unexpected EOF")]
-    UnexpectedEOF,
-
-    /// Failure to decode or encode a response or request respectively
-    #[error("Encoding/Decoding Error")]
-    CodecError,
-
-    /// Failure to decode a string into a valid utf8 byte sequence
-    #[error("String decoding error")]
-    StringDecodeError,
-
-    /// Unable to reach any host
-    #[error("No host reachable")]
-    NoHostReachable,
-
-    /// Unable to set up `Consumer` due to missing topic assignments
-    #[error("No topic assigned")]
-    NoTopicsAssigned,
-
-    /// An invalid user-provided duration
-    #[error("Invalid duration")]
-    InvalidDuration,
-
-    #[error(transparent)]
-    ArcSelf(#[from] Arc<Self>),
-
-    #[error("Operation requires offset storage but no offset storage was set")]
-    UnsetOffsetStorage,
-
-    #[error("Operation requires group id but no group was set")]
-    UnsetGroupId,
-
     /// An error from a broker request that preserves the request context.
-    /// Contains the broker host, API key name, and the underlying error.
     #[error("Broker request to {broker} failed ({api_key}): {source}")]
     BrokerRequestError {
         broker: String,
@@ -82,6 +108,142 @@ pub enum Error {
         source: Box<Self>,
     },
 }
+
+// Allow io::Error to convert to Error via Connection(Io(..))
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Self::Connection(ConnectionError::Io(e))
+    }
+}
+
+impl From<Arc<Self>> for Error {
+    fn from(e: Arc<Self>) -> Self {
+        match Arc::try_unwrap(e) {
+            Ok(err) => err,
+            Err(arc) => match &*arc {
+                Self::Connection(ConnectionError::Io(e)) => {
+                    Self::Connection(ConnectionError::Io(io::Error::new(e.kind(), e.to_string())))
+                }
+                Self::Connection(ConnectionError::Tls(s)) => {
+                    Self::Connection(ConnectionError::Tls(s.clone()))
+                }
+                Self::Connection(ConnectionError::Timeout(d)) => Self::Connection(ConnectionError::Timeout(*d)),
+                Self::Connection(ConnectionError::NoHostReachable) => {
+                    Self::Connection(ConnectionError::NoHostReachable)
+                }
+                Self::Protocol(p) => Self::Protocol(p.clone()),
+                Self::Kafka(c) => Self::Kafka(*c),
+                Self::Config(s) => Self::Config(s.clone()),
+                Self::Consumer(c) => Self::Consumer(c.clone()),
+                Self::TopicPartitionError { topic_name, partition_id, error_code } => {
+                    Self::TopicPartitionError {
+                        topic_name: topic_name.clone(),
+                        partition_id: *partition_id,
+                        error_code: *error_code,
+                    }
+                }
+                Self::BrokerRequestError { broker, api_key, source: _ } => Self::BrokerRequestError {
+                    broker: broker.clone(),
+                    api_key,
+                    source: Box::new(Self::from(Arc::clone(&arc))),
+                },
+            },
+        }
+    }
+}
+
+// --------------------------------------------------------------------
+// Convenience constructors
+// --------------------------------------------------------------------
+
+impl Error {
+    #[inline]
+    pub(crate) fn codec() -> Self {
+        Self::Protocol(ProtocolError::Codec)
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn unexpected_eof() -> Self {
+        Self::Protocol(ProtocolError::UnexpectedEOF)
+    }
+
+    #[inline]
+    pub(crate) fn no_host_reachable() -> Self {
+        Self::Connection(ConnectionError::NoHostReachable)
+    }
+
+    #[inline]
+    pub(crate) fn invalid_duration() -> Self {
+        Self::Protocol(ProtocolError::InvalidDuration)
+    }
+
+    #[inline]
+    pub(crate) fn no_topics_assigned() -> Self {
+        Self::Consumer(ConsumerError::NoTopicsAssigned)
+    }
+
+    #[inline]
+    pub(crate) fn unset_group_id() -> Self {
+        Self::Consumer(ConsumerError::UnsetGroupId)
+    }
+
+    #[cfg(feature = "security")]
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn tls(msg: impl Into<String>) -> Self {
+        Self::Connection(ConnectionError::Tls(msg.into()))
+    }
+
+    /// Wraps this error with broker request context (broker host and API key name).
+    #[must_use]
+    pub fn with_broker_context(self, broker: impl Into<String>, api_key: &'static str) -> Self {
+        Error::BrokerRequestError {
+            broker: broker.into(),
+            api_key,
+            source: Box::new(self),
+        }
+    }
+
+    /// Returns `true` if this error is likely transient and can be resolved by retrying.
+    pub fn is_retriable(&self) -> bool {
+        match self {
+            Self::Kafka(code) => code.is_retriable(),
+            Self::Connection(conn_err) => matches!(
+                conn_err,
+                ConnectionError::Io(_)
+                    | ConnectionError::Timeout(_)
+                    | ConnectionError::NoHostReachable
+            ),
+            Self::TopicPartitionError { error_code, .. } => error_code.is_retriable(),
+            Self::BrokerRequestError { source, .. } => source.is_retriable(),
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if this error originates from the connection/network layer.
+    pub fn is_connection_error(&self) -> bool {
+        matches!(self, Self::Connection(_))
+    }
+
+    /// Returns `true` if this error originates from the protocol layer.
+    pub fn is_protocol_error(&self) -> bool {
+        matches!(self, Self::Protocol(_))
+    }
+
+    /// Returns `true` if this error originates from the consumer layer.
+    pub fn is_consumer_error(&self) -> bool {
+        matches!(self, Self::Consumer(_))
+    }
+
+    pub(crate) fn from_protocol(n: i16) -> Option<Error> {
+        KafkaCode::from_protocol(n).map(Error::Kafka)
+    }
+}
+
+// --------------------------------------------------------------------
+// KafkaCode
+// --------------------------------------------------------------------
 
 /// Various errors reported by a remote Kafka server.
 /// See also [Kafka Errors](http://kafka.apache.org/protocol.html)
@@ -202,15 +364,30 @@ pub enum KafkaCode {
     // CAUTION! When adding to this list, KafkaCode::from_protocol must be updated. If there's a better way, please open an issue for it!
 }
 
-impl Error {
-    /// Wraps this error with broker request context (broker host and API key name).
-    #[must_use]
-    pub fn with_broker_context(self, broker: impl Into<String>, api_key: &'static str) -> Self {
-        Error::BrokerRequestError {
-            broker: broker.into(),
-            api_key,
-            source: Box::new(self),
+impl KafkaCode {
+    /// Returns `true` if this error code represents a transient, retriable condition.
+    pub fn is_retriable(self) -> bool {
+        matches!(
+            self,
+            KafkaCode::LeaderNotAvailable
+                | KafkaCode::NotLeaderForPartition
+                | KafkaCode::GroupLoadInProgress
+                | KafkaCode::GroupCoordinatorNotAvailable
+                | KafkaCode::NotCoordinatorForGroup
+                | KafkaCode::NetworkException
+                | KafkaCode::RequestTimedOut
+                | KafkaCode::RebalanceInProgress
+        )
+    }
+
+    pub(crate) fn from_protocol(n: i16) -> Option<KafkaCode> {
+        if n == 0 {
+            return None;
         }
+        if n >= KafkaCode::OffsetOutOfRange as i16 && n <= KafkaCode::UnsupportedVersion as i16 {
+            return Some(unsafe { std::mem::transmute(n as i8) });
+        }
+        Some(KafkaCode::Unknown)
     }
 }
 
@@ -221,7 +398,6 @@ mod tests {
 
     #[test]
     fn test_kafka_code_from_i32() {
-        // from_protocol(0) means "no error" -> None
         assert!(KafkaCode::from_protocol(0).is_none());
         assert_eq!(
             KafkaCode::from_protocol(1),
@@ -239,11 +415,11 @@ mod tests {
         let msg = Error::Kafka(KafkaCode::LeaderNotAvailable).to_string();
         assert!(msg.contains("LeaderNotAvailable"), "got: {msg}");
 
-        let msg = Error::NoHostReachable.to_string();
+        let msg = Error::no_host_reachable().to_string();
         assert!(msg.contains("host"), "got: {msg}");
 
-        let msg = Error::UnexpectedEOF.to_string();
-        assert!(msg.contains("EOF"), "got: {msg}");
+        let msg = Error::unexpected_eof().to_string();
+        assert!(msg.contains("end of data"), "got: {msg}");
     }
 
     #[test]
@@ -259,7 +435,7 @@ mod tests {
     fn test_error_io_conversion() {
         let io_err = io::Error::new(ErrorKind::ConnectionRefused, "refused");
         let err: Error = io_err.into();
-        assert!(matches!(err, Error::Io(_)));
+        assert!(matches!(err, Error::Connection(ConnectionError::Io(_))));
     }
 
     #[test]
@@ -271,5 +447,114 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("test-topic"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_is_retriable_kafka_errors() {
+        assert!(Error::Kafka(KafkaCode::LeaderNotAvailable).is_retriable());
+        assert!(Error::Kafka(KafkaCode::NotLeaderForPartition).is_retriable());
+        assert!(Error::Kafka(KafkaCode::GroupLoadInProgress).is_retriable());
+        assert!(Error::Kafka(KafkaCode::GroupCoordinatorNotAvailable).is_retriable());
+        assert!(Error::Kafka(KafkaCode::NotCoordinatorForGroup).is_retriable());
+        assert!(Error::Kafka(KafkaCode::NetworkException).is_retriable());
+        assert!(Error::Kafka(KafkaCode::RequestTimedOut).is_retriable());
+        assert!(Error::Kafka(KafkaCode::RebalanceInProgress).is_retriable());
+    }
+
+    #[test]
+    fn test_is_not_retriable_kafka_errors() {
+        assert!(!Error::Kafka(KafkaCode::UnknownTopicOrPartition).is_retriable());
+        assert!(!Error::Kafka(KafkaCode::MessageSizeTooLarge).is_retriable());
+        assert!(!Error::Kafka(KafkaCode::Unknown).is_retriable());
+    }
+
+    #[test]
+    fn test_is_retriable_connection_errors() {
+        assert!(Error::Connection(ConnectionError::Io(
+            io::Error::new(ErrorKind::ConnectionReset, "reset")
+        ))
+        .is_retriable());
+        assert!(Error::Connection(ConnectionError::Timeout(Duration::from_secs(5))).is_retriable());
+        assert!(Error::Connection(ConnectionError::NoHostReachable).is_retriable());
+        #[cfg(feature = "security")]
+        assert!(!Error::Connection(ConnectionError::Tls("bad cert".into())).is_retriable());
+    }
+
+    #[test]
+    fn test_is_retriable_topic_partition_error() {
+        let err = Error::TopicPartitionError {
+            topic_name: "t".into(),
+            partition_id: 0,
+            error_code: KafkaCode::LeaderNotAvailable,
+        };
+        assert!(err.is_retriable());
+
+        let err = Error::TopicPartitionError {
+            topic_name: "t".into(),
+            partition_id: 0,
+            error_code: KafkaCode::UnknownTopicOrPartition,
+        };
+        assert!(!err.is_retriable());
+    }
+
+    #[test]
+    fn test_is_retriable_broker_request_error() {
+        let inner = Error::Kafka(KafkaCode::NotLeaderForPartition);
+        let err = inner.with_broker_context("broker:9092", "Produce");
+        assert!(err.is_retriable());
+    }
+
+    #[test]
+    fn test_is_retriable_non_retriable_errors() {
+        assert!(!Error::codec().is_retriable());
+        assert!(!Error::no_topics_assigned().is_retriable());
+        assert!(!Error::Config("bad".into()).is_retriable());
+    }
+
+    #[test]
+    fn test_kafka_code_is_retriable() {
+        assert!(KafkaCode::LeaderNotAvailable.is_retriable());
+        assert!(KafkaCode::NetworkException.is_retriable());
+        assert!(!KafkaCode::UnknownTopicOrPartition.is_retriable());
+        assert!(!KafkaCode::OffsetOutOfRange.is_retriable());
+    }
+
+    #[test]
+    fn test_error_category_queries() {
+        assert!(Error::Connection(ConnectionError::Io(
+            io::Error::new(ErrorKind::Other, "err")
+        ))
+        .is_connection_error());
+        assert!(!Error::codec().is_connection_error());
+        assert!(Error::codec().is_protocol_error());
+        assert!(Error::no_topics_assigned().is_consumer_error());
+    }
+
+    #[test]
+    fn test_protocol_error_variants() {
+        assert!(Error::Protocol(ProtocolError::UnsupportedVersion)
+            .to_string()
+            .contains("version"));
+        assert!(Error::Protocol(ProtocolError::UnsupportedCompression)
+            .to_string()
+            .contains("compression"));
+        assert!(Error::Protocol(ProtocolError::Codec).to_string().contains("Encoding"));
+        assert!(Error::Protocol(ProtocolError::StringDecode).to_string().contains("String"));
+        assert!(Error::Protocol(ProtocolError::InvalidDuration)
+            .to_string()
+            .contains("duration"));
+    }
+
+    #[test]
+    fn test_consumer_error_variants() {
+        assert!(Error::Consumer(ConsumerError::NoTopicsAssigned)
+            .to_string()
+            .contains("topic"));
+        assert!(Error::Consumer(ConsumerError::UnsetOffsetStorage)
+            .to_string()
+            .contains("Offset"));
+        assert!(Error::Consumer(ConsumerError::UnsetGroupId)
+            .to_string()
+            .contains("Group"));
     }
 }

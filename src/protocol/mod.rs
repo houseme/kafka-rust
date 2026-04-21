@@ -13,8 +13,7 @@ pub mod produce;
 // Re-export key types for convenience
 
 use crate::compression::Compression;
-use crate::error::{Error, KafkaCode, Result};
-use std::mem;
+use crate::error::{Error, KafkaCode, ProtocolError, Result};
 use std::time::Duration;
 
 pub const API_VERSION_PRODUCE: i16 = 3;
@@ -47,18 +46,6 @@ pub struct HeaderResponse {
 
 // --------------------------------------------------------------------
 
-impl KafkaCode {
-    pub(crate) fn from_protocol(n: i16) -> Option<KafkaCode> {
-        if n == 0 {
-            return None;
-        }
-        if n >= KafkaCode::OffsetOutOfRange as i16 && n <= KafkaCode::UnsupportedVersion as i16 {
-            return Some(unsafe { mem::transmute(n as i8) });
-        }
-        Some(KafkaCode::Unknown)
-    }
-}
-
 #[test]
 fn test_kafka_code_from_protocol() {
     macro_rules! assert_kafka_code {
@@ -78,12 +65,6 @@ fn test_kafka_code_from_protocol() {
     assert_kafka_code!(KafkaCode::Unknown, 100);
 }
 
-impl Error {
-    pub(crate) fn from_protocol(n: i16) -> Option<Error> {
-        KafkaCode::from_protocol(n).map(Error::Kafka)
-    }
-}
-
 // --------------------------------------------------------------------
 
 pub fn to_millis_i32(d: Duration) -> Result<i32> {
@@ -92,7 +73,7 @@ pub fn to_millis_i32(d: Duration) -> Result<i32> {
         .saturating_mul(1_000)
         .saturating_add(u64::from(d.subsec_millis()));
     if m > i32::MAX as u64 {
-        Err(Error::InvalidDuration)
+        Err(Error::invalid_duration())
     } else {
         Ok(m as i32)
     }
@@ -102,7 +83,7 @@ pub fn to_millis_i32(d: Duration) -> Result<i32> {
 fn test_to_millis_i32() {
     fn assert_invalid(d: Duration) {
         match to_millis_i32(d) {
-            Err(Error::InvalidDuration) => {}
+            Err(Error::Protocol(ProtocolError::InvalidDuration)) => {}
             other => panic!("Expected Err(InvalidDuration) but got {other:?}"),
         }
     }

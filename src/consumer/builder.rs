@@ -237,7 +237,7 @@ impl Builder {
     pub fn create(self) -> Result<Consumer> {
         // ~ fail immediately if there's no topic to be consumed
         if self.assignments.is_empty() {
-            return Err(Error::NoTopicsAssigned);
+            return Err(Error::no_topics_assigned());
         }
         // ~ create the client if necessary
         let (mut client, need_metadata) = match self.client {

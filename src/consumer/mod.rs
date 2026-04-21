@@ -287,7 +287,9 @@ impl Consumer {
 
                     let data = match p.data() {
                         Ok(d) => d,
-                        Err(e) => return Err(Error::from(Arc::clone(e))),
+                        Err(e) => {
+                            return Err(Error::from(Arc::clone(e)));
+                        }
                     };
 
                     let fetch_state = self
@@ -419,7 +421,7 @@ impl Consumer {
     /// offsets to Kafka fails.
     pub fn commit_consumed(&mut self) -> Result<()> {
         if self.config.group.is_empty() {
-            return Err(Error::UnsetGroupId);
+            return Err(Error::unset_group_id());
         }
         debug!(
             "commit_consumed: committing dirty-only consumer offsets (group: {} / offsets: {:?}",
