@@ -295,11 +295,7 @@ pub struct Partition<'a> {
 
 impl<'a> Partition<'a> {
     fn new(state: &'a ClientState, inner: &'a TopicPartition, id: i32) -> Partition<'a> {
-        Self {
-            state,
-            inner,
-            id,
-        }
+        Self { state, inner, id }
     }
 
     /// Retrieves the identifier of this topic partition.

@@ -153,7 +153,8 @@ mod default_partitioner_tests {
             headers: &[],
         };
         p.partition(Topics::new(topics), &mut msg);
-        let num_partitions = i32::try_from(topics.get(topic).unwrap().num_all()).unwrap_or(i32::MAX);
+        let num_partitions =
+            i32::try_from(topics.get(topic).unwrap().num_all()).unwrap_or(i32::MAX);
         assert!(msg.partition >= 0 && msg.partition < num_partitions);
         msg.partition
     }

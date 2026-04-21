@@ -121,10 +121,8 @@ fn get_group_coordinator<'a>(
             crate::protocol::API_VERSION_FIND_COORDINATOR,
         )
         .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
-        let r = crate::protocol::consumer::convert_find_coordinator_response(
-            &kp_resp,
-            correlation_id,
-        );
+        let r =
+            crate::protocol::consumer::convert_find_coordinator_response(&kp_resp, correlation_id);
         let retry_code = match r.error {
             0 => {
                 let gc = protocol::consumer::GroupCoordinatorResponse {

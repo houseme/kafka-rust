@@ -87,10 +87,7 @@ fn test_consumer_commit_messageset() {
         }
     }
 
-    assert_eq!(
-        NUM_MESSAGES_USIZE, num_messages,
-        "wrong number of messages"
-    );
+    assert_eq!(NUM_MESSAGES_USIZE, num_messages, "wrong number of messages");
 
     // get the latest offsets and make sure they add up to the number of messages
     let latest_offsets = get_group_offsets(
@@ -170,10 +167,7 @@ fn test_consumer_commit_messageset_no_consumes() {
         }
     }
 
-    assert_eq!(
-        NUM_MESSAGES_USIZE, num_messages,
-        "wrong number of messages"
-    );
+    assert_eq!(NUM_MESSAGES_USIZE, num_messages, "wrong number of messages");
 
     // get the latest offsets and make sure they add up to the number of messages
     let latest_offsets = get_group_offsets(
