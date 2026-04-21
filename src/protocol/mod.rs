@@ -130,3 +130,32 @@ fn test_api_version_constants_are_positive() {
     assert!(API_VERSION_OFFSET_FETCH > 0);
     assert!(API_VERSION_FIND_COORDINATOR > 0);
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn to_kp_compression_roundtrip(disc in 0u8..=4u8) {
+            use crate::compression::Compression;
+            let compression = match disc {
+                0 => Compression::NONE,
+                1 => Compression::GZIP,
+                2 => Compression::SNAPPY,
+                3 => Compression::LZ4,
+                4 => Compression::ZSTD,
+                _ => return Ok(()),
+            };
+            let kp = to_kp_compression(compression);
+            let _ = format!("{:?}", kp);
+        }
+
+        #[test]
+        fn to_millis_i32_valid_range(millis in 0u64..=2_147_483_647u64) {
+            let d = Duration::from_millis(millis);
+            assert!(to_millis_i32(d).is_ok());
+        }
+    }
+}

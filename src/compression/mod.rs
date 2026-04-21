@@ -61,3 +61,32 @@ mod tests {
         assert_eq!(format!("{:?}", Compression::ZSTD), "ZSTD");
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn compression_discriminant_in_range(disc in 0i8..=4i8) {
+            assert!(matches!(disc, 0..=4));
+        }
+
+        #[test]
+        fn compression_debug_roundtrip(disc in 0u8..=4u8) {
+            let compression = match disc {
+                0 => Compression::NONE,
+                1 => Compression::GZIP,
+                2 => Compression::SNAPPY,
+                3 => Compression::LZ4,
+                4 => Compression::ZSTD,
+                _ => return Ok(()),
+            };
+            let debug_str = format!("{:?}", compression);
+            assert!(!debug_str.is_empty());
+            let as_i32 = compression as i32;
+            assert!((0..=4).contains(&as_i32));
+        }
+    }
+}

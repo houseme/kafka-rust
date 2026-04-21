@@ -558,3 +558,52 @@ mod tests {
             .contains("Group"));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// KafkaCode::from_protocol never panics for any i16 input
+        #[test]
+        fn kafka_code_from_any_i16(code in proptest::num::i16::ANY) {
+            let _ = KafkaCode::from_protocol(code);
+        }
+
+        /// Out-of-range error codes map to Unknown
+        #[test]
+        fn kafka_code_unknown_for_out_of_range(code in 36i16..=1000i16) {
+            assert_eq!(KafkaCode::from_protocol(code), Some(KafkaCode::Unknown));
+        }
+
+        /// Error::with_broker_context always produces a string containing broker
+        #[test]
+        fn broker_context_chainable(broker in "[a-z]{1,20}") {
+            let err = Error::no_host_reachable();
+            let wrapped = err.with_broker_context(broker.clone(), "Produce");
+            let msg = wrapped.to_string();
+            assert!(msg.contains(&broker));
+            assert!(msg.contains("Produce"));
+        }
+
+        /// is_retriable is safe to call on any error variant
+        #[test]
+        fn is_retriable_safe(code in proptest::num::i16::ANY) {
+            if let Some(kafka_code) = KafkaCode::from_protocol(code) {
+                let err = Error::Kafka(kafka_code);
+                let _ = err.is_retriable();
+            }
+        }
+
+        /// Error display never panics
+        #[test]
+        fn error_display_safe(code in proptest::num::i16::ANY) {
+            if let Some(kafka_code) = KafkaCode::from_protocol(code) {
+                let err = Error::Kafka(kafka_code);
+                let msg = err.to_string();
+                assert!(!msg.is_empty());
+            }
+        }
+    }
+}
