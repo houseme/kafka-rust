@@ -40,6 +40,7 @@ mod builder;
 mod config;
 mod partitioner;
 mod record;
+mod transaction;
 
 pub use self::batch::{BatchProducer, BatchProducerBuilder};
 pub use self::partitioner::{
@@ -47,6 +48,7 @@ pub use self::partitioner::{
 };
 pub use self::record::{AsBytes, Headers, Record};
 pub use config::BatchConfig;
+pub use transaction::{TransactionalBuilder, TransactionalProducer};
 
 pub use crate::client::{Compression, ProduceConfirm, ProducePartitionConfirm, RequiredAcks};
 pub use config::DEFAULT_ACK_TIMEOUT_MILLIS;
