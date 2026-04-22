@@ -5,11 +5,15 @@
 //!
 //! - [`AsyncKafkaClient`]: bootstrap and connection management for async code.
 //! - [`AsyncProducer`]: an async-friendly producer which runs a synchronous
-//!   `Producer` inside a background tokio task.
+//!   `Producer` inside a dedicated background thread.
+//! - [`AsyncProducerBuilder`]: async builder for configuring and creating an
+//!   `AsyncProducer` without blocking the tokio scheduler.
 //! - [`AsyncConsumer`]: an async-friendly consumer which runs a synchronous
 //!   `Consumer` inside a dedicated background thread.
+//! - [`AsyncConsumerBuilder`]: async builder for configuring and creating an
+//!   `AsyncConsumer` without blocking the tokio scheduler.
 //!
-//! These wrappers use MPSC/oneshot channels and join/abort semantics to bridge
+//! These wrappers use MPSC/oneshot channels and thread/task handoff semantics to bridge
 //! between the synchronous core implementation and asynchronous callers.
 //!
 //! # Example
@@ -38,9 +42,10 @@ mod consumer;
 mod producer;
 
 pub use client::AsyncKafkaClient;
-pub use consumer::AsyncConsumer;
-pub use producer::AsyncProducer;
+pub use consumer::{AsyncConsumer, AsyncConsumerBuilder};
+pub use producer::{AsyncProducer, AsyncProducerBuilder, AsyncProducerConfig};
 
 // Re-export core types from the sync crate for convenience
+pub use rustfs_kafka::client::{RequiredAcks, SecurityConfig};
 pub use rustfs_kafka::error;
 pub use rustfs_kafka::producer::{AsBytes, Headers, Record};

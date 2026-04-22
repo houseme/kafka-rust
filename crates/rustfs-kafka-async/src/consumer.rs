@@ -62,7 +62,92 @@ pub struct AsyncConsumer {
     handle: Option<thread::JoinHandle<()>>,
 }
 
+/// Builder for constructing an [`AsyncConsumer`] asynchronously.
+pub struct AsyncConsumerBuilder {
+    hosts: Vec<String>,
+    group: Option<String>,
+    topics: Vec<String>,
+    channel_capacity: usize,
+}
+
+impl AsyncConsumerBuilder {
+    /// Creates a new async consumer builder from bootstrap hosts.
+    #[must_use]
+    pub fn new(hosts: Vec<String>) -> Self {
+        Self {
+            hosts,
+            group: None,
+            topics: Vec::new(),
+            channel_capacity: 64,
+        }
+    }
+
+    /// Sets the consumer group.
+    #[must_use]
+    pub fn with_group(mut self, group: String) -> Self {
+        self.group = Some(group);
+        self
+    }
+
+    /// Adds a topic subscription.
+    #[must_use]
+    pub fn with_topic(mut self, topic: String) -> Self {
+        self.topics.push(topic);
+        self
+    }
+
+    /// Adds multiple topic subscriptions.
+    #[must_use]
+    pub fn with_topics(mut self, topics: Vec<String>) -> Self {
+        self.topics.extend(topics);
+        self
+    }
+
+    /// Sets command channel capacity used between async callers and the
+    /// background consumer thread.
+    #[must_use]
+    pub fn with_channel_capacity(mut self, channel_capacity: usize) -> Self {
+        self.channel_capacity = channel_capacity.max(1);
+        self
+    }
+
+    /// Builds an async consumer.
+    ///
+    /// The synchronous consumer construction runs on a blocking thread to
+    /// avoid stalling the tokio scheduler.
+    pub async fn build(self) -> Result<AsyncConsumer> {
+        let group = self
+            .group
+            .ok_or(Error::Consumer(ConsumerError::UnsetGroupId))?;
+        if self.topics.is_empty() {
+            return Err(Error::Consumer(ConsumerError::NoTopicsAssigned));
+        }
+
+        let hosts = self.hosts;
+        let topics = self.topics;
+        let channel_capacity = self.channel_capacity;
+
+        let consumer = tokio::task::spawn_blocking(move || {
+            let mut builder = Consumer::from_hosts(hosts).with_group(group);
+            for topic in topics {
+                builder = builder.with_topic(topic);
+            }
+            builder.create()
+        })
+        .await
+        .map_err(|e| Error::Config(format!("failed to build consumer task: {e}")))??;
+
+        Ok(AsyncConsumer::from_sync(consumer, channel_capacity))
+    }
+}
+
 impl AsyncConsumer {
+    /// Starts building a new async consumer from bootstrap hosts.
+    #[must_use]
+    pub fn builder(hosts: Vec<String>) -> AsyncConsumerBuilder {
+        AsyncConsumerBuilder::new(hosts)
+    }
+
     /// Creates a new async consumer from bootstrap hosts.
     ///
     /// This will construct a synchronous `Consumer` from the provided hosts,
@@ -74,42 +159,11 @@ impl AsyncConsumer {
         group: String,
         topics: Vec<String>,
     ) -> Result<Self> {
-        let consumer = {
-            let mut builder = Consumer::from_hosts(hosts).with_group(group);
-            for topic in topics {
-                builder = builder.with_topic(topic);
-            }
-            builder.create()?
-        };
-
-        let (sender, mut receiver) = mpsc::channel::<ConsumerCommand>(64);
-
-        let handle = thread::spawn(move || {
-            let mut consumer = consumer;
-            loop {
-                match receiver.blocking_recv() {
-                    Some(ConsumerCommand::Poll { response }) => {
-                        let result = consumer.poll();
-                        let _ = response.send(result);
-                    }
-                    Some(ConsumerCommand::Commit { response }) => {
-                        let result = consumer.commit_consumed();
-                        let _ = response.send(result);
-                    }
-                    Some(ConsumerCommand::Shutdown) | None => {
-                        debug!("AsyncConsumer thread shutting down");
-                        break;
-                    }
-                }
-            }
-            info!("AsyncConsumer background thread exited");
-        });
-
-        info!("AsyncConsumer created");
-        Ok(Self {
-            sender,
-            handle: Some(handle),
-        })
+        Self::builder(hosts)
+            .with_group(group)
+            .with_topics(topics)
+            .build()
+            .await
     }
 
     /// Creates a new async consumer from an [`AsyncKafkaClient`].
@@ -155,16 +209,55 @@ impl AsyncConsumer {
     pub async fn close(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             let _ = self.sender.send(ConsumerCommand::Shutdown).await;
-            let _ = handle.join();
+            let join_result = tokio::task::spawn_blocking(move || handle.join())
+                .await
+                .map_err(|e| Error::Config(format!("failed to join consumer thread: {e}")))?;
+            if join_result.is_err() {
+                return Err(Error::Config("consumer thread panicked".to_owned()));
+            }
         }
         Ok(())
+    }
+
+    fn from_sync(consumer: Consumer, channel_capacity: usize) -> Self {
+        let (sender, mut receiver) = mpsc::channel::<ConsumerCommand>(channel_capacity.max(1));
+
+        let handle = thread::spawn(move || {
+            let mut consumer = consumer;
+            loop {
+                match receiver.blocking_recv() {
+                    Some(ConsumerCommand::Poll { response }) => {
+                        let result = consumer.poll();
+                        let _ = response.send(result);
+                    }
+                    Some(ConsumerCommand::Commit { response }) => {
+                        let result = consumer.commit_consumed();
+                        let _ = response.send(result);
+                    }
+                    Some(ConsumerCommand::Shutdown) | None => {
+                        debug!("AsyncConsumer thread shutting down");
+                        break;
+                    }
+                }
+            }
+            info!("AsyncConsumer background thread exited");
+        });
+
+        info!("AsyncConsumer created");
+        Self {
+            sender,
+            handle: Some(handle),
+        }
     }
 }
 
 impl Drop for AsyncConsumer {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            handle.join().ok();
+        if self.handle.is_some() {
+            let _ = self.sender.try_send(ConsumerCommand::Shutdown);
+            // Dropping `JoinHandle` detaches the thread and avoids blocking in
+            // `Drop` on a runtime worker thread.
+            self.handle.take();
         }
     }
 }
@@ -202,7 +295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drop_joins_background_thread_without_panic() {
+    async fn drop_consumer_without_close_does_not_panic() {
         let result = AsyncConsumer::from_hosts(
             vec!["127.0.0.1:1".to_owned()],
             "test-drop-group".to_owned(),
@@ -210,6 +303,30 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
-        // No panic on drop - if we reach here, Drop is clean
+        // No panic on drop - if we reach here, Drop is clean.
+    }
+
+    #[tokio::test]
+    async fn builder_without_group_returns_error() {
+        let result = AsyncConsumer::builder(vec![])
+            .with_topic("t".to_owned())
+            .build()
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::Consumer(ConsumerError::UnsetGroupId))
+        ));
+    }
+
+    #[tokio::test]
+    async fn builder_without_topics_returns_error() {
+        let result = AsyncConsumer::builder(vec![])
+            .with_group("g".to_owned())
+            .build()
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::Consumer(ConsumerError::NoTopicsAssigned))
+        ));
     }
 }

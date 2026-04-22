@@ -77,12 +77,14 @@ fn main() -> rustfs_kafka::error::Result<()> {
 
 ```rust,no_run
 use rustfs_kafka::producer::Record;
-use rustfs_kafka_async::{AsyncKafkaClient, AsyncProducer};
+use rustfs_kafka_async::AsyncProducer;
 
 #[tokio::main]
 async fn main() -> rustfs_kafka::error::Result<()> {
-    let client = AsyncKafkaClient::new(vec!["127.0.0.1:9092".to_owned()]).await?;
-    let producer = AsyncProducer::new(client).await?;
+    let producer = AsyncProducer::builder(vec!["127.0.0.1:9092".to_owned()])
+        .with_client_id("demo-async-producer".to_owned())
+        .build()
+        .await?;
     producer.send(&Record::from_value("demo-topic", b"hello async")).await?;
     producer.flush().await?;
     producer.close().await?;
@@ -97,12 +99,11 @@ use rustfs_kafka_async::AsyncConsumer;
 
 #[tokio::main]
 async fn main() -> rustfs_kafka::error::Result<()> {
-    let mut consumer = AsyncConsumer::from_hosts(
-        vec!["127.0.0.1:9092".to_owned()],
-        "demo-group".to_owned(),
-        vec!["demo-topic".to_owned()],
-    )
-    .await?;
+    let mut consumer = AsyncConsumer::builder(vec!["127.0.0.1:9092".to_owned()])
+        .with_group("demo-group".to_owned())
+        .with_topic("demo-topic".to_owned())
+        .build()
+        .await?;
 
     let messages = consumer.poll().await?;
     for ms in messages.iter() {

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Added `AsyncProducerBuilder` in `rustfs-kafka-async` with async `build()` and producer configuration methods.
+- Added `AsyncConsumerBuilder` in `rustfs-kafka-async` with async `build()` and consumer configuration methods.
+
+### Changed
+
+- Reworked `AsyncProducer` internals to run synchronous producer operations on a dedicated background thread.
+- Moved async producer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.
+- Moved async consumer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.
+- Updated async producer/consumer shutdown paths to avoid blocking `Drop` on tokio runtime threads.
+
 ## [1.0.0] - 2026-04-22
 
 ### Added

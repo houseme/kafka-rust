@@ -128,10 +128,14 @@ impl AsyncConnectionPool {
     pub async fn get(&mut self, host: &str) -> Result<&mut AsyncConnection> {
         if !self.connections.contains_key(host) {
             let conn = AsyncConnection::connect(host).await?;
-            self.connections.insert(host.to_owned(), conn);
+            self.insert(host.to_owned(), conn);
         }
         // This is safe because we just ensured the key exists
         Ok(self.connections.get_mut(host).unwrap())
+    }
+
+    pub(crate) fn insert(&mut self, host: String, connection: AsyncConnection) {
+        self.connections.insert(host, connection);
     }
 
     /// Returns the list of connected hosts.

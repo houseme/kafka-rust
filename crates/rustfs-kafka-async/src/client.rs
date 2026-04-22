@@ -1,6 +1,7 @@
 //! Async Kafka client for metadata and connection management.
 
 use rustfs_kafka::error::{ConnectionError, Error, Result};
+use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 use crate::connection::{AsyncConnection, AsyncConnectionPool};
@@ -34,19 +35,7 @@ impl AsyncKafkaClient {
     /// is returned.
     pub async fn with_client_id(hosts: Vec<String>, client_id: String) -> Result<Self> {
         let mut pool = AsyncConnectionPool::new();
-
-        let mut connected = false;
-        for host in &hosts {
-            match pool.get(host).await {
-                Ok(_) => {
-                    connected = true;
-                    break;
-                }
-                Err(e) => {
-                    debug!("Failed to connect to {}: {}", host, e);
-                }
-            }
-        }
+        let connected = connect_any_bootstrap(&mut pool, &hosts).await;
 
         if !connected && !hosts.is_empty() {
             return Err(Error::Connection(ConnectionError::NoHostReachable));
@@ -104,14 +93,38 @@ impl AsyncKafkaClient {
     /// or when the pool already contains connections.
     pub async fn ensure_connected(&mut self) -> Result<()> {
         if !self.bootstrap_hosts.is_empty() && self.pool.hosts().is_empty() {
-            for host in &self.bootstrap_hosts {
-                if self.pool.get(host).await.is_ok() {
-                    break;
-                }
-            }
+            connect_any_bootstrap(&mut self.pool, &self.bootstrap_hosts).await;
         }
         Ok(())
     }
+}
+
+async fn connect_any_bootstrap(pool: &mut AsyncConnectionPool, hosts: &[String]) -> bool {
+    let mut set = JoinSet::new();
+    for host in hosts {
+        let host = host.clone();
+        set.spawn(async move {
+            let connection = crate::connection::AsyncConnection::connect(&host).await;
+            (host, connection)
+        });
+    }
+
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((host, Ok(connection))) => {
+                pool.insert(host, connection);
+                return true;
+            }
+            Ok((host, Err(e))) => {
+                debug!("Failed to connect to {}: {}", host, e);
+            }
+            Err(e) => {
+                debug!("Bootstrap connect task failed to join: {}", e);
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
