@@ -45,7 +45,21 @@ if [[ ${#secure_modes[@]} -eq 0 ]]; then
     secure_modes=("")
 fi
 
-for ver in $vers; do
+IFS=':' read -r -a versions <<< "$vers"
+if [[ ${#versions[@]} -eq 0 ]]; then
+    versions=("$DEFAULT_VERS")
+fi
+
+if [[ -z "${COMPRESSIONS}" ]]; then
+    compression_modes=("NONE")
+else
+    IFS=':' read -r -a compression_modes <<< "$COMPRESSIONS"
+    if [[ ${#compression_modes[@]} -eq 0 ]]; then
+        compression_modes=("NONE")
+    fi
+fi
+
+for ver in "${versions[@]}"; do
     export KAFKA_VER=$ver
     export SCALA_VER=$DEFAULT_SCALA_VER
 
@@ -78,7 +92,10 @@ for ver in $vers; do
         ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test\\.|Topic 'kafka-rust-test' already exists\\.\""
         ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test2\\.|Topic 'kafka-rust-test2' already exists\\.\""
 
-        for compression in $COMPRESSIONS; do
+        for compression in "${compression_modes[@]}"; do
+            if [[ -z "$compression" ]]; then
+                compression="NONE"
+            fi
             export KAFKA_CLIENT_COMPRESSION=$compression
             echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure_label"
             cargo test --features integration_tests
