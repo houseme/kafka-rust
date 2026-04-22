@@ -93,9 +93,6 @@ fn test_produce_fetch_messages() {
 
     assert_eq!(2, resp.len());
 
-    // need to keep track of the offsets so we can fetch them next
-    let mut fetches = Vec::new();
-
     for confirm in &resp {
         assert!(confirm.topic == TEST_TOPIC_NAME || confirm.topic == TEST_TOPIC_NAME_2);
         assert_eq!(2, confirm.partition_confirms.len());
@@ -113,12 +110,18 @@ fn test_produce_fetch_messages() {
                 .iter()
                 .any(|part_confirm| { part_confirm.partition == 1 && part_confirm.offset.is_ok() })
         );
+    }
 
-        for part_confirm in confirm.partition_confirms.iter() {
+    // Use the pre-produce latest offsets as fetch start offsets. Depending on
+    // broker/version combinations, produce confirmations may expose offsets
+    // with semantics that are not directly fetchable for this test.
+    let mut fetches = Vec::new();
+    for (topic, partition_offsets) in &init_latest_offsets {
+        for partition_offset in partition_offsets {
             fetches.push(FetchPartition::new(
-                confirm.topic.as_ref(),
-                part_confirm.partition,
-                part_confirm.offset.unwrap(),
+                topic.as_str(),
+                partition_offset.partition,
+                partition_offset.offset,
             ));
         }
     }
