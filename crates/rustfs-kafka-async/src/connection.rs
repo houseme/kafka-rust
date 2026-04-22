@@ -52,18 +52,19 @@ impl AsyncConnection {
     }
 
     /// Reads exactly `n` bytes from the broker.
-    pub async fn read_exact(&mut self, n: u64) -> Result<Vec<u8>> {
+    pub async fn read_exact(&mut self, n: u64) -> Result<bytes::Bytes> {
         let n = usize::try_from(n).map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-        let mut buf = vec![0u8; n];
+        let mut buf = bytes::BytesMut::with_capacity(n);
+        buf.resize(n, 0);
         self.stream
             .read_exact(&mut buf)
             .await
             .map_err(|e| Error::Connection(rustfs_kafka::error::ConnectionError::Io(e)))?;
-        Ok(buf)
+        Ok(buf.freeze())
     }
 
     /// Sends a Kafka request frame and reads the response frame.
-    pub async fn request_response(&mut self, request: &[u8]) -> Result<Vec<u8>> {
+    pub async fn request_response(&mut self, request: &[u8]) -> Result<bytes::Bytes> {
         self.send(request).await?;
 
         let mut size_buf = [0u8; 4];

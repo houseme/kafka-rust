@@ -168,6 +168,12 @@ fn decode_partition_records(
             messages: vec![],
         });
     };
+    if records_bytes.is_empty() {
+        return Ok(OwnedData {
+            highwatermark_offset: high_watermark,
+            messages: vec![],
+        });
+    }
 
     let raw_records = records_bytes.clone();
     let Ok(record_set) = RecordBatchDecoder::decode(&mut records_bytes) else {

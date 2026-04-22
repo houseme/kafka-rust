@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tracing::{debug, info, warn};
 
 use super::assignor::{PartitionAssignor, SimpleTopicPartitions};
@@ -99,7 +100,7 @@ impl GroupCoordinator {
 
         let protocols = vec![ProtocolMetadata {
             name: assignor.name().to_owned(),
-            metadata: Vec::new(),
+            metadata: Bytes::new(),
         }];
 
         debug!(
@@ -152,7 +153,7 @@ impl GroupCoordinator {
             vec![GroupAssignment {
                 member_id: self.member_id.clone().unwrap_or_default(),
                 group_instance_id: None,
-                assignment: Vec::new(),
+                assignment: Bytes::new(),
             }]
         };
 

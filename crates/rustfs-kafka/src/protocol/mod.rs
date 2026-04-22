@@ -24,7 +24,7 @@ use crate::error::{KafkaCode, ProtocolError};
 use std::time::Duration;
 
 pub const API_VERSION_PRODUCE: i16 = 3;
-pub const API_VERSION_FETCH: i16 = 4;
+pub const API_VERSION_FETCH: i16 = 12;
 pub const API_VERSION_METADATA: i16 = 1;
 pub const API_VERSION_LIST_OFFSETS: i16 = 1;
 pub const API_VERSION_OFFSET_COMMIT: i16 = 2;

@@ -70,7 +70,7 @@ fn decode_bytes(bytes: &mut bytes::Bytes) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<Vec<u8>> {
+fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<bytes::Bytes> {
     let mut header_buf = BytesMut::new();
     header
         .encode(&mut header_buf, api_version)
@@ -83,7 +83,7 @@ fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<
     out.extend_from_slice(&header_buf);
     out.extend_from_slice(body);
 
-    Ok(out.to_vec())
+    Ok(out.freeze())
 }
 
 fn read_response(conn: &mut KafkaConnection, _api_version: i16) -> Result<bytes::Bytes> {
@@ -104,7 +104,7 @@ fn read_response(conn: &mut KafkaConnection, _api_version: i16) -> Result<bytes:
 #[derive(Debug, Clone)]
 pub struct ProtocolMetadata {
     pub name: String,
-    pub metadata: Vec<u8>,
+    pub metadata: bytes::Bytes,
 }
 
 /// A member of a consumer group.
@@ -112,7 +112,7 @@ pub struct ProtocolMetadata {
 pub struct GroupMember {
     pub member_id: String,
     pub group_instance_id: Option<String>,
-    pub metadata: Vec<u8>,
+    pub metadata: bytes::Bytes,
 }
 
 /// Parsed response from a `JoinGroup` request.
@@ -139,7 +139,7 @@ pub fn build_join_group_request(
     _group_instance_id: Option<&str>,
     protocol_type: &str,
     protocols: &[ProtocolMetadata],
-) -> Result<Vec<u8>> {
+) -> Result<bytes::Bytes> {
     let version = API_VERSION_JOIN_GROUP;
     let mut body = BytesMut::new();
 
@@ -241,7 +241,7 @@ pub fn fetch_join_group(
         members.push(GroupMember {
             member_id: mid,
             group_instance_id: None,
-            metadata,
+            metadata: metadata.into(),
         });
     }
 
@@ -264,7 +264,7 @@ pub fn fetch_join_group(
 #[derive(Debug, Clone)]
 pub struct SyncGroupResponseData {
     pub error_code: i16,
-    pub assignment: Vec<u8>,
+    pub assignment: bytes::Bytes,
 }
 
 /// Assignment for a specific group member (used by leader in `SyncGroup`).
@@ -272,7 +272,7 @@ pub struct SyncGroupResponseData {
 pub struct GroupAssignment {
     pub member_id: String,
     pub group_instance_id: Option<String>,
-    pub assignment: Vec<u8>,
+    pub assignment: bytes::Bytes,
 }
 
 /// Build a `SyncGroup` request (v1).
@@ -284,7 +284,7 @@ pub fn build_sync_group_request(
     member_id: &str,
     _group_instance_id: Option<&str>,
     group_assignment: &[GroupAssignment],
-) -> Result<Vec<u8>> {
+) -> Result<bytes::Bytes> {
     let version = API_VERSION_SYNC_GROUP;
     let mut body = BytesMut::new();
 
@@ -344,7 +344,7 @@ pub fn fetch_sync_group(
 
     Ok(SyncGroupResponseData {
         error_code,
-        assignment,
+        assignment: assignment.into(),
     })
 }
 
@@ -366,7 +366,7 @@ pub fn build_heartbeat_request(
     generation_id: i32,
     member_id: &str,
     _group_instance_id: Option<&str>,
-) -> Result<Vec<u8>> {
+) -> Result<bytes::Bytes> {
     let version = API_VERSION_HEARTBEAT;
     let mut body = BytesMut::new();
 
@@ -440,7 +440,7 @@ pub fn build_leave_group_request(
     client_id: &str,
     group_id: &str,
     members: &[LeaveMemberRequest],
-) -> Result<Vec<u8>> {
+) -> Result<bytes::Bytes> {
     if members.is_empty() {
         return Err(Error::Config(
             "leave-group requires at least one member".into(),
@@ -580,7 +580,7 @@ impl MemberAssignment {
     }
 
     /// Encode this member assignment to raw bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> bytes::Bytes {
         let mut buf = BytesMut::new();
         buf.extend_from_slice(&self.version.to_be_bytes());
         let topic_count = crate::protocol::usize_to_i32(self.topic_partitions.len())
@@ -600,7 +600,7 @@ impl MemberAssignment {
         } else {
             buf.extend_from_slice(&(-1i32).to_be_bytes());
         }
-        buf.to_vec()
+        buf.freeze()
     }
 }
 
@@ -673,7 +673,7 @@ mod tests {
     fn test_build_join_group_request() {
         let protocols = vec![ProtocolMetadata {
             name: "range".to_owned(),
-            metadata: vec![0, 1, 2],
+            metadata: vec![0, 1, 2].into(),
         }];
         let req = build_join_group_request(
             1, "client", "group", 10000, 300_000, "", None, "consumer", &protocols,
@@ -691,7 +691,7 @@ mod tests {
         let assignments = vec![GroupAssignment {
             member_id: "member-1".to_owned(),
             group_instance_id: None,
-            assignment: vec![0, 1],
+            assignment: vec![0, 1].into(),
         }];
         let req = build_sync_group_request(1, "client", "group", 1, "member-1", None, &assignments);
         assert!(req.is_ok());

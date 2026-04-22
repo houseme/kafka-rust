@@ -6,13 +6,45 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 use super::FetchPartition;
 use super::config::ClientConfig;
 use super::state::ClientState;
 use super::transport;
 use crate::network::Connections;
+
+fn decode_fetch_response(
+    conn: &mut crate::network::KafkaConnection,
+    requested_version: i16,
+) -> Result<kafka_protocol::messages::FetchResponse> {
+    use kafka_protocol::messages::{FetchResponse, ResponseHeader};
+    use kafka_protocol::protocol::{Decodable, HeaderVersion};
+
+    let size = transport::get_response_size(conn)?;
+    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
+
+    let mut candidates = Vec::with_capacity(1 + 18);
+    candidates.push(requested_version);
+    for v in (0..=17).rev() {
+        if v != requested_version {
+            candidates.push(v);
+        }
+    }
+
+    for version in candidates {
+        let mut bytes = resp_bytes.clone();
+        let header_version = FetchResponse::header_version(version);
+        if ResponseHeader::decode(&mut bytes, header_version).is_err() {
+            continue;
+        }
+        if let Ok(resp) = FetchResponse::decode(&mut bytes, version) {
+            return Ok(resp);
+        }
+    }
+
+    Err(Error::codec())
+}
 
 #[tracing::instrument(skip(conn_pool, state, config, input))]
 pub fn fetch_messages_kp<'a, I, J>(
@@ -116,11 +148,8 @@ fn fetch_messages_inner(
         );
         transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_FETCH)
             .map_err(|e| e.with_broker_context(host, "Fetch"))?;
-        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::FetchResponse>(
-            conn,
-            crate::protocol::API_VERSION_FETCH,
-        )
-        .map_err(|e| e.with_broker_context(host, "Fetch"))?;
+        let kp_resp = decode_fetch_response(conn, crate::protocol::API_VERSION_FETCH)
+            .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
         res.push(owned);
     }
