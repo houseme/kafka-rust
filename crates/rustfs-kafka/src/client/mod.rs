@@ -30,6 +30,8 @@
 //! for TLS-encrypted connections:
 //!
 //! ```no_run
+//! # #[cfg(feature = "security")]
+//! # {
 //! use rustfs_kafka::client::{KafkaClient, SecurityConfig};
 //!
 //! let mut client = KafkaClient::new_secure(
@@ -38,6 +40,7 @@
 //!         .with_ca_cert("ca.pem".to_owned()),
 //! );
 //! client.load_metadata_all().unwrap();
+//! # }
 //! ```
 
 // pub re-exports

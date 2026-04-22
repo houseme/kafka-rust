@@ -92,8 +92,8 @@ jobs:
         run: |
           export DOCKER_BUILDKIT=1
           export COMPOSE_DOCKER_CLI_BUILD=1
-          chmod +x ./tests/run-all-tests
-          ./tests/run-all-tests ${{ matrix.KAFKA_VER }}
+          chmod +x ./crates/rustfs-kafka/tests/run-all-tests
+          ./crates/rustfs-kafka/tests/run-all-tests ${{ matrix.KAFKA_VER }}
         env:
           KAFKA_VER: ${{ matrix.KAFKA_VER }}
           SECURES: ${{ matrix.SECURE }}
@@ -158,16 +158,16 @@ jobs:
       - name: Build - ${{ matrix.name }}
         run: |
           if [ -z "${{ matrix.extra_args }}" ]; then
-            cargo build --verbose
+            cargo build -p rustfs-kafka --verbose
           else
-            cargo build --verbose ${{ matrix.extra_args }}
+            cargo build -p rustfs-kafka --verbose ${{ matrix.extra_args }}
           fi
       - name: Test - ${{ matrix.name }}
         run: |
           if [ -z "${{ matrix.extra_args }}" ]; then
-            cargo test --verbose
+            cargo test -p rustfs-kafka --verbose
           else
-            cargo test --verbose ${{ matrix.extra_args }}
+            cargo test -p rustfs-kafka --verbose ${{ matrix.extra_args }}
           fi
 
   # Test musl build to verify pure-Rust TLS

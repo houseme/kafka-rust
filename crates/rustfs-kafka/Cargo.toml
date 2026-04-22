@@ -1,0 +1,78 @@
+[package]
+name = "rustfs-kafka"
+version.workspace = true
+authors.workspace = true
+categories.workspace = true
+documentation.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+socket2.workspace = true
+fnv.workspace = true
+twox-hash.workspace = true
+bytes.workspace = true
+kafka-protocol.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Optional: TLS (rustls)
+rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+
+# Optional: metrics
+metrics = { workspace = true, optional = true }
+
+[dev-dependencies]
+ctor.workspace = true
+getopts.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true
+anyhow.workspace = true
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "producer_throughput"
+harness = false
+
+[[bench]]
+name = "protocol_serialization"
+harness = false
+
+[[bench]]
+name = "partitioner"
+harness = false
+
+[features]
+default = ["security"]
+
+# TLS/Security features (rustls, default crypto: aws-lc-rs)
+security = [
+    "dep:rustls",
+    "dep:webpki-roots",
+    "dep:rustls-native-certs",
+    "rustls/aws-lc-rs",
+]
+security-ring = [
+    "dep:rustls",
+    "dep:webpki-roots",
+    "dep:rustls-native-certs",
+    "rustls/ring",
+]
+
+metrics = ["dep:metrics"]
+producer_timestamp = []
+nightly = []
+integration_tests = []

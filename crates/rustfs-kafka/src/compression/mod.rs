@@ -2,14 +2,14 @@
 //!
 //! Kafka supports pluggable compression at the message-set level. The
 //! compression type is encoded in the lower 3 bits of the `attributes`
-//! field in each [`Message`](crate::protocol::produce::MessageProduceRequest).
+//! field in each message.
 //!
 //! Actual compression and decompression is handled by the `kafka-protocol` crate.
 
 /// Compression types supported by Kafka.
 ///
 /// The discriminant values correspond to the compression encoding in the
-/// `attributes` field of a [`Message`](crate::protocol::produce::MessageProduceRequest)
+/// `attributes` field of a Kafka message
 /// in the Kafka wire protocol (lower 3 bits).
 ///
 /// | Variant | Value | Kafka constant |

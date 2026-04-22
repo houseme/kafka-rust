@@ -1,11 +1,13 @@
 [workspace]
-members = [".", "crates/rustfs-kafka-async"]
+members = [
+    "crates/rustfs-kafka",
+    "crates/rustfs-kafka-async",
+]
 resolver = "3"
 
-[package]
-name = "rustfs-kafka"
+[workspace.package]
 version = "0.22.0"
-authors = ["houseme", "houseme <husemecn@gmail.com>"]
+authors = ["houseme", "houseme <houseme <husemecn@gmail.com>"]
 categories = ["api-bindings"]
 documentation = "https://docs.rs/rustfs-kafka/"
 edition = "2024"
@@ -16,59 +18,33 @@ repository = "https://github.com/houseme/kafka-rust"
 description = "Rust client for Apache Kafka"
 rust-version = "1.93.0"
 
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[workspace.dependencies]
+# Core dependencies
+socket2 = "0.6"
+fnv = "1"
+twox-hash = { version = "2", default-features = false, features = ["xxhash32", "std"] }
+bytes = "1"
+kafka-protocol = { version = "0.17", default-features = false, features = ["client"] }
+indexmap = "2"
+thiserror = "2"
+tracing = "0.1"
 
-[dependencies]
-byteorder = "1.5"
-socket2 = "0.6.3"
-fnv = "1.0.7"
-twox-hash = "2.1.2"
-bytes = "1.11.1"
-kafka-protocol = { version = "0.17.0", default-features = false, features = ["client"] }
-indexmap = "2.14.0"
+# Optional dependencies (made optional in consuming crates via dep: syntax)
+rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
+webpki-roots = "1"
+rustls-native-certs = "0.8"
 
-chrono = { version = "0.4.44", optional = true }
-metrics = { version = "0.24.3", optional = true }
-thiserror = "2.0.18"
-tracing = "0.1.44"
+# Optional: metrics
+metrics = "0.24"
 
-# rustls TLS backend (pure Rust)
-rustls = { version = "0.23.38", optional = true, default-features = false, features = ["logging", "prefer-post-quantum", "std", "tls12"] }
-webpki-roots = { version = "1.0.7", optional = true }
-rustls-pki-types = { version = "1.14.0", optional = true, features = ["std"] }
-rustls-native-certs = { version = "0.8.3", optional = true }
+# Async runtime
+tokio = "1"
 
-[dev-dependencies]
+# Dev dependencies
 ctor = "0.4"
-getopts = "0.2.24"
-tracing-subscriber = "0.3.23"
-rand = "0.10.1"
-anyhow = "1.0.102"
-proptest = "1.11"
-criterion = { version = "0.8.2", features = ["html_reports"] }
-
-[[bench]]
-name = "producer_throughput"
-harness = false
-
-[[bench]]
-name = "protocol_serialization"
-harness = false
-
-[[bench]]
-name = "partitioner"
-harness = false
-
-[features]
-default = ["security"]
-
-# TLS/Security features (rustls, default crypto: aws-lc-rs)
-security = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs", "rustls/aws-lc-rs"]
-security-ring = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pki-types", "dep:rustls-native-certs", "rustls/ring"]
-
-producer_timestamp = ["chrono"]
-metrics = ["dep:metrics"]
-nightly = []
-integration_tests = []
+getopts = "0.2"
+tracing-subscriber = "0.3"
+rand = "0.10"
+anyhow = "1"
+proptest = "1"
+criterion = { version = "0.6", features = ["html_reports"] }

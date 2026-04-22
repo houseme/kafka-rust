@@ -1,6 +1,6 @@
 //! Error types and error handling utilities.
 //!
-//! This module provides the main [`Error`] enum, sub-error types for each
+//! This module provides the main [`enum@Error`] enum, sub-error types for each
 //! layer ([`ConnectionError`], [`ProtocolError`], [`ConsumerError`]), and
 //! the [`KafkaCode`] enum for Kafka server error codes.
 //!

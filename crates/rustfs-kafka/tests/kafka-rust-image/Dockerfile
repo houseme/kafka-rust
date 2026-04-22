@@ -19,6 +19,7 @@ ENV CLUSTER_ID=MkU3OEVCNTcwNTJENDM2Qk
 
 COPY start-kafka.sh /usr/bin/start-kafka.sh
 COPY create-topics.sh /usr/bin/create-topics.sh
+RUN chmod +x /usr/bin/start-kafka.sh /usr/bin/create-topics.sh
 
 ENV KAFKA_ZOOKEEPER_CONNECT zookeeper
 COPY server.properties secure.server.properties client-ssl.properties kraft-server.properties kraft-secure-server.properties /opt/kafka/config/
@@ -40,4 +41,4 @@ RUN keytool -importcert -file server-cert.pem -alias server-cert -keystore clien
 EXPOSE 9092
 
 # Use "exec" form so that it runs as PID 1 (useful for graceful shutdown)
-CMD ["start-kafka.sh"]
+CMD ["/usr/bin/start-kafka.sh"]
