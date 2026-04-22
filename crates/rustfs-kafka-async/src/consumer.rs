@@ -9,7 +9,11 @@ use tracing::{debug, info};
 
 use crate::AsyncKafkaClient;
 
-/// Command sent to the consumer's background thread.
+/// Internal commands sent to the consumer's background thread.
+///
+/// Each command that expects a response carries a `oneshot::Sender` so the
+/// async caller can await the operation's result. This enum is part of the
+/// internal implementation and not exported outside the crate.
 enum ConsumerCommand {
     Poll {
         response: oneshot::Sender<Result<MessageSets>>,
@@ -22,9 +26,12 @@ enum ConsumerCommand {
 
 /// An async Kafka consumer.
 ///
-/// Wraps the synchronous [`Consumer`] in a dedicated background thread,
-/// communicating via MPSC channels. This avoids `'static` lifetime
-/// requirements of `spawn_blocking`.
+/// This wrapper runs the synchronous `rustfs_kafka::consumer::Consumer` inside
+/// a dedicated background thread and communicates with it using an MPSC
+/// channel. Async callers can `poll` and `commit` via async functions that use
+/// `oneshot` channels to receive results from the background thread. Using a
+/// dedicated thread avoids having to make the synchronous `Consumer` `'static`
+/// for `spawn_blocking`.
 ///
 /// # Example
 ///
@@ -57,6 +64,11 @@ pub struct AsyncConsumer {
 
 impl AsyncConsumer {
     /// Creates a new async consumer from bootstrap hosts.
+    ///
+    /// This will construct a synchronous `Consumer` from the provided hosts,
+    /// group and topics and spawn a background thread that runs the consumer
+    /// event loop. If the bootstrap hosts are unreachable an error is
+    /// returned.
     pub async fn from_hosts(
         hosts: Vec<String>,
         group: String,
@@ -109,9 +121,11 @@ impl AsyncConsumer {
         Self::from_hosts(client.bootstrap_hosts().to_vec(), group, topics).await
     }
 
-    /// Polls for new messages.
+    /// Polls for new messages and returns fetched message sets.
     ///
-    /// Returns the fetched message sets.
+    /// This sends a `Poll` command to the background thread and awaits the
+    /// response via a `oneshot` channel. If the background thread has been
+    /// shut down the returned error maps to `Error::Consumer(ConsumerError::NoTopicsAssigned)`.
     pub async fn poll(&mut self) -> Result<MessageSets> {
         let (tx, rx) = oneshot::channel();
         self.sender
@@ -123,6 +137,9 @@ impl AsyncConsumer {
     }
 
     /// Commits the current consumed offsets.
+    ///
+    /// Sends a `Commit` command to the background thread which calls
+    /// `commit_consumed` on the synchronous `Consumer`.
     pub async fn commit(&mut self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.sender
@@ -133,7 +150,8 @@ impl AsyncConsumer {
             .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
     }
 
-    /// Gracefully closes the consumer.
+    /// Gracefully closes the consumer by signaling shutdown and joining the
+    /// background thread.
     pub async fn close(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             let _ = self.sender.send(ConsumerCommand::Shutdown).await;

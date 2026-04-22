@@ -9,7 +9,11 @@ use tracing::{debug, info};
 
 use crate::AsyncKafkaClient;
 
-/// Command sent to the async producer's background task.
+/// Internal commands sent to the async producer's background task.
+///
+/// Variants that expect a result carry a `oneshot::Sender` so the async
+/// caller can await the outcome of the synchronous operation executed in the
+/// background task.
 enum ProducerCommand {
     Send {
         topic: String,
@@ -26,9 +30,10 @@ enum ProducerCommand {
 
 /// An async Kafka producer.
 ///
-/// Sends messages to Kafka brokers asynchronously using a background
-/// task. Messages are queued via an MPSC channel and processed by a
-/// dedicated tokio task that holds the synchronous producer.
+/// This wrapper runs a synchronous `Producer` inside a tokio background task
+/// and exposes an async-friendly API. Calls to `send` queue the message on an
+/// MPSC channel and then await a `oneshot` response indicating success or
+/// failure of the underlying synchronous `Producer::send`.
 ///
 /// # Example
 ///
@@ -54,6 +59,10 @@ pub struct AsyncProducer {
 
 impl AsyncProducer {
     /// Creates a new async producer from an [`AsyncKafkaClient`].
+    ///
+    /// The function constructs a synchronous `Producer` configured with the
+    /// given client's bootstrap hosts and moves it into a background tokio
+    /// task. The returned `AsyncProducer` sends commands to that task.
     pub async fn new(client: AsyncKafkaClient) -> Result<Self> {
         let hosts = client.bootstrap_hosts().to_vec();
         let client_id = client.client_id().to_owned();
@@ -108,8 +117,10 @@ impl AsyncProducer {
 
     /// Sends a message to Kafka asynchronously.
     ///
-    /// The message is queued and sent by the background task. This method
-    /// returns once the message has been successfully sent to Kafka.
+    /// The message is queued to the background task which performs the
+    /// blocking `Producer::send` call. This method awaits a confirmation via
+    /// a `oneshot` channel and returns once the synchronous send completes or
+    /// fails.
     pub async fn send<K, V>(&self, record: &Record<'_, K, V>) -> Result<()>
     where
         K: AsBytes,
@@ -140,6 +151,10 @@ impl AsyncProducer {
     }
 
     /// Flushes any pending messages.
+    ///
+    /// The synchronous producer flushes on each send in this implementation,
+    /// so `flush` simply sends a no-op confirmation to the background task and
+    /// awaits the acknowledgement.
     pub async fn flush(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.sender
@@ -159,8 +174,8 @@ impl AsyncProducer {
 
     /// Gracefully shuts down the producer.
     ///
-    /// Sends a shutdown signal to the background task and waits for it
-    /// to complete.
+    /// Sends a shutdown signal to the background task and awaits the task
+    /// completion. After `close` returns, the background task has exited.
     pub async fn close(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             let _ = self.sender.send(ProducerCommand::Shutdown).await;
@@ -184,6 +199,8 @@ impl AsyncProducer {
 
 impl Drop for AsyncProducer {
     fn drop(&mut self) {
+        // On drop we abort the background task to avoid leaking it. Consumers
+        // who want a graceful shutdown should call `close().await`.
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }

@@ -9,6 +9,11 @@ use tokio::net::TcpStream;
 use tracing::debug;
 
 /// An async TCP connection to a Kafka broker.
+///
+/// This type wraps a `tokio::net::TcpStream` and provides convenient
+/// read/write helpers that map IO errors into the crate's `Error` type. It is
+/// used by higher-level components to perform request/response interactions
+/// with a Kafka broker.
 pub struct AsyncConnection {
     stream: TcpStream,
     host: String,
@@ -16,6 +21,10 @@ pub struct AsyncConnection {
 
 impl AsyncConnection {
     /// Connects to a Kafka broker asynchronously.
+    ///
+    /// On error the returned `Error::Connection` will contain an underlying
+    /// IO error describing the failure. The `host` argument is the socket
+    /// address of the broker (for example `"127.0.0.1:9092"`).
     pub async fn connect(host: &str) -> Result<Self> {
         debug!("Connecting to {}", host);
         let stream = TcpStream::connect(host).await.map_err(|e| {
@@ -38,7 +47,10 @@ impl AsyncConnection {
         &self.host
     }
 
-    /// Sends raw bytes to the broker.
+    /// Sends raw bytes to the broker and flushes the stream.
+    ///
+    /// This writes all bytes in `data` and then flushes the socket. IO errors
+    /// are mapped to `Error::Connection(... Io(...))`.
     pub async fn send(&mut self, data: &[u8]) -> Result<()> {
         self.stream
             .write_all(data)
@@ -51,7 +63,11 @@ impl AsyncConnection {
         Ok(())
     }
 
-    /// Reads exactly `n` bytes from the broker.
+    /// Reads exactly `n` bytes from the broker and returns them as `Bytes`.
+    ///
+    /// If `n` does not fit into a `usize` the call returns
+    /// `Error::Protocol(ProtocolError::Codec)`. Any IO error while reading is
+    /// mapped to `Error::Connection(... Io(...))`.
     pub async fn read_exact(&mut self, n: u64) -> Result<bytes::Bytes> {
         let n = usize::try_from(n).map_err(|_| Error::Protocol(ProtocolError::Codec))?;
         let mut buf = bytes::BytesMut::with_capacity(n);
@@ -64,6 +80,12 @@ impl AsyncConnection {
     }
 
     /// Sends a Kafka request frame and reads the response frame.
+    ///
+    /// The wire format expected is a 4-byte big-endian length followed by the
+    /// payload. This function writes the provided `request` bytes (which
+    /// should already include any framing required by the caller), then reads
+    /// a 4-byte response size and finally reads exactly that many bytes and
+    /// returns them.
     pub async fn request_response(&mut self, request: &[u8]) -> Result<bytes::Bytes> {
         self.send(request).await?;
 
@@ -82,6 +104,11 @@ impl AsyncConnection {
 }
 
 /// A pool of async connections to Kafka brokers.
+///
+/// This is a simple, in-memory map of host -> `AsyncConnection`. It is not
+/// concurrent; callers should hold a mutable reference to the pool while
+/// performing operations. The pool lazily creates connections when `get` is
+/// called.
 pub struct AsyncConnectionPool {
     connections: HashMap<String, AsyncConnection>,
 }
@@ -94,6 +121,10 @@ impl AsyncConnectionPool {
     }
 
     /// Gets or creates a connection to the specified host.
+    ///
+    /// If a connection for `host` does not exist it will be created and
+    /// inserted into the pool. The returned mutable reference is valid as long
+    /// as the borrow on `&mut self` is held by the caller.
     pub async fn get(&mut self, host: &str) -> Result<&mut AsyncConnection> {
         if !self.connections.contains_key(host) {
             let conn = AsyncConnection::connect(host).await?;

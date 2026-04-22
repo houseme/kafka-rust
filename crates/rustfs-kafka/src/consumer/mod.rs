@@ -342,9 +342,7 @@ impl Consumer {
                                 ..
                             } = e.as_ref()
                             {
-                                if let Some(fetch_state) =
-                                    self.state.fetch_offsets.get_mut(&tp)
-                                {
+                                if let Some(fetch_state) = self.state.fetch_offsets.get_mut(&tp) {
                                     debug!(
                                         "OffsetOutOfRange for {}:{}, resetting to highwatermark {}",
                                         &t.topic, tp.partition, p.highwatermark
