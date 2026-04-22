@@ -337,6 +337,22 @@ impl Consumer {
                     let data = match p.data() {
                         Ok(d) => d,
                         Err(e) => {
+                            if let Error::TopicPartitionError {
+                                error_code: KafkaCode::OffsetOutOfRange,
+                                ..
+                            } = e.as_ref()
+                            {
+                                if let Some(fetch_state) =
+                                    self.state.fetch_offsets.get_mut(&tp)
+                                {
+                                    debug!(
+                                        "OffsetOutOfRange for {}:{}, resetting to highwatermark {}",
+                                        &t.topic, tp.partition, p.highwatermark
+                                    );
+                                    fetch_state.offset = p.highwatermark;
+                                }
+                                continue;
+                            }
                             return Err(Error::from(Arc::clone(e)));
                         }
                     };

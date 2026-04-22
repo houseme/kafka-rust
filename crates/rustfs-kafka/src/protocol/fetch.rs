@@ -46,6 +46,8 @@ pub struct OwnedPartition {
     pub partition: i32,
     /// Decoded partition data or a decoding error.
     pub data: std::result::Result<OwnedData, Arc<Error>>,
+    /// High watermark offset for this partition (always available, even on errors).
+    pub highwatermark: i64,
 }
 
 /// Owned version of `protocol::fetch::Topic` with no lifetimes.
@@ -153,6 +155,7 @@ pub fn convert_fetch_response(kp_resp: FetchResponse, correlation_id: i32) -> Ow
                     OwnedPartition {
                         partition: p.partition_index,
                         data,
+                        highwatermark: p.high_watermark,
                     }
                 })
                 .collect();
@@ -301,6 +304,7 @@ mod tests {
                 highwatermark_offset: 50,
                 messages: vec![],
             }),
+            highwatermark: 50,
         };
         assert_eq!(partition.partition, 0);
         let data = partition.data().unwrap();
@@ -320,6 +324,7 @@ mod tests {
                     value: Bytes::from_static(b"hello"),
                 }],
             }),
+            highwatermark: 200,
         };
         assert_eq!(partition.partition, 3);
         let data = partition.data().unwrap();
@@ -333,6 +338,7 @@ mod tests {
         let partition = OwnedPartition {
             partition: 1,
             data: Err(err),
+            highwatermark: 0,
         };
         assert!(partition.data().is_err());
     }
@@ -348,6 +354,7 @@ mod tests {
                         highwatermark_offset: 10,
                         messages: vec![],
                     }),
+                    highwatermark: 10,
                 },
                 OwnedPartition {
                     partition: 1,
@@ -355,6 +362,7 @@ mod tests {
                         highwatermark_offset: 20,
                         messages: vec![],
                     }),
+                    highwatermark: 20,
                 },
             ],
         };
@@ -376,6 +384,7 @@ mod tests {
                         highwatermark_offset: 5,
                         messages: vec![],
                     }),
+                    highwatermark: 5,
                 }],
             }],
         };
