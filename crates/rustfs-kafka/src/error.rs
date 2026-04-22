@@ -417,14 +417,45 @@ impl KafkaCode {
         if n == 0 {
             return None;
         }
-        if n >= KafkaCode::OffsetOutOfRange as i16 && n <= KafkaCode::UnsupportedVersion as i16 {
-            if let Ok(code) = i8::try_from(n) {
-                #[allow(unsafe_code)]
-                return Some(unsafe { std::mem::transmute::<i8, KafkaCode>(code) });
-            }
-            return Some(KafkaCode::Unknown);
-        }
-        Some(KafkaCode::Unknown)
+        Some(match n {
+            -1 => KafkaCode::Unknown,
+            1 => KafkaCode::OffsetOutOfRange,
+            2 => KafkaCode::CorruptMessage,
+            3 => KafkaCode::UnknownTopicOrPartition,
+            4 => KafkaCode::InvalidMessageSize,
+            5 => KafkaCode::LeaderNotAvailable,
+            6 => KafkaCode::NotLeaderForPartition,
+            7 => KafkaCode::RequestTimedOut,
+            8 => KafkaCode::BrokerNotAvailable,
+            9 => KafkaCode::ReplicaNotAvailable,
+            10 => KafkaCode::MessageSizeTooLarge,
+            11 => KafkaCode::StaleControllerEpoch,
+            12 => KafkaCode::OffsetMetadataTooLarge,
+            13 => KafkaCode::NetworkException,
+            14 => KafkaCode::GroupLoadInProgress,
+            15 => KafkaCode::GroupCoordinatorNotAvailable,
+            16 => KafkaCode::NotCoordinatorForGroup,
+            17 => KafkaCode::InvalidTopic,
+            18 => KafkaCode::RecordListTooLarge,
+            19 => KafkaCode::NotEnoughReplicas,
+            20 => KafkaCode::NotEnoughReplicasAfterAppend,
+            21 => KafkaCode::InvalidRequiredAcks,
+            22 => KafkaCode::IllegalGeneration,
+            23 => KafkaCode::InconsistentGroupProtocol,
+            24 => KafkaCode::InvalidGroupId,
+            25 => KafkaCode::UnknownMemberId,
+            26 => KafkaCode::InvalidSessionTimeout,
+            27 => KafkaCode::RebalanceInProgress,
+            28 => KafkaCode::InvalidCommitOffsetSize,
+            29 => KafkaCode::TopicAuthorizationFailed,
+            30 => KafkaCode::GroupAuthorizationFailed,
+            31 => KafkaCode::ClusterAuthorizationFailed,
+            32 => KafkaCode::InvalidTimestamp,
+            33 => KafkaCode::UnsupportedSaslMechanism,
+            34 => KafkaCode::IllegalSaslState,
+            35 => KafkaCode::UnsupportedVersion,
+            _ => KafkaCode::Unknown,
+        })
     }
 }
 

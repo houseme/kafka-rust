@@ -4,10 +4,21 @@ if [[ -z "$START_TIMEOUT" ]]; then
     START_TIMEOUT=600
 fi
 
+if [[ -n "$KAFKA_CLIENT_SECURE" ]]; then
+    SECURE_PARAM_NAME="--command-config"
+    SECURE_PARAM_VALUE="$KAFKA_HOME/config/client-ssl.properties"
+else
+    SECURE_PARAM_NAME=""
+    SECURE_PARAM_VALUE=""
+fi
+
 start_timeout_exceeded=false
 count=0
 step=10
-while ! ss -lnt | grep -q ":${KAFKA_PORT}\b"; do
+while ! JMX_PORT='' "$KAFKA_HOME/bin/kafka-topics.sh" \
+    --bootstrap-server "localhost:${KAFKA_PORT}" \
+    $SECURE_PARAM_NAME $SECURE_PARAM_VALUE \
+    --list >/dev/null 2>&1; do
     echo "waiting for kafka to be ready"
     sleep $step;
     count=$(expr $count + $step)
@@ -20,14 +31,6 @@ done
 if $start_timeout_exceeded; then
     echo "Not able to auto-create topic (waited for $START_TIMEOUT sec)"
     exit 1
-fi
-
-if [[ ! -z "$KAFKA_CLIENT_SECURE" ]]; then
-    SECURE_PARAM_NAME="--command-config"
-    SECURE_PARAM_VALUE="$KAFKA_HOME/config/client-ssl.properties"
-else
-    SECURE_PARAM_NAME=""
-    SECURE_PARAM_VALUE=""
 fi
 
 if [[ -n $KAFKA_CREATE_TOPICS ]]; then

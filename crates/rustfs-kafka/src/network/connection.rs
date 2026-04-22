@@ -1,6 +1,6 @@
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use tracing::debug;
 
@@ -259,20 +259,33 @@ impl KafkaConnection {
     }
 
     fn new_tcp_stream(host: &str) -> std::io::Result<TcpStream> {
-        let addr: std::net::SocketAddr = host
-            .parse()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-        let domain = match addr {
-            std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
-            std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
-        };
-        let socket =
-            socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+        let mut last_err: Option<std::io::Error> = None;
+        for addr in host.to_socket_addrs()? {
+            let domain = match addr {
+                std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
+                std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
+            };
+            let socket = socket2::Socket::new(
+                domain,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )?;
 
-        socket.connect(&socket2::SockAddr::from(addr))?;
-        configure_tcp_socket(&socket)?;
+            match socket.connect(&socket2::SockAddr::from(addr)) {
+                Ok(()) => {
+                    configure_tcp_socket(&socket)?;
+                    return Ok(socket.into());
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
 
-        Ok(socket.into())
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("unable to resolve broker address: {host}"),
+            )
+        }))
     }
 
     #[cfg(not(feature = "security"))]

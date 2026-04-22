@@ -7,7 +7,7 @@ resolver = "3"
 
 [workspace.package]
 version = "0.22.0"
-authors = ["houseme", "houseme <houseme <husemecn@gmail.com>"]
+authors = ["heihutu <heihutu@gmail.com>", "houseme <husemecn@gmail.com>"]
 categories = ["api-bindings"]
 documentation = "https://docs.rs/rustfs-kafka/"
 edition = "2024"
@@ -18,33 +18,43 @@ repository = "https://github.com/houseme/kafka-rust"
 description = "Rust client for Apache Kafka"
 rust-version = "1.93.0"
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+needless_collect = "warn"
+redundant_clone = "warn"
+
 [workspace.dependencies]
+rustfs-kafka = { path = "crates/rustfs-kafka" }
+rustfs-kafka-async = { path = "crates/rustfs-kafka-async" }
 # Core dependencies
-socket2 = "0.6"
-fnv = "1"
-twox-hash = { version = "2", default-features = false, features = ["xxhash32", "std"] }
-bytes = "1"
-kafka-protocol = { version = "0.17", default-features = false, features = ["client"] }
-indexmap = "2"
-thiserror = "2"
-tracing = "0.1"
+socket2 = "0.6.3"
+fnv = "1.0.7"
+twox-hash = { version = "2.1.2", default-features = false, features = ["xxhash32", "std"] }
+bytes = "1.11.1"
+kafka-protocol = { version = "0.17.0", default-features = false, features = ["client"] }
+indexmap = "2.14.0"
+thiserror = "2.0.18"
+tracing = "0.1.44"
 
 # Optional dependencies (made optional in consuming crates via dep: syntax)
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
-webpki-roots = "1"
-rustls-native-certs = "0.8"
+rustls = { version = "0.23.38", default-features = false, features = ["logging", "std", "tls12"] }
+webpki-roots = "1.0.7"
+rustls-native-certs = "0.8.3"
 
 # Optional: metrics
-metrics = "0.24"
+metrics = "0.24.3"
 
 # Async runtime
-tokio = "1"
+tokio = "1.52.1"
 
 # Dev dependencies
-ctor = "0.4"
-getopts = "0.2"
+ctor = "0.10.0"
+getopts = "0.2.24"
 tracing-subscriber = "0.3"
-rand = "0.10"
-anyhow = "1"
-proptest = "1"
-criterion = { version = "0.6", features = ["html_reports"] }
+rand = "0.10.1"
+anyhow = "1.0.102"
+proptest = "1.11.0"
+criterion = { version = "0.8.2", features = ["html_reports"] }

@@ -5,7 +5,6 @@
 //! `GroupLoadInProgress` and `NotCoordinatorForGroup`.
 
 use std::collections::HashMap;
-use std::mem;
 use std::time::Instant;
 use tracing::debug;
 
@@ -86,16 +85,15 @@ where
     )
 }
 
-fn get_group_coordinator<'a>(
+fn get_group_coordinator(
     group: &str,
-    state: &'a mut super::state::ClientState,
+    state: &mut super::state::ClientState,
     conn_pool: &mut crate::network::Connections,
     config: &ClientConfig,
     now: Instant,
-) -> Result<&'a str> {
+) -> Result<String> {
     if let Some(host) = state.group_coordinator(group) {
-        #[allow(unsafe_code)]
-        return Ok(unsafe { mem::transmute::<&str, &'a str>(host) });
+        return Ok(host.to_owned());
     }
     let correlation_id = state.next_correlation_id();
     let (header, request) = crate::protocol::consumer::build_find_coordinator_request(
@@ -135,7 +133,7 @@ fn get_group_coordinator<'a>(
                     port: r.port,
                     host: r.host,
                 };
-                return Ok(state.set_group_coordinator(group, &gc));
+                return Ok(state.set_group_coordinator(group, &gc).to_owned());
             }
             e if KafkaCode::from_protocol(e) == Some(KafkaCode::GroupCoordinatorNotAvailable) => e,
             e => {
@@ -176,8 +174,8 @@ fn commit_offsets_inner(
         debug!("commit_offsets_kp: sending request to: {}", host);
 
         let conn = conn_pool
-            .get_conn(host, now)
-            .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
+            .get_conn(&host, now)
+            .map_err(|e| e.with_broker_context(&host, "OffsetCommit"))?;
         let (header, request) = crate::protocol::consumer::build_offset_commit_request(
             correlation_id,
             client_id,
@@ -193,12 +191,12 @@ fn commit_offsets_inner(
             &request,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
         )
-        .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
+        .map_err(|e| e.with_broker_context(&host, "OffsetCommit"))?;
         let kp_resp = kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
         )
-        .map_err(|e| e.with_broker_context(host, "OffsetCommit"))?;
+        .map_err(|e| e.with_broker_context(&host, "OffsetCommit"))?;
         let our_resp =
             crate::protocol::consumer::convert_offset_commit_response(kp_resp, correlation_id);
 
@@ -258,8 +256,8 @@ fn fetch_group_offsets_inner(
         debug!("fetch_group_offsets_kp: sending request to: {}", host);
 
         let conn = conn_pool
-            .get_conn(host, now)
-            .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
+            .get_conn(&host, now)
+            .map_err(|e| e.with_broker_context(&host, "OffsetFetch"))?;
         let (header, request) = crate::protocol::consumer::build_offset_fetch_request(
             correlation_id,
             client_id,
@@ -272,12 +270,12 @@ fn fetch_group_offsets_inner(
             &request,
             crate::protocol::API_VERSION_OFFSET_FETCH,
         )
-        .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
+        .map_err(|e| e.with_broker_context(&host, "OffsetFetch"))?;
         let kp_resp = kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_FETCH,
         )
-        .map_err(|e| e.with_broker_context(host, "OffsetFetch"))?;
+        .map_err(|e| e.with_broker_context(&host, "OffsetFetch"))?;
         let our_resp =
             crate::protocol::consumer::convert_offset_fetch_response(kp_resp, correlation_id);
 

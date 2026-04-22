@@ -52,8 +52,7 @@ pub(crate) fn kp_get_response<R: kafka_protocol::protocol::Decodable>(
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
 
     let mut bytes = Bytes::from(resp_bytes);
-    let _resp_header =
-        ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
+    let _resp_header = ResponseHeader::decode(&mut bytes, 0).map_err(|_| Error::codec())?;
 
     R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
 }

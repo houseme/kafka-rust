@@ -37,7 +37,12 @@ fi
 if [[ -z "${SECURES+x}" ]]; then
     SECURES=$DEFAULT_SECURES
 elif [[ -z "${SECURES}" ]]; then
-    SECURES=':'
+    SECURES=''
+fi
+
+IFS=':' read -r -a secure_modes <<< "$SECURES"
+if [[ ${#secure_modes[@]} -eq 0 ]]; then
+    secure_modes=("")
 fi
 
 for ver in $vers; do
@@ -47,10 +52,16 @@ for ver in $vers; do
     # Determine major version for KRaft vs ZooKeeper mode
     KAFKA_MAJOR="${ver%%.*}"
 
-    for secure in $SECURES; do
-        export KAFKA_CLIENT_SECURE=$secure
+    for secure in "${secure_modes[@]}"; do
+        if [[ -z "$secure" || "$secure" == "none" ]]; then
+            export KAFKA_CLIENT_SECURE=""
+            secure_label="<none>"
+        else
+            export KAFKA_CLIENT_SECURE="$secure"
+            secure_label="$secure"
+        fi
 
-        echo "Starting Docker: KAFKA_VER=$KAFKA_VER, SCALA_VER=$SCALA_VER, SECURE=$secure"
+        echo "Starting Docker: KAFKA_VER=$KAFKA_VER, SCALA_VER=$SCALA_VER, SECURE=$secure_label"
         cleanup
 
         if [[ "$KAFKA_MAJOR" -ge 4 ]]; then
@@ -69,7 +80,7 @@ for ver in $vers; do
 
         for compression in $COMPRESSIONS; do
             export KAFKA_CLIENT_COMPRESSION=$compression
-            echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure"
+            echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure_label"
             cargo test --features integration_tests
         done
 
