@@ -31,10 +31,11 @@ fn test_consumer_poll() {
     for attempt in 0..MAX_POLL_ATTEMPTS {
         messages = consumer.poll().unwrap();
         if let Some(ms) = messages.iter().next()
-            && !ms.messages().is_empty() {
-                message_set = Some(ms);
-                break;
-            }
+            && !ms.messages().is_empty()
+        {
+            message_set = Some(ms);
+            break;
+        }
         if attempt % 10 == 0 {
             debug!(
                 "still waiting for produced message in test_consumer_poll: attempt={}",

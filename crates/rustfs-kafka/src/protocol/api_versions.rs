@@ -478,10 +478,7 @@ mod tests {
         cache.insert("broker1:9092".to_string(), bv);
 
         // Known API keys are negotiated against broker ranges; unknown keys use fallback.
-        assert_eq!(
-            cache.get_or_fallback("broker1:9092", api_key::PRODUCE),
-            8
-        );
+        assert_eq!(cache.get_or_fallback("broker1:9092", api_key::PRODUCE), 8);
         assert_eq!(
             cache.get_or_fallback("broker1:9092", api_key::FETCH),
             API_VERSION_FETCH
