@@ -19,7 +19,7 @@ mod integration {
         let _ = tracing_subscriber::fmt::try_init();
     }
 
-    pub const LOCAL_KAFKA_BOOTSTRAP_HOST: &str = "localhost:9092";
+    pub const LOCAL_KAFKA_BOOTSTRAP_HOST: &str = "127.0.0.1:9092";
     pub const TEST_TOPIC_NAME: &str = "kafka-rust-test";
     pub const TEST_TOPIC_NAME_2: &str = "kafka-rust-test2";
     pub const TEST_GROUP_NAME: &str = "kafka-rust-tester";

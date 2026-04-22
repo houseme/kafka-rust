@@ -98,7 +98,7 @@ for ver in "${versions[@]}"; do
             fi
             export KAFKA_CLIENT_COMPRESSION=$compression
             echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure_label"
-            cargo test --features integration_tests
+            cargo test --features "integration_tests,kafka-protocol/snappy,kafka-protocol/gzip"
         done
 
         docker compose down
