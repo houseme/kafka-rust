@@ -45,6 +45,7 @@ rand.workspace = true
 anyhow.workspace = true
 proptest.workspace = true
 criterion.workspace = true
+temp-env.workspace = true
 
 [[bench]]
 name = "producer_throughput"

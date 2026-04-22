@@ -6,6 +6,7 @@ extern crate rand;
 
 #[cfg(feature = "integration_tests")]
 mod integration {
+    use temp_env::with_var;
     use tracing::debug;
 
     use rustfs_kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig};
@@ -78,5 +79,47 @@ mod integration {
     /// `SecurityConfig`.
     pub(crate) fn get_security_config() -> SecurityConfig {
         SecurityConfig::new().with_hostname_verification(false)
+    }
+
+    #[test]
+    fn test_parse_compression_from_temp_env() {
+        with_var(KAFKA_CLIENT_COMPRESSION, Some("gzip"), || {
+            let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
+            assert_eq!(Compression::GZIP, parse_compression(&compression));
+        });
+
+        with_var(KAFKA_CLIENT_COMPRESSION, Some("snappy"), || {
+            let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
+            assert_eq!(Compression::SNAPPY, parse_compression(&compression));
+        });
+
+        with_var(KAFKA_CLIENT_COMPRESSION, Some(""), || {
+            let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
+            assert_eq!(Compression::NONE, parse_compression(&compression));
+        });
+    }
+
+    #[test]
+    fn test_new_security_config_from_temp_env() {
+        with_var(KAFKA_CLIENT_SECURE, None::<&str>, || {
+            assert!(
+                new_security_config().is_none(),
+                "security config should be absent when env is unset"
+            );
+        });
+
+        with_var(KAFKA_CLIENT_SECURE, Some(""), || {
+            assert!(
+                new_security_config().is_none(),
+                "security config should be absent when env is empty"
+            );
+        });
+
+        with_var(KAFKA_CLIENT_SECURE, Some("secure"), || {
+            assert!(
+                new_security_config().is_some(),
+                "security config should exist when env is non-empty"
+            );
+        });
     }
 }
