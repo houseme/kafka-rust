@@ -527,6 +527,21 @@ pub struct MessageSets {
 }
 
 impl MessageSets {
+    /// Creates message sets from owned fetch responses.
+    ///
+    /// This is primarily useful for async wrappers that already obtained
+    /// owned fetch responses and need to expose the standard consumer view.
+    #[must_use]
+    pub fn from_fetch_responses(responses: Vec<fetch_kp::OwnedFetchResponse>) -> Self {
+        let empty = !responses
+            .iter()
+            .flat_map(|r| r.topics.iter())
+            .flat_map(|t| t.partitions.iter())
+            .filter_map(|p| p.data().ok())
+            .any(|d| !d.messages.is_empty());
+        Self { responses, empty }
+    }
+
     /// Determines efficiently whether there are any consumeable
     /// messages in this data set.
     #[must_use]
