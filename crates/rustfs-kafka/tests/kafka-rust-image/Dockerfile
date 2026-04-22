@@ -7,9 +7,19 @@ ARG scala_version
 
 ENV KAFKA_VERSION=$kafka_version SCALA_VERSION=$scala_version
 
-RUN export KAFKA_TGZ="https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz" \
-    && wget -q ${KAFKA_TGZ} -O - | tar xz -C /opt \
-    && ln -s /opt/kafka_${SCALA_VERSION}-${KAFKA_VERSION} /opt/kafka
+COPY preloaded/ /tmp/kafka-preloaded/
+RUN set -eux; \
+    KAFKA_ARCHIVE="kafka_${SCALA_VERSION}-${KAFKA_VERSION}.tgz"; \
+    LOCAL_TGZ="/tmp/kafka-preloaded/${KAFKA_ARCHIVE}"; \
+    REMOTE_TGZ="https://archive.apache.org/dist/kafka/${KAFKA_VERSION}/${KAFKA_ARCHIVE}"; \
+    if [ -f "${LOCAL_TGZ}" ]; then \
+        echo "Using preloaded Kafka archive: ${LOCAL_TGZ}"; \
+        tar xzf "${LOCAL_TGZ}" -C /opt; \
+    else \
+        echo "Preloaded archive not found, downloading from: ${REMOTE_TGZ}"; \
+        wget -q "${REMOTE_TGZ}" -O - | tar xz -C /opt; \
+    fi; \
+    ln -s /opt/kafka_${SCALA_VERSION}-${KAFKA_VERSION} /opt/kafka
 
 RUN mkdir -p /kafka/logs /kafka/kraft-combined-logs
 

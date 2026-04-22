@@ -19,3 +19,4 @@ Thumbs.db
 docs/refactoring.md
 docs/tasks
 docs/architecture-improvement-plan.md
+crates/rustfs-kafka/tests/kafka-rust-image/preloaded/*.tgz

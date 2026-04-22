@@ -22,11 +22,44 @@ DEFAULT_VERS='3.9.2:4.1.2:4.2.0'
 DEFAULT_COMPRESSIONS='NONE:SNAPPY:GZIP'
 DEFAULT_SECURES=':secure'
 DEFAULT_SCALA_VER='2.13'
+PRELOADED_DIR="$SCRIPT_DIR/kafka-rust-image/preloaded"
 
 cleanup() {
     docker compose down 2>/dev/null || true
 }
 trap cleanup EXIT
+
+preload_kafka_archive() {
+    local ver="$1"
+    local archive="kafka_${SCALA_VER}-${ver}.tgz"
+    local target="${PRELOADED_DIR}/${archive}"
+    local tmp_target="${target}.part"
+    local mirrors=(
+        "https://mirrors.tuna.tsinghua.edu.cn/apache/kafka/${ver}/${archive}"
+        "https://mirrors.ustc.edu.cn/apache/kafka/${ver}/${archive}"
+        "https://archive.apache.org/dist/kafka/${ver}/${archive}"
+    )
+
+    mkdir -p "$PRELOADED_DIR"
+    if [[ -s "$target" ]]; then
+        echo "Using cached Kafka archive: $target"
+        return 0
+    fi
+
+    rm -f "$tmp_target"
+    for url in "${mirrors[@]}"; do
+        echo "Preloading Kafka archive from: $url"
+        if curl -fL --retry 3 --retry-delay 2 --retry-max-time 900 "$url" -o "$tmp_target"; then
+            mv "$tmp_target" "$target"
+            echo "Kafka archive preloaded: $target"
+            return 0
+        fi
+    done
+
+    echo "Failed to preload Kafka archive for version ${ver}" >&2
+    rm -f "$tmp_target"
+    return 1
+}
 
 vers="${*:-$DEFAULT_VERS}"
 
@@ -62,6 +95,7 @@ fi
 for ver in "${versions[@]}"; do
     export KAFKA_VER=$ver
     export SCALA_VER=$DEFAULT_SCALA_VER
+    preload_kafka_archive "$ver"
 
     # Determine major version for KRaft vs ZooKeeper mode
     KAFKA_MAJOR="${ver%%.*}"

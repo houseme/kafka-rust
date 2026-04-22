@@ -88,6 +88,34 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Preload Kafka archive for local image build
+        run: |
+          ARCHIVE="kafka_2.13-${{ matrix.KAFKA_VER }}.tgz"
+          TARGET_DIR="crates/rustfs-kafka/tests/kafka-rust-image/preloaded"
+          TARGET="${TARGET_DIR}/${ARCHIVE}"
+          TMP_TARGET="${TARGET}.part"
+          MIRRORS=(
+            "https://mirrors.tuna.tsinghua.edu.cn/apache/kafka/${{ matrix.KAFKA_VER }}/${ARCHIVE}"
+            "https://mirrors.ustc.edu.cn/apache/kafka/${{ matrix.KAFKA_VER }}/${ARCHIVE}"
+            "https://archive.apache.org/dist/kafka/${{ matrix.KAFKA_VER }}/${ARCHIVE}"
+          )
+          mkdir -p "${TARGET_DIR}"
+          if [ ! -s "${TARGET}" ]; then
+            rm -f "${TMP_TARGET}"
+            for URL in "${MIRRORS[@]}"; do
+              echo "Preloading ${URL}"
+              if curl -fL --retry 3 --retry-delay 2 --retry-max-time 900 "${URL}" -o "${TMP_TARGET}"; then
+                mv "${TMP_TARGET}" "${TARGET}"
+                break
+              fi
+            done
+            if [ ! -s "${TARGET}" ]; then
+              echo "Failed to preload ${ARCHIVE}" >&2
+              exit 1
+            fi
+          else
+            echo "Using cached archive ${TARGET}"
+          fi
       - name: Run integration tests
         run: |
           export DOCKER_BUILDKIT=1

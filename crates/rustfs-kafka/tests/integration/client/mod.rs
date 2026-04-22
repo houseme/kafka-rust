@@ -52,7 +52,16 @@ fn test_kafka_client_load_metadata() {
     correct_topic_names.insert(TEST_TOPIC_NAME);
     correct_topic_names.insert(TEST_TOPIC_NAME_2);
 
-    assert_eq!(correct_topic_names, topic_names);
+    // Other integration tests may create additional temporary topics in the
+    // same broker. We only require the baseline fixture topics to be present.
+    assert!(
+        correct_topic_names
+            .iter()
+            .all(|topic_name| topic_names.contains(topic_name)),
+        "expected fixture topics {:?} to be subset of discovered topics {:?}",
+        correct_topic_names,
+        topic_names
+    );
 
     // partitions
     let mut topic_partitions = topics.partitions(TEST_TOPIC_NAME).unwrap().available_ids();
