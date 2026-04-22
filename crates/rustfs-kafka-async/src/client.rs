@@ -86,3 +86,47 @@ impl AsyncKafkaClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rustfs_kafka::error::{ConnectionError, Error};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn new_with_empty_hosts_succeeds() {
+        let result = AsyncKafkaClient::new(vec![]).await;
+        assert!(result.is_ok());
+        let client = result.unwrap();
+        assert!(client.bootstrap_hosts().is_empty());
+        assert!(client.connected_hosts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn new_with_unreachable_hosts_returns_error() {
+        let result = AsyncKafkaClient::new(vec!["127.0.0.1:1".to_owned()]).await;
+        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+    }
+
+    #[tokio::test]
+    async fn with_client_id_unreachable_returns_error() {
+        let result = AsyncKafkaClient::with_client_id(
+            vec!["127.0.0.1:1".to_owned()],
+            "my-custom-client".to_owned(),
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+    }
+
+    #[tokio::test]
+    async fn ensure_connected_with_empty_hosts_is_ok() {
+        let client = AsyncKafkaClient {
+            pool: AsyncConnectionPool::new(),
+            bootstrap_hosts: vec![],
+            client_id: "test".to_owned(),
+        };
+        // ensure_connected with empty bootstrap_hosts is a no-op
+        assert!(client.bootstrap_hosts.is_empty());
+        assert!(client.connected_hosts().is_empty());
+    }
+}

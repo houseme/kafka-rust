@@ -114,3 +114,37 @@ impl Default for AsyncConnectionPool {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rustfs_kafka::error::ConnectionError;
+
+    use super::*;
+
+    #[test]
+    fn pool_new_creates_empty_pool() {
+        let pool = AsyncConnectionPool::new();
+        assert!(pool.hosts().is_empty());
+    }
+
+    #[test]
+    fn pool_default_matches_new() {
+        let pool = AsyncConnectionPool::default();
+        assert!(pool.hosts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn connect_unreachable_host_returns_io_error() {
+        let result = AsyncConnection::connect("127.0.0.1:1").await;
+        assert!(matches!(result, Err(Error::Connection(ConnectionError::Io(_)))));
+    }
+
+    #[tokio::test]
+    async fn pool_get_unreachable_host_propagates_error() {
+        let mut pool = AsyncConnectionPool::new();
+        let result = pool.get("127.0.0.1:1").await;
+        assert!(result.is_err());
+        // Pool should remain empty after failed connect
+        assert!(pool.hosts().is_empty());
+    }
+}

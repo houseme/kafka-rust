@@ -187,3 +187,25 @@ impl Drop for AsyncProducer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rustfs_kafka::error::{ConnectionError, Error};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn from_hosts_fails_with_unreachable_hosts() {
+        let result = AsyncProducer::from_hosts(vec!["127.0.0.1:1".to_owned()]).await;
+        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+    }
+
+    #[tokio::test]
+    async fn new_fails_with_unreachable_hosts() {
+        // AsyncKafkaClient with empty hosts succeeds (no connections attempted),
+        // but Producer::from_hosts will fail because it needs actual connections
+        let client = AsyncKafkaClient::new(vec![]).await.unwrap();
+        let result = AsyncProducer::new(client).await;
+        assert!(result.is_err());
+    }
+}

@@ -1,21 +1,29 @@
 [package]
 name = "rustfs-kafka-async"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 categories = ["api-bindings", "asynchronous"]
 edition.workspace = true
 keywords = ["kafka", "queue", "async", "tokio"]
 license.workspace = true
-readme = "README.md"
+readme.workspace = true
 repository.workspace = true
 description = "Async Kafka client built on tokio"
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
-rustfs-kafka = { path = "../rustfs-kafka" }
+rustfs-kafka = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "rt", "macros"] }
 tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber.workspace = true
+ctor.workspace = true

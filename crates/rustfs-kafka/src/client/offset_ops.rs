@@ -94,6 +94,7 @@ fn get_group_coordinator<'a>(
     now: Instant,
 ) -> Result<&'a str> {
     if let Some(host) = state.group_coordinator(group) {
+        #[allow(unsafe_code)]
         return Ok(unsafe { mem::transmute::<&str, &'a str>(host) });
     }
     let correlation_id = state.next_correlation_id();

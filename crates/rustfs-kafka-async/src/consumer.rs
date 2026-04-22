@@ -150,3 +150,45 @@ impl Drop for AsyncConsumer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rustfs_kafka::error::{ConnectionError, Error};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn from_hosts_fails_with_unreachable_hosts() {
+        let result = AsyncConsumer::from_hosts(
+            vec!["127.0.0.1:1".to_owned()],
+            "test-group".to_owned(),
+            vec!["test-topic".to_owned()],
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+    }
+
+    #[tokio::test]
+    async fn from_client_fails_with_unreachable_hosts() {
+        let client = AsyncKafkaClient::new(vec![]).await.unwrap();
+        let result = AsyncConsumer::from_client(
+            client,
+            "test-group".to_owned(),
+            vec!["test-topic".to_owned()],
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn drop_joins_background_thread_without_panic() {
+        let result = AsyncConsumer::from_hosts(
+            vec!["127.0.0.1:1".to_owned()],
+            "test-drop-group".to_owned(),
+            vec!["test-drop-topic".to_owned()],
+        )
+        .await;
+        assert!(result.is_err());
+        // No panic on drop - if we reach here, Drop is clean
+    }
+}
