@@ -520,6 +520,7 @@ impl MessageSets {
         self.empty
     }
 
+    /// Returns an iterator over the contained `MessageSet`s.
     #[must_use]
     pub fn iter(&self) -> MessageSetsIter<'_> {
         MessageSetsIter::new(&self.responses)
@@ -545,24 +546,28 @@ pub struct MessageSet {
 }
 
 impl MessageSet {
+    /// Returns the topic name for this message set.
     #[inline]
     #[must_use]
     pub fn topic(&self) -> &str {
         &self.topic
     }
 
-    #[inline]
+    /// Returns the partition id for this message set.
     #[must_use]
+    #[inline]
     pub fn partition(&self) -> i32 {
         self.partition
     }
 
-    #[inline]
+    /// Returns a slice of messages contained in this set.
     #[must_use]
+    #[inline]
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
+    /// Returns an iterator over the messages in this set.
     #[inline]
     pub fn iter(&self) -> slice::Iter<'_, Message> {
         self.messages.iter()

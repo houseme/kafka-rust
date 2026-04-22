@@ -3,8 +3,8 @@
 //! Handles `JoinGroup`, `SyncGroup`, Heartbeat, and `LeaveGroup` operations
 //! for a consumer participating in a consumer group.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -61,16 +61,19 @@ impl GroupCoordinator {
         }
     }
 
+    /// Returns the current member id assigned by the group coordinator, if any.
     #[must_use]
     pub fn member_id(&self) -> Option<&str> {
         self.member_id.as_deref()
     }
 
+    /// Returns the current generation id for this consumer group membership, if any.
     #[must_use]
     pub fn generation_id(&self) -> Option<i32> {
         self.generation_id
     }
 
+    /// Returns `true` if this member is the group leader.
     #[must_use]
     pub fn is_leader(&self) -> bool {
         self.leader_id
@@ -79,6 +82,7 @@ impl GroupCoordinator {
             .is_some_and(|(leader, member)| leader == member)
     }
 
+    /// Returns the identifier of the consumer group managed by this coordinator.
     #[must_use]
     pub fn group_id(&self) -> &str {
         &self.group_id

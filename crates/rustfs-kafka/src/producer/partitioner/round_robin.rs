@@ -11,6 +11,7 @@ pub struct RoundRobinPartitioner {
 }
 
 impl RoundRobinPartitioner {
+    /// Create a new `RoundRobinPartitioner` with an initial counter of zero.
     #[must_use]
     pub fn new() -> Self {
         Self {

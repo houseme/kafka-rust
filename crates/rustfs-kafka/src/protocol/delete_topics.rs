@@ -14,13 +14,16 @@ pub const API_VERSION_DELETE_TOPICS: i16 = 2;
 /// Result of deleting a single topic.
 #[derive(Debug, Clone)]
 pub struct DeleteTopicResult {
+    /// Topic name targeted for deletion.
     pub name: String,
+    /// Broker error code for the delete operation (0 == success).
     pub error_code: i16,
 }
 
 /// Parsed response from a `DeleteTopics` request.
 #[derive(Debug, Clone)]
 pub struct DeleteTopicsResponseData {
+    /// Per-topic results returned by the broker for the delete request.
     pub results: Vec<DeleteTopicResult>,
 }
 

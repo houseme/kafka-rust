@@ -18,6 +18,8 @@ pub struct StickyPartitioner {
 }
 
 impl StickyPartitioner {
+    /// Create a new `StickyPartitioner` that sticks to a chosen partition for
+    /// `batch_size` messages before selecting a new partition.
     #[must_use]
     pub fn new(batch_size: usize) -> Self {
         Self {

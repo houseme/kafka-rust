@@ -60,6 +60,10 @@ impl IntoIterator for Headers {
 /// `Record::value` represent.  This leaves the choice of the types
 /// for `key` and `value` with the client.
 pub trait AsBytes {
+    /// Return the byte slice representation of this value.
+    ///
+    /// Implementors should return a stable slice view over the underlying
+    /// data. Empty values may return an empty slice.
     fn as_bytes(&self) -> &[u8];
 }
 

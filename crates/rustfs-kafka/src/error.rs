@@ -24,60 +24,74 @@ use std::{io, result, sync::Arc};
 
 use thiserror::Error;
 
+/// Alias for results returned by functions in this crate.
 pub type Result<T> = result::Result<T, Error>;
 
 // --------------------------------------------------------------------
 // Sub-error types
 // --------------------------------------------------------------------
 
-/// Errors from the network/connection layer.
+/// Errors originating from the network/connection layer.
 #[derive(Debug, Error)]
 pub enum ConnectionError {
+    /// Underlying I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// TLS-related error (available when `security` feature is enabled).
     #[cfg(feature = "security")]
     #[error("TLS error: {0}")]
     Tls(String),
 
+    /// A connection-level timeout occurred.
     #[error("Connection timeout after {0:?}")]
     Timeout(Duration),
 
+    /// No reachable host was found for the requested operation.
     #[error("No host reachable")]
     NoHostReachable,
 }
 
-/// Errors from the protocol layer (encoding, decoding, version negotiation).
+/// Errors from the protocol layer (encoding, decoding, and version negotiation).
 #[derive(Debug, Clone, Error)]
 pub enum ProtocolError {
+    /// Protocol version is not supported.
     #[error("Unsupported protocol version")]
     UnsupportedVersion,
 
+    /// Compression format is not supported by this client.
     #[error("Unsupported compression format")]
     UnsupportedCompression,
 
+    /// Unexpected end of input while decoding protocol data.
     #[error("Unexpected end of data")]
     UnexpectedEOF,
 
+    /// Generic encoding/decoding error.
     #[error("Encoding/decoding error")]
     Codec,
 
+    /// Error decoding a string from bytes.
     #[error("String decoding error")]
     StringDecode,
 
+    /// Invalid duration value encountered while decoding.
     #[error("Invalid duration")]
     InvalidDuration,
 }
 
-/// Errors from the consumer layer.
+/// Errors specific to the consumer high-level API.
 #[derive(Debug, Clone, Error)]
 pub enum ConsumerError {
+    /// No topics have been assigned to the consumer.
     #[error("No topic assigned")]
     NoTopicsAssigned,
 
+    /// Offset storage (Kafka/Zookeeper) is not configured for the consumer.
     #[error("Offset storage not configured")]
     UnsetOffsetStorage,
 
+    /// Consumer group id is not set for operations that require it.
     #[error("Group ID not configured")]
     UnsetGroupId,
 }
@@ -86,43 +100,55 @@ pub enum ConsumerError {
 // Main Error type
 // --------------------------------------------------------------------
 
+/// The crate's primary error type, encompassing network, protocol,
+/// server-side and client-side errors.
 #[derive(Debug, Error)]
 pub enum Error {
     // === Network layer ===
+    /// Wrapper for connection-level errors.
     #[error("Connection error: {0}")]
     Connection(#[source] ConnectionError),
 
     // === Protocol layer ===
+    /// Wrapper for protocol encoding/decoding/version negotiation errors.
     #[error("Protocol error: {0}")]
     Protocol(#[source] ProtocolError),
 
     // === Kafka server ===
-    /// An error as reported by a remote Kafka server
+    /// Represents an error code returned by a Kafka broker.
     #[error("Kafka Error ({0:?})")]
     Kafka(KafkaCode),
 
     // === Client configuration ===
+    /// Configuration-related error with a human message.
     #[error("Configuration error: {0}")]
     Config(String),
 
     // === Consumer ===
+    /// Errors arising from the consumer high-level API.
     #[error("Consumer error: {0}")]
     Consumer(#[source] ConsumerError),
 
     // === Context wrappers ===
-    /// An error when transmitting a request for a particular topic and partition.
+    /// Error contextualized to a specific topic and partition.
     #[error("Topic Partition Error ({topic_name:?}, {partition_id:?}, {error_code:?})")]
     TopicPartitionError {
+        /// Topic name associated with the error.
         topic_name: String,
+        /// Partition id associated with the error.
         partition_id: i32,
+        /// The Kafka error code returned by the broker.
         error_code: KafkaCode,
     },
 
-    /// An error from a broker request that preserves the request context.
+    /// Error from a broker request which preserves broker context for debugging.
     #[error("Broker request to {broker} failed ({api_key}): {source}")]
     BrokerRequestError {
+        /// Broker host (host:port) where the request failed.
         broker: String,
+        /// The API key name for the failing request.
         api_key: &'static str,
+        /// The wrapped underlying error (source).
         #[source]
         source: Box<Self>,
     },
