@@ -1,7 +1,8 @@
 use super::*;
-
 use rustfs_kafka::error;
 use rustfs_kafka::producer::Record;
+use std::thread::sleep;
+use std::time::Duration;
 
 /// Tests that consuming one message works
 #[test]
@@ -90,7 +91,7 @@ fn test_consumer_commit_messageset() {
 
     let mut num_messages = 0;
 
-    const MAX_POLL_ATTEMPTS: usize = 600;
+    const MAX_POLL_ATTEMPTS: usize = 2000;
     let mut reached_target = false;
     for attempt in 0..MAX_POLL_ATTEMPTS {
         for ms in consumer.poll().unwrap().iter() {
@@ -112,6 +113,7 @@ fn test_consumer_commit_messageset() {
                 attempt, num_messages
             );
         }
+        sleep(Duration::from_millis(20));
     }
 
     assert!(
@@ -185,7 +187,7 @@ fn test_consumer_commit_messageset_no_consumes() {
 
     let mut num_messages = 0;
 
-    const MAX_POLL_ATTEMPTS: usize = 600;
+    const MAX_POLL_ATTEMPTS: usize = 2000;
     let mut reached_target = false;
     for attempt in 0..MAX_POLL_ATTEMPTS {
         for ms in consumer.poll().unwrap().iter() {
@@ -209,6 +211,7 @@ fn test_consumer_commit_messageset_no_consumes() {
                 attempt, num_messages
             );
         }
+        sleep(Duration::from_millis(20));
     }
 
     assert!(
