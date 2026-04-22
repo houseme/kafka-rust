@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Native async consumer now initializes start offsets via group `OffsetFetch`, with fallback to configured `FetchOffset` strategy.
 - Native async consumer now retries recoverable `Fetch`/`Commit` failures by refreshing leader metadata or group coordinator.
 - Native async consumer retry policy is now configurable (attempts + backoff) via async builder settings.
+- Native async consumer now exposes error observability: cumulative error-class/code counters and latest error snapshot.
 - Reworked `AsyncProducer` internals to run synchronous producer operations on a dedicated background thread.
 - Moved async producer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.
 - Moved async consumer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.

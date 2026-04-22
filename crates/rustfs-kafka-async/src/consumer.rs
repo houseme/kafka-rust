@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info};
 
@@ -65,11 +66,39 @@ struct NativeConsumer {
     correlation: i32,
     retry_attempts: usize,
     retry_backoff: Duration,
+    observability: NativeConsumerObservability,
 }
 
 enum AsyncConsumerMode {
     Native(Box<NativeConsumer>),
     Bridged(BridgedConsumer),
+}
+
+/// Native consumer error snapshot for diagnostics.
+#[derive(Debug, Clone)]
+pub struct NativeConsumerErrorSnapshot {
+    pub phase: String,
+    pub class: String,
+    pub kafka_code: Option<KafkaCode>,
+    pub message: String,
+    pub timestamp_unix_ms: u128,
+}
+
+/// Native consumer error statistics.
+#[derive(Debug, Clone)]
+pub struct NativeConsumerErrorStats {
+    pub total_errors: u64,
+    pub kafka_code_counts: HashMap<String, u64>,
+    pub class_counts: HashMap<String, u64>,
+    pub last_error: Option<NativeConsumerErrorSnapshot>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct NativeConsumerObservability {
+    total_errors: u64,
+    kafka_code_counts: HashMap<String, u64>,
+    class_counts: HashMap<String, u64>,
+    last_error: Option<NativeConsumerErrorSnapshot>,
 }
 
 /// An async Kafka consumer.
@@ -185,6 +214,7 @@ impl AsyncConsumerBuilder {
                     correlation: 1,
                     retry_attempts: self.native_retry_attempts,
                     retry_backoff: self.native_retry_backoff,
+                    observability: NativeConsumerObservability::default(),
                 })),
             });
         }
@@ -257,6 +287,7 @@ impl AsyncConsumer {
                 correlation: 1,
                 retry_attempts: DEFAULT_NATIVE_RETRY_ATTEMPTS,
                 retry_backoff: Duration::from_millis(DEFAULT_NATIVE_RETRY_BACKOFF_MS),
+                observability: NativeConsumerObservability::default(),
             })),
         })
     }
@@ -282,6 +313,28 @@ impl AsyncConsumer {
         match self.mode {
             AsyncConsumerMode::Native(_) => Ok(()),
             AsyncConsumerMode::Bridged(bridged) => bridged.close().await,
+        }
+    }
+
+    /// Returns native consumer error statistics when running in native mode.
+    #[must_use]
+    pub fn native_error_stats(&self) -> Option<NativeConsumerErrorStats> {
+        match &self.mode {
+            AsyncConsumerMode::Native(native) => Some(native.error_stats()),
+            AsyncConsumerMode::Bridged(_) => None,
+        }
+    }
+
+    /// Resets native consumer error statistics.
+    ///
+    /// Returns `true` when reset was performed (native mode), otherwise `false`.
+    pub fn reset_native_error_stats(&mut self) -> bool {
+        match &mut self.mode {
+            AsyncConsumerMode::Native(native) => {
+                native.reset_error_stats();
+                true
+            }
+            AsyncConsumerMode::Bridged(_) => false,
         }
     }
 }
@@ -371,12 +424,16 @@ impl NativeConsumer {
             match self.poll_once().await {
                 Ok(data) => return Ok(data),
                 Err(err) if attempt < self.retry_attempts && should_retry_poll(&err) => {
+                    self.record_error("poll", &err);
                     self.leaders.clear();
                     self.refresh_metadata().await?;
                     tokio::time::sleep(self.retry_backoff).await;
                     continue;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    self.record_error("poll", &err);
+                    return Err(err);
+                }
             }
         }
         Err(Error::Kafka(KafkaCode::Unknown))
@@ -457,12 +514,16 @@ impl NativeConsumer {
             match self.commit_once().await {
                 Ok(()) => return Ok(()),
                 Err(err) if attempt < self.retry_attempts && should_retry_commit(&err) => {
+                    self.record_error("commit", &err);
                     self.coordinator = None;
                     self.refresh_coordinator().await?;
                     tokio::time::sleep(self.retry_backoff).await;
                     continue;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    self.record_error("commit", &err);
+                    return Err(err);
+                }
             }
         }
         Err(Error::Kafka(KafkaCode::Unknown))
@@ -717,6 +778,40 @@ impl NativeConsumer {
         }
 
         Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+    }
+
+    fn error_stats(&self) -> NativeConsumerErrorStats {
+        NativeConsumerErrorStats {
+            total_errors: self.observability.total_errors,
+            kafka_code_counts: self.observability.kafka_code_counts.clone(),
+            class_counts: self.observability.class_counts.clone(),
+            last_error: self.observability.last_error.clone(),
+        }
+    }
+
+    fn reset_error_stats(&mut self) {
+        self.observability = NativeConsumerObservability::default();
+    }
+
+    fn record_error(&mut self, phase: &str, err: &Error) {
+        self.observability.total_errors = self.observability.total_errors.saturating_add(1);
+        let class = error_class(err);
+        *self
+            .observability
+            .class_counts
+            .entry(class.clone())
+            .or_insert(0) += 1;
+        if let Some(code) = kafka_code_from_error(err) {
+            let key = format!("{code:?}");
+            *self.observability.kafka_code_counts.entry(key).or_insert(0) += 1;
+        }
+        self.observability.last_error = Some(NativeConsumerErrorSnapshot {
+            phase: phase.to_owned(),
+            class,
+            kafka_code: kafka_code_from_error(err),
+            message: err.to_string(),
+            timestamp_unix_ms: now_unix_ms(),
+        });
     }
 }
 
@@ -1079,6 +1174,33 @@ fn should_retry_commit(err: &Error) -> bool {
         Error::Connection(_) => true,
         _ => false,
     }
+}
+
+fn kafka_code_from_error(err: &Error) -> Option<KafkaCode> {
+    match err {
+        Error::Kafka(code) => Some(*code),
+        Error::TopicPartitionError { error_code, .. } => Some(*error_code),
+        Error::BrokerRequestError { source, .. } => kafka_code_from_error(source),
+        _ => None,
+    }
+}
+
+fn error_class(err: &Error) -> String {
+    match err {
+        Error::Kafka(_) => "kafka".to_owned(),
+        Error::Connection(_) => "connection".to_owned(),
+        Error::Protocol(_) => "protocol".to_owned(),
+        Error::Config(_) => "config".to_owned(),
+        Error::Consumer(_) => "consumer".to_owned(),
+        Error::TopicPartitionError { .. } => "topic_partition".to_owned(),
+        Error::BrokerRequestError { .. } => "broker_request".to_owned(),
+    }
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
 }
 
 fn decode_partition_records(
