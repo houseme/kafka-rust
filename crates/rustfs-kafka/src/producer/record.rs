@@ -20,7 +20,8 @@ impl Headers {
 
     /// Adds a header key-value pair.
     pub fn insert(&mut self, key: impl Into<String>, value: impl AsRef<[u8]>) {
-        self.0.push((key.into(), Bytes::copy_from_slice(value.as_ref())));
+        self.0
+            .push((key.into(), Bytes::copy_from_slice(value.as_ref())));
     }
 
     /// Returns the number of headers.

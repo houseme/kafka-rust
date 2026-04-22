@@ -142,11 +142,9 @@ fn get_group_coordinator(
             crate::protocol::API_VERSION_FIND_COORDINATOR,
         )
         .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
-        let kp_resp = decode_find_coordinator_response(
-            conn,
-            crate::protocol::API_VERSION_FIND_COORDINATOR,
-        )
-        .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
+        let kp_resp =
+            decode_find_coordinator_response(conn, crate::protocol::API_VERSION_FIND_COORDINATOR)
+                .map_err(|e| e.with_broker_context("any", "FindCoordinator"))?;
         let r =
             crate::protocol::consumer::convert_find_coordinator_response(&kp_resp, correlation_id);
         let retry_code = match r.error {
@@ -395,7 +393,6 @@ fn kp_get_response<
     conn: &mut crate::network::KafkaConnection,
     api_version: i16,
 ) -> Result<R> {
-    
     use kafka_protocol::messages::ResponseHeader;
     use kafka_protocol::protocol::Decodable;
 

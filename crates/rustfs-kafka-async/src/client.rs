@@ -105,7 +105,10 @@ mod tests {
     #[tokio::test]
     async fn new_with_unreachable_hosts_returns_error() {
         let result = AsyncKafkaClient::new(vec!["127.0.0.1:1".to_owned()]).await;
-        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
     }
 
     #[tokio::test]
@@ -115,7 +118,10 @@ mod tests {
             "my-custom-client".to_owned(),
         )
         .await;
-        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
     }
 
     #[tokio::test]

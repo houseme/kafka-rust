@@ -137,7 +137,10 @@ mod tests {
     #[tokio::test]
     async fn connect_unreachable_host_returns_io_error() {
         let result = AsyncConnection::connect("127.0.0.1:1").await;
-        assert!(matches!(result, Err(Error::Connection(ConnectionError::Io(_)))));
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::Io(_)))
+        ));
     }
 
     #[tokio::test]

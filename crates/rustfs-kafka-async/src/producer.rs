@@ -176,7 +176,8 @@ impl AsyncProducer {
         value: &Bytes,
         partition: i32,
     ) -> Result<()> {
-        let record = Record::from_key_value(topic, key.as_ref(), value.as_ref()).with_partition(partition);
+        let record =
+            Record::from_key_value(topic, key.as_ref(), value.as_ref()).with_partition(partition);
         producer.send(&record)
     }
 }
@@ -198,7 +199,10 @@ mod tests {
     #[tokio::test]
     async fn from_hosts_fails_with_unreachable_hosts() {
         let result = AsyncProducer::from_hosts(vec!["127.0.0.1:1".to_owned()]).await;
-        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
     }
 
     #[tokio::test]

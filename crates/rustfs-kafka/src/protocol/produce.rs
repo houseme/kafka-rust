@@ -95,7 +95,9 @@ pub fn build_produce_request(
                 .collect();
 
             kafka_protocol::messages::produce_request::TopicProduceData::default()
-                .with_name(TopicName::from(StrBytes::from_string(topic_name.to_owned())))
+                .with_name(TopicName::from(StrBytes::from_string(
+                    topic_name.to_owned(),
+                )))
                 .with_partition_data(partition_data)
         })
         .collect();

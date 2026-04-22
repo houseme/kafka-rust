@@ -165,7 +165,10 @@ mod tests {
             vec!["test-topic".to_owned()],
         )
         .await;
-        assert!(matches!(result, Err(Error::Connection(ConnectionError::NoHostReachable))));
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
     }
 
     #[tokio::test]

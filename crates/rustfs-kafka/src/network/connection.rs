@@ -267,11 +267,8 @@ impl KafkaConnection {
                 std::net::SocketAddr::V4(_) => socket2::Domain::IPV4,
                 std::net::SocketAddr::V6(_) => socket2::Domain::IPV6,
             };
-            let socket = socket2::Socket::new(
-                domain,
-                socket2::Type::STREAM,
-                Some(socket2::Protocol::TCP),
-            )?;
+            let socket =
+                socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
 
             match socket.connect(&socket2::SockAddr::from(addr)) {
                 Ok(()) => {
