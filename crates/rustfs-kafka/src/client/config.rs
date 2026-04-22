@@ -5,34 +5,49 @@ use crate::protocol::produce::ProducerTimestamp;
 
 use super::GroupOffsetStorage;
 
+/// Default read/write timeout (seconds) for connection operations.
 pub(crate) const DEFAULT_CONNECTION_RW_TIMEOUT_SECS: u64 = 120;
 
+/// Default compression type for produced messages.
 pub const DEFAULT_COMPRESSION: Compression = Compression::NONE;
 
+/// Default maximum wait time (in milliseconds) for fetch requests.
 pub const DEFAULT_FETCH_MAX_WAIT_TIME_MILLIS: u64 = 100;
 
+/// Default minimum number of bytes to accumulate before returning fetch results.
 pub const DEFAULT_FETCH_MIN_BYTES: i32 = 4096;
 
+/// Default maximum bytes to fetch per partition.
 pub const DEFAULT_FETCH_MAX_BYTES_PER_PARTITION: i32 = 32 * 1024;
 
+/// Whether CRC validation for fetched messages is enabled by default.
 pub const DEFAULT_FETCH_CRC_VALIDATION: bool = true;
 
+/// Default storage for group offsets (None = not configured).
 pub const DEFAULT_GROUP_OFFSET_STORAGE: Option<GroupOffsetStorage> = None;
 
+/// Default backoff time (milliseconds) used for retries.
 pub const DEFAULT_RETRY_BACKOFF_TIME_MILLIS: u64 = 100;
 
+/// Default maximum number of retry attempts.
 pub const DEFAULT_RETRY_MAX_ATTEMPTS: u32 = 120_000 / 100;
 
+/// Default idle timeout (milliseconds) for pooled connections.
 pub const DEFAULT_CONNECTION_IDLE_TIMEOUT_MILLIS: u64 = 540_000;
 
+/// Default producer timestamp configuration (None = disabled).
 pub(crate) const DEFAULT_PRODUCER_TIMESTAMP: Option<ProducerTimestamp> = None;
 
 /// Fetch-related configuration.
 #[derive(Debug, Clone)]
 pub struct FetchConfig {
+    /// Maximum wait time (ms) for fetch requests.
     pub max_wait_time: i32,
+    /// Minimum number of bytes to accumulate before returning a fetch response.
     pub min_bytes: i32,
+    /// Maximum number of bytes to fetch per partition.
     pub max_bytes_per_partition: i32,
+    /// Enable CRC validation for fetched message sets.
     pub crc_validation: bool,
 }
 
@@ -55,15 +70,21 @@ pub enum RetryPolicy {
 
     /// Fixed interval between retries.
     Fixed {
+        /// Fixed interval between retry attempts.
         interval: Duration,
+        /// Maximum number of retry attempts for the fixed policy.
         max_attempts: u32,
     },
 
     /// Exponential backoff with jitter.
     Exponential {
+        /// Initial backoff duration.
         initial: Duration,
+        /// Maximum backoff duration (cap).
         max: Duration,
+        /// Multiplier applied at each retry step.
         multiplier: f64,
+        /// Maximum number of retry attempts for the exponential policy.
         max_attempts: u32,
     },
 }
@@ -126,13 +147,16 @@ impl RetryPolicy {
 /// Retry-related configuration.
 #[derive(Debug, Clone, Default)]
 pub struct RetryConfig {
+    /// Retry policy configuration.
     pub policy: RetryPolicy,
 }
 
 /// Connection-related configuration.
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
+    /// Read/write timeout for connections.
     pub rw_timeout: Duration,
+    /// Idle timeout for pooled connections.
     pub idle_timeout: Duration,
 }
 

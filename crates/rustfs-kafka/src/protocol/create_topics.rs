@@ -14,13 +14,19 @@ pub const API_VERSION_CREATE_TOPICS: i16 = 2;
 /// Configuration for creating a new topic.
 #[derive(Debug, Clone)]
 pub struct TopicConfig {
+    /// Topic name to be created.
     pub name: String,
+    /// Number of partitions for the topic.
     pub num_partitions: i32,
+    /// Replication factor for the topic.
     pub replication_factor: i16,
+    /// Optional topic-level configurations as key/value pairs.
     pub configs: Vec<(String, String)>,
 }
 
 impl TopicConfig {
+    /// Create a new `TopicConfig` with sane defaults.
+    #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -30,18 +36,21 @@ impl TopicConfig {
         }
     }
 
+    /// Set the number of partitions for the topic.
     #[must_use]
     pub fn with_partitions(mut self, n: i32) -> Self {
         self.num_partitions = n;
         self
     }
 
+    /// Set the replication factor for the topic.
     #[must_use]
     pub fn with_replication_factor(mut self, f: i16) -> Self {
         self.replication_factor = f;
         self
     }
 
+    /// Add a configuration key/value pair to the topic creation request.
     #[must_use]
     pub fn with_config(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.configs.push((key.into(), value.into()));
@@ -49,17 +58,21 @@ impl TopicConfig {
     }
 }
 
-/// Result of creating a single topic.
+/// Result of creating a single topic returned by the broker.
 #[derive(Debug, Clone)]
 pub struct TopicResult {
+    /// Topic name associated with this result.
     pub name: String,
+    /// Broker error code for this topic creation (0 == success).
     pub error_code: i16,
+    /// Optional broker-provided error message.
     pub error_message: Option<String>,
 }
 
 /// Parsed response from a `CreateTopics` request.
 #[derive(Debug, Clone)]
 pub struct CreateTopicsResponseData {
+    /// Per-topic results returned by the broker.
     pub results: Vec<TopicResult>,
 }
 

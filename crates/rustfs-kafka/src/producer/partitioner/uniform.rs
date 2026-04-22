@@ -17,6 +17,7 @@ impl Default for UniformPartitioner {
 }
 
 impl UniformPartitioner {
+    /// Create a new `UniformPartitioner` instance.
     #[must_use]
     pub fn new() -> Self {
         Self

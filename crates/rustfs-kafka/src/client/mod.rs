@@ -60,7 +60,10 @@ pub use crate::network::SecurityConfig;
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
 
+/// Builder utilities for constructing `KafkaClient` instances.
 pub mod builder;
+
+/// Configuration types and defaults for the Kafka client.
 pub mod config;
 pub(crate) mod fetch_ops;
 mod internals;
@@ -86,6 +89,7 @@ pub mod fetch_kp {
     };
 }
 
+/// Types for fetch responses adapted from the `kafka-protocol` crate.
 pub mod fetch {
     pub use crate::protocol::fetch::OwnedFetchResponse as Response;
     pub use crate::protocol::fetch::{OwnedData, OwnedMessage, OwnedPartition, OwnedTopic};
@@ -142,6 +146,10 @@ pub struct FetchGroupOffset<'a> {
 }
 
 impl<'a> FetchGroupOffset<'a> {
+    /// Create a new `FetchGroupOffset` which identifies a topic partition
+    /// to query a group's offset for.
+    ///
+    /// The returned value borrows the provided `topic` string slice.
     #[inline]
     #[must_use]
     pub fn new(topic: &'a str, partition: i32) -> Self {
@@ -171,6 +179,10 @@ pub struct CommitOffset<'a> {
 }
 
 impl<'a> CommitOffset<'a> {
+    /// Construct a `CommitOffset` for the given topic partition and offset.
+    ///
+    /// This is a convenience constructor used when committing consumer
+    /// offsets on behalf of a group.
     #[must_use]
     pub fn new(topic: &'a str, partition: i32, offset: i64) -> Self {
         CommitOffset {
@@ -386,26 +398,35 @@ impl KafkaClient {
             .build()
     }
 
+    /// Returns the configured list of Kafka broker hosts (host:port).
     #[inline]
     #[must_use]
     pub fn hosts(&self) -> &[String] {
         &self.config.hosts
     }
 
+    /// Set the client identifier string reported to Kafka brokers.
+    ///
+    /// The `client_id` is mainly used for server-side logging and metrics.
     pub fn set_client_id(&mut self, client_id: String) {
         self.config.client_id = client_id;
     }
 
+    /// Returns the configured client identifier.
     #[must_use]
     pub fn client_id(&self) -> &str {
         &self.config.client_id
     }
 
+    /// Set the compression codec used for message production.
+    ///
+    /// This affects how produced messages are encoded before being sent to brokers.
     #[inline]
     pub fn set_compression(&mut self, compression: Compression) {
         self.config.compression = compression;
     }
 
+    /// Returns the currently configured compression codec for produced messages.
     #[inline]
     #[must_use]
     pub fn compression(&self) -> Compression {
@@ -423,6 +444,7 @@ impl KafkaClient {
         Ok(())
     }
 
+    /// Returns the configured maximum wait time for fetch requests.
     #[inline]
     #[must_use]
     pub fn fetch_max_wait_time(&self) -> Duration {
@@ -431,10 +453,13 @@ impl KafkaClient {
     }
 
     #[inline]
+    /// Set the minimum number of bytes the broker should accumulate
+    /// before returning data for fetch requests.
     pub fn set_fetch_min_bytes(&mut self, min_bytes: i32) {
         self.config.fetch.min_bytes = min_bytes;
     }
 
+    /// Returns the configured minimum number of bytes for fetch requests.
     #[inline]
     #[must_use]
     pub fn fetch_min_bytes(&self) -> i32 {
@@ -442,10 +467,12 @@ impl KafkaClient {
     }
 
     #[inline]
+    /// Set the maximum number of bytes to fetch per partition.
     pub fn set_fetch_max_bytes_per_partition(&mut self, max_bytes: i32) {
         self.config.fetch.max_bytes_per_partition = max_bytes;
     }
 
+    /// Returns the configured maximum bytes to fetch per partition.
     #[inline]
     #[must_use]
     pub fn fetch_max_bytes_per_partition(&self) -> i32 {
@@ -453,10 +480,12 @@ impl KafkaClient {
     }
 
     #[inline]
+    /// Enable or disable CRC validation for fetched message data.
     pub fn set_fetch_crc_validation(&mut self, validate_crc: bool) {
         self.config.fetch.crc_validation = validate_crc;
     }
 
+    /// Returns whether CRC validation of fetched messages is enabled.
     #[inline]
     #[must_use]
     pub fn fetch_crc_validation(&self) -> bool {
@@ -464,16 +493,19 @@ impl KafkaClient {
     }
 
     #[inline]
+    /// Configure where consumer group offsets should be stored (Kafka or Zookeeper).
     pub fn set_group_offset_storage(&mut self, storage: Option<GroupOffsetStorage>) {
         self.config.offset_storage = storage;
     }
 
+    /// Returns the currently configured storage for consumer group offsets.
     #[must_use]
     pub fn group_offset_storage(&self) -> Option<GroupOffsetStorage> {
         self.config.offset_storage
     }
 
     #[inline]
+    /// Set the initial backoff/delay used by the retry policy.
     pub fn set_retry_backoff_time(&mut self, time: Duration) {
         match &mut self.config.retry.policy {
             config::RetryPolicy::Exponential { initial, .. } => *initial = time,
@@ -482,6 +514,7 @@ impl KafkaClient {
         }
     }
 
+    /// Returns the configured maximum number of retry attempts.
     #[inline]
     #[must_use]
     pub fn retry_max_attempts(&self) -> u32 {
@@ -489,10 +522,14 @@ impl KafkaClient {
     }
 
     #[inline]
+    /// Set the idle timeout for pooled connections.
+    ///
+    /// Connections idle for longer than this value may be closed.
     pub fn set_connection_idle_timeout(&mut self, timeout: Duration) {
         self.conn_pool.set_idle_timeout(timeout);
     }
 
+    /// Returns the configured connection idle timeout for pooled connections.
     #[inline]
     #[must_use]
     pub fn connection_idle_timeout(&self) -> Duration {
@@ -512,6 +549,7 @@ impl KafkaClient {
         self.config.producer_timestamp
     }
 
+    /// Returns a view of the currently loaded topic metadata.
     #[inline]
     #[must_use]
     pub fn topics(&self) -> metadata::Topics<'_> {

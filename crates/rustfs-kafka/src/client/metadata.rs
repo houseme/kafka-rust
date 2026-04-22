@@ -34,6 +34,7 @@ impl<'a> Topics<'a> {
         self.state.num_topics()
     }
 
+    /// Returns `true` if there are no loaded topics.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0

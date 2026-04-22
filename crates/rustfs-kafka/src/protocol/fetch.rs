@@ -22,36 +22,47 @@ use kafka_protocol::messages::fetch_response::PartitionData as KpPartitionData;
 /// Owned version of `protocol::fetch::Message` with no lifetimes.
 #[derive(Debug, Clone)]
 pub struct OwnedMessage {
+    /// The message offset within the partition.
     pub offset: i64,
+    /// The message key bytes.
     pub key: Bytes,
+    /// The message value bytes.
     pub value: Bytes,
 }
 
 /// Owned version of `protocol::fetch::Data` with no lifetimes.
 #[derive(Debug)]
 pub struct OwnedData {
+    /// The high watermark offset at the time of the fetch.
     pub highwatermark_offset: i64,
+    /// Messages decoded from the fetched records.
     pub messages: Vec<OwnedMessage>,
 }
 
 /// Owned version of `protocol::fetch::Partition` with no lifetimes.
 #[derive(Debug)]
 pub struct OwnedPartition {
+    /// Partition id.
     pub partition: i32,
+    /// Decoded partition data or a decoding error.
     pub data: std::result::Result<OwnedData, Arc<Error>>,
 }
 
 /// Owned version of `protocol::fetch::Topic` with no lifetimes.
 #[derive(Debug)]
 pub struct OwnedTopic {
+    /// Topic name.
     pub topic: String,
+    /// Partition-level data for this topic.
     pub partitions: Vec<OwnedPartition>,
 }
 
 /// Owned version of `protocol::fetch::Response` with no lifetimes.
 #[derive(Debug)]
 pub struct OwnedFetchResponse {
+    /// Correlation id matching the request.
     pub correlation_id: i32,
+    /// Topics included in this fetch response.
     pub topics: Vec<OwnedTopic>,
 }
 

@@ -28,6 +28,8 @@ impl DefaultPartitioner {
         }
     }
 
+    /// Create a `DefaultPartitioner` initialized with the default hasher
+    /// implementation for type `B`.
     #[must_use]
     pub fn with_default_hasher<B>() -> DefaultPartitioner<BuildHasherDefault<B>>
     where

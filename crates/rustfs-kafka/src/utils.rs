@@ -6,7 +6,9 @@
 /// already known topic.
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct PartitionOffset {
+    /// The offset value for the partition.
     pub offset: i64,
+    /// The partition identifier.
     pub partition: i32,
 }
 
@@ -14,8 +16,11 @@ pub struct PartitionOffset {
 /// already known topic, specific to a timestamp.
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub struct TimestampedPartitionOffset {
+    /// The offset value for the partition.
     pub offset: i64,
+    /// The partition identifier.
     pub partition: i32,
+    /// The timestamp (ms since epoch) associated with the offset.
     pub time: i64,
 }
 
