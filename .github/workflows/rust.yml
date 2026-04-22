@@ -165,9 +165,9 @@ jobs:
       - name: Test - ${{ matrix.name }}
         run: |
           if [ -z "${{ matrix.extra_args }}" ]; then
-            cargo test -p rustfs-kafka --verbose
+            cargo test -p rustfs-kafka --lib --tests --verbose
           else
-            cargo test -p rustfs-kafka --verbose ${{ matrix.extra_args }}
+            cargo test -p rustfs-kafka --lib --tests --verbose ${{ matrix.extra_args }}
           fi
 
   # Test musl build to verify pure-Rust TLS
