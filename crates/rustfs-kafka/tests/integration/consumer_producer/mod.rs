@@ -148,5 +148,16 @@ pub(crate) fn diff_group_offsets(older: &HashMap<i32, i64>, newer: &HashMap<i32,
         .sum()
 }
 
+/// Sleep for `millis` milliseconds between consumer poll attempts.
+///
+/// `std::thread::sleep` is disallowed project-wide in favour of
+/// `RetryPolicy`, but integration test poll-loops are not retry loops —
+/// they simply need a short pause so the broker can accumulate the next
+/// batch of messages before the consumer fetches again.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn poll_backoff(millis: u64) {
+    std::thread::sleep(std::time::Duration::from_millis(millis));
+}
+
 mod consumer;
 mod producer;
