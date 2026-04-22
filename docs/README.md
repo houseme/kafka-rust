@@ -1,20 +1,15 @@
 # Documentation Index
 
-This directory contains design notes, implementation plans, and user-facing guides for `rustfs-kafka`.
+This directory contains user-facing guides for `rustfs-kafka` and
+`rustfs-kafka-async`.
 
-## Core Guides
+## Guides
 
-- `api-guide.md`: Current API usage guide for producer/consumer/client/admin/TLS/metrics.
-- `refactoring.md`: Notes on historical and ongoing refactors.
-- `architecture-improvement-plan.md`: High-level architecture direction.
+- `usage-guide.md`: End-to-end usage for sync and async crates.
+- `api-guide.md`: API-oriented examples and patterns.
 
-## Task Backlog / Execution Notes
+## For New Contributors
 
-The `tasks/` folder tracks focused engineering tasks and implementation records.
-
-Suggested reading order for newcomers:
-
-1. `api-guide.md`
-2. `architecture-improvement-plan.md`
-3. `tasks/24-documentation.md`
-4. specific task files relevant to your feature area
+Suggested reading order:
+1. `usage-guide.md`
+2. `api-guide.md`

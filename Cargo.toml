@@ -6,13 +6,13 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.22.0"
+version = "1.0.0"
 authors = ["heihutu <heihutu@gmail.com>", "houseme <husemecn@gmail.com>"]
 categories = ["api-bindings"]
 documentation = "https://docs.rs/rustfs-kafka/"
 edition = "2024"
 keywords = ["kafka", "queue"]
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/houseme/kafka-rust"
 description = "Rust client for Apache Kafka"

@@ -14,7 +14,7 @@ The current implementation uses background tasks/threads to bridge the sync core
 
 ```toml
 [dependencies]
-rustfs-kafka-async = "0.1"
+rustfs-kafka-async = "1.0.0"
 ```
 
 ## Quick Example
@@ -37,4 +37,4 @@ async fn main() -> rustfs_kafka::Result<()> {
 ## Notes
 
 - This crate is intentionally lightweight and reuses the mature sync protocol/client logic from `rustfs-kafka`.
-- For full feature details, consult the root crate docs and `docs/api-guide.md` in the repository.
+- For full feature details, consult the root crate docs and `docs/usage-guide.md` in the repository.

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-22
+
+### Added
+
+- Added `docs/usage-guide.md` with end-to-end usage for both `rustfs-kafka` and `rustfs-kafka-async`.
+- Added agent guidance documents:
+  - `AGENT.md`
+  - `crates/rustfs-kafka/Agent.md`
+  - `crates/rustfs-kafka-async/Agent.md`
+
+### Changed
+
+- Updated workspace and crate versions to `1.0.0`.
+- Updated root `README.md` for the 1.0.0 release and current workspace layout.
+- Updated `crates/rustfs-kafka-async/README.md` dependency examples to `1.0.0`.
+- Updated `docs/README.md` to focus on tracked documentation content.
+- Hardened integration tests for secure/compression matrix stability:
+  - `test_consumer_commit_messageset`
+  - `test_consumer_commit_messageset_no_consumes`
+- Updated `CONTRIBUTING.md` with current CI and release guidance.
+
+### Removed
+
+- Removed `dprint.json` (no active formatter integration in CI/tooling).
+- Switched from dual-license files to single Apache-2.0 project licensing.
+
 ## [0.22.0] - 2026-04-21
 
 ### Added

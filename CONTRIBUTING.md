@@ -1,95 +1,61 @@
 # Contributing to rustfs-kafka
 
-Thanks for your interest in contributing to rustfs-kafka!
+Thanks for your interest in contributing.
 
-## Development Environment
+## Prerequisites
 
-### Prerequisites
+- Rust `1.93.0` or newer
+- Docker (for integration tests)
 
-- Rust 1.93.0+
-- Kafka (for integration tests; Docker recommended)
-
-### Build
+## Quick Start
 
 ```bash
 cargo build
-```
-
-### Test
-
-```bash
-# Unit tests
 cargo test
-
-# Integration tests (requires running Kafka)
-cargo test --features integration_tests
-
-# All feature combinations
-cargo test --all-features
-
-# Property-based tests (more iterations)
-PROPTEST_CASES=10000 cargo test
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-### Code Quality
+## Integration Tests
 
 ```bash
-cargo clippy --all-features -- -D warnings
-cargo fmt --check
+cd crates/rustfs-kafka/tests
+./run-all-tests
 ```
 
-### Benchmarks
+Useful scoped runs:
 
 ```bash
-cargo bench
+# Specific Kafka version
+./run-all-tests 4.2.0
+
+# Secure mode only
+SECURES=secure ./run-all-tests 3.9.2
 ```
 
-## Commit Message Format
+## Pull Request Checklist
 
-- `feat: new feature description`
-- `fix: bug fix description`
-- `refactor: refactoring description`
-- `docs: documentation update`
-- `test: test-related changes`
-- `chore: build/tooling changes`
+- CI passes for lint, tests, and build matrix.
+- New behavior includes tests.
+- Public API updates include docs/examples.
+- `CHANGELOG.md` is updated for user-facing changes.
 
-## Pull Request Requirements
+## Commit Style
 
-- All CI checks pass
-- New code has test coverage
-- Public APIs have documentation comments
-- No new clippy warnings
-- `cargo fmt` applied
+Conventional prefixes are preferred:
 
-## Code Style
+- `feat:`
+- `fix:`
+- `refactor:`
+- `docs:`
+- `test:`
+- `chore:`
 
-- Follow `rustfmt.toml` configuration
-- Follow `clippy` recommendations
-- Use `#![deny(clippy::all)]` as the minimum standard
-- Prefer `thiserror` for error types
-- Use `tracing` for logging (not `println!` or `eprintln!`)
+## Release Notes
 
-## Project Structure
+For release updates:
 
-```
-src/
-├── client/        # KafkaClient mid-level API
-├── consumer/      # Consumer high-level API
-├── producer/      # Producer high-level API
-├── protocol/      # Kafka protocol layer
-├── network/       # Connection management
-├── tls/           # TLS abstraction
-├── compression/   # Compression types
-├── error.rs       # Error types
-└── lib.rs         # Crate root
-```
-
-## Feature Flags
-
-| Feature | Description |
-|---------|-------------|
-| `security` (default) | TLS support via rustls |
-| `security-ring` | TLS with ring backend |
-| `producer_timestamp` | Timestamp support |
-| `metrics` | Structured metrics via `metrics` crate |
-| `integration_tests` | Integration test support |
+1. Update workspace version in `Cargo.toml`.
+2. Update `CHANGELOG.md`.
+3. Ensure `README.md` and `docs/usage-guide.md` reflect current APIs.
+4. Verify license metadata and files are consistent.
