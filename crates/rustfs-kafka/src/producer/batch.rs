@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
+
 use crate::client::{self, KafkaClient, KafkaClientInternals, ProduceConfirm};
 use crate::error::Result;
 
@@ -10,17 +12,20 @@ use super::partitioner::{DefaultPartitioner, Partitioner, Topics};
 use super::{Compression, Record, RequiredAcks, State};
 
 /// Internal representation of a buffered record.
+///
+/// Uses `Bytes` for key/value/headers to enable zero-copy sharing
+/// when the batch is flushed and encoded for the wire protocol.
 struct BatchRecord {
-    key: Option<Vec<u8>>,
-    value: Option<Vec<u8>>,
-    headers: Vec<(String, Vec<u8>)>,
+    key: Option<Bytes>,
+    value: Option<Bytes>,
+    headers: Vec<(String, Bytes)>,
 }
 
 impl BatchRecord {
     #[cfg(test)]
     fn byte_size(&self) -> usize {
-        self.key.as_ref().map_or(0, std::vec::Vec::len)
-            + self.value.as_ref().map_or(0, std::vec::Vec::len)
+        self.key.as_ref().map_or(0, Bytes::len)
+            + self.value.as_ref().map_or(0, Bytes::len)
             + self
                 .headers
                 .iter()
@@ -99,8 +104,8 @@ impl<P: Partitioner> BatchProducer<P> {
                 .sum::<usize>();
 
         let batch_record = BatchRecord {
-            key: msg.key.map(<[u8]>::to_vec),
-            value: msg.value.map(<[u8]>::to_vec),
+            key: msg.key.map(Bytes::copy_from_slice),
+            value: msg.value.map(Bytes::copy_from_slice),
             headers: msg.headers.to_vec(),
         };
 
@@ -420,9 +425,9 @@ mod tests {
     #[test]
     fn test_batch_record_byte_size() {
         let r = BatchRecord {
-            key: Some(vec![1, 2, 3]),
-            value: Some(vec![4, 5]),
-            headers: vec![("k".to_string(), vec![6])],
+            key: Some(Bytes::from_static(&[1, 2, 3])),
+            value: Some(Bytes::from_static(&[4, 5])),
+            headers: vec![("k".to_string(), Bytes::from_static(&[6]))],
         };
         assert_eq!(r.byte_size(), 3 + 2 + 2);
     }
@@ -503,8 +508,8 @@ mod tests {
         bp.buffer.insert(
             ("t".to_string(), 0),
             vec![BatchRecord {
-                key: Some(vec![1]),
-                value: Some(vec![2]),
+                key: Some(Bytes::from_static(&[1])),
+                value: Some(Bytes::from_static(&[2])),
                 headers: vec![],
             }],
         );

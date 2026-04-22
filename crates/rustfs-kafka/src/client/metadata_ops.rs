@@ -211,7 +211,11 @@ fn fetch_metadata_kp<T: AsRef<str>>(
                 let (header, request) = crate::protocol::metadata::build_metadata_request(
                     correlation,
                     &client.config.client_id,
-                    Some(&topic_strs),
+                    if topic_strs.is_empty() {
+                        None
+                    } else {
+                        Some(&topic_strs)
+                    },
                 );
                 match transport::kp_send_request(
                     conn,

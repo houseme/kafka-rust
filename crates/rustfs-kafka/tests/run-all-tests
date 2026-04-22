@@ -75,8 +75,8 @@ for ver in $vers; do
         fi
 
         # Wait for topics to be created
-        ./do_until_success "docker compose logs kafka | grep 'Created topic kafka-rust-test'"
-        ./do_until_success "docker compose logs kafka | grep 'Created topic kafka-rust-test2'"
+        ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test\\.|Topic 'kafka-rust-test' already exists\\.\""
+        ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test2\\.|Topic 'kafka-rust-test2' already exists\\.\""
 
         for compression in $COMPRESSIONS; do
             export KAFKA_CLIENT_COMPRESSION=$compression

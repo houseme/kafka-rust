@@ -10,18 +10,23 @@ use crate::error::{Error, Result};
 
 use crate::network::KafkaConnection;
 
-pub(crate) fn kp_send_request(
+pub(crate) fn kp_send_request<T>(
     conn: &mut KafkaConnection,
     header: &kafka_protocol::messages::RequestHeader,
-    body: &impl kafka_protocol::protocol::Encodable,
+    body: &T,
     api_version: i16,
-) -> Result<()> {
+) -> Result<()>
+where
+    T: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
+{
     use bytes::BytesMut;
     use kafka_protocol::protocol::Encodable;
 
+    let header_version = T::header_version(api_version);
+
     let mut header_buf = BytesMut::new();
     header
-        .encode(&mut header_buf, api_version)
+        .encode(&mut header_buf, header_version)
         .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
@@ -40,19 +45,20 @@ pub(crate) fn kp_send_request(
     Ok(())
 }
 
-pub(crate) fn kp_get_response<R: kafka_protocol::protocol::Decodable>(
+pub(crate) fn kp_get_response<
+    R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+>(
     conn: &mut KafkaConnection,
     api_version: i16,
 ) -> Result<R> {
-    use bytes::Bytes;
     use kafka_protocol::messages::ResponseHeader;
     use kafka_protocol::protocol::Decodable;
 
     let size = get_response_size(conn)?;
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-
-    let mut bytes = Bytes::from(resp_bytes);
-    let _resp_header = ResponseHeader::decode(&mut bytes, 0).map_err(|_| Error::codec())?;
+    let mut bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
+    let response_header_version = R::header_version(api_version);
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, response_header_version).map_err(|_| Error::codec())?;
 
     R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
 }

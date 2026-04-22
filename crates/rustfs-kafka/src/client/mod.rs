@@ -221,7 +221,7 @@ pub struct ProduceMessage<'a, 'b> {
     /// message to.
     pub partition: i32,
     /// Optional headers for this message.
-    pub headers: &'b [(String, Vec<u8>)],
+    pub headers: &'b [(String, bytes::Bytes)],
 }
 
 impl<'a, 'b> AsRef<ProduceMessage<'a, 'b>> for ProduceMessage<'a, 'b> {

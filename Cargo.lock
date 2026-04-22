@@ -984,6 +984,7 @@ dependencies = [
 name = "rustfs-kafka-async"
 version = "0.22.0"
 dependencies = [
+ "bytes",
  "ctor",
  "rustfs-kafka",
  "tokio",

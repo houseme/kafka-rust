@@ -229,10 +229,12 @@ impl KafkaConnection {
         })
     }
 
-    pub fn read_exact_alloc(&mut self, size: u64) -> Result<Vec<u8>> {
-        let mut buffer = vec![0; usize::try_from(size).expect("response size exceeds usize")];
-        self.read_exact(buffer.as_mut_slice())?;
-        Ok(buffer)
+    pub fn read_exact_alloc(&mut self, size: u64) -> Result<bytes::Bytes> {
+        let len = usize::try_from(size).expect("response size exceeds usize");
+        let mut buf = bytes::BytesMut::with_capacity(len);
+        buf.resize(len, 0);
+        self.read_exact(&mut buf)?;
+        Ok(buf.freeze())
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<()> {

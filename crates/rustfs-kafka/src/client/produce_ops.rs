@@ -22,7 +22,7 @@ type BrokerMessage<'a, 'b> = (
     i32,
     Option<&'b [u8]>,
     Option<&'b [u8]>,
-    &'b [(String, Vec<u8>)],
+    &'b [(String, bytes::Bytes)],
 );
 type BrokerMessages<'a, 'b> = HashMap<String, Vec<BrokerMessage<'a, 'b>>>;
 

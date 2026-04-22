@@ -1,10 +1,14 @@
+use bytes::Bytes;
 use std::fmt;
 
 /// A collection of key-value headers attached to a Kafka record.
 ///
 /// Headers are supported since Kafka 0.11.
+///
+/// Header values are stored as `Bytes` to enable zero-copy sharing
+/// when records are batched and encoded for the wire protocol.
 #[derive(Default, Clone, Debug)]
-pub struct Headers(pub(crate) Vec<(String, Vec<u8>)>);
+pub struct Headers(pub(crate) Vec<(String, Bytes)>);
 
 impl Headers {
     /// Creates an empty headers collection.
@@ -16,7 +20,7 @@ impl Headers {
 
     /// Adds a header key-value pair.
     pub fn insert(&mut self, key: impl Into<String>, value: impl AsRef<[u8]>) {
-        self.0.push((key.into(), value.as_ref().to_vec()));
+        self.0.push((key.into(), Bytes::copy_from_slice(value.as_ref())));
     }
 
     /// Returns the number of headers.
@@ -35,14 +39,14 @@ impl Headers {
 
     /// Returns an iterator over the headers.
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = &(String, Vec<u8>)> {
+    pub fn iter(&self) -> impl Iterator<Item = &(String, Bytes)> {
         self.0.iter()
     }
 }
 
 impl IntoIterator for Headers {
-    type Item = (String, Vec<u8>);
-    type IntoIter = std::vec::IntoIter<(String, Vec<u8>)>;
+    type Item = (String, Bytes);
+    type IntoIter = std::vec::IntoIter<(String, Bytes)>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -209,8 +213,7 @@ mod tests {
         h.insert("a", b"1");
         h.insert("b", b"2");
 
-        let pairs: Vec<_> = h.into_iter().collect();
-        assert_eq!(pairs.len(), 2);
+        assert_eq!(h.into_iter().count(), 2);
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub const API_VERSION_METADATA: i16 = 1;
 pub const API_VERSION_LIST_OFFSETS: i16 = 1;
 pub const API_VERSION_OFFSET_COMMIT: i16 = 2;
 pub const API_VERSION_OFFSET_FETCH: i16 = 2;
-pub const API_VERSION_FIND_COORDINATOR: i16 = 1;
+pub const API_VERSION_FIND_COORDINATOR: i16 = 3;
 
 /// Map our `Compression` to `kafka_protocol::records::Compression`.
 pub fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {

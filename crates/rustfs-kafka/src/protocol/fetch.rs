@@ -315,7 +315,7 @@ mod tests {
         let err = Arc::new(Error::codec());
         let partition = OwnedPartition {
             partition: 1,
-            data: Err(err.clone()),
+            data: Err(err),
         };
         assert!(partition.data().is_err());
     }

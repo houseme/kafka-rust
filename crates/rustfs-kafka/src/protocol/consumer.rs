@@ -38,15 +38,27 @@ pub fn convert_find_coordinator_response(
     kp_resp: &FindCoordinatorResponse,
     correlation_id: i32,
 ) -> GroupCoordinatorResponse {
-    let node_id = i32::from(kp_resp.node_id);
-    let host = kp_resp.host.to_string();
-    let port = kp_resp.port;
+    let (error, node_id, host, port) = if let Some(c) = kp_resp.coordinators.first() {
+        (
+            c.error_code,
+            i32::from(c.node_id),
+            c.host.to_string(),
+            c.port,
+        )
+    } else {
+        (
+            kp_resp.error_code,
+            i32::from(kp_resp.node_id),
+            kp_resp.host.to_string(),
+            kp_resp.port,
+        )
+    };
 
     GroupCoordinatorResponse {
         header: HeaderResponse {
             correlation: correlation_id,
         },
-        error: kp_resp.error_code,
+        error,
         broker_id: node_id,
         port,
         host,

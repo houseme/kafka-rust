@@ -13,7 +13,7 @@ pub type ProduceMessageRef<'a> = (
     i32,
     Option<&'a [u8]>,
     Option<&'a [u8]>,
-    &'a [(String, Vec<u8>)],
+    &'a [(String, bytes::Bytes)],
 );
 
 #[tracing::instrument(skip(messages), fields(correlation_id = correlation_id))]
@@ -44,8 +44,8 @@ pub fn build_produce_request(
             .iter()
             .map(|(k, v)| {
                 (
-                    kafka_protocol::protocol::StrBytes::from(k.clone()),
-                    Some(bytes::Bytes::copy_from_slice(v)),
+                    kafka_protocol::protocol::StrBytes::from_string(k.clone()),
+                    Some(v.clone()),
                 )
             })
             .collect();
@@ -95,9 +95,7 @@ pub fn build_produce_request(
                 .collect();
 
             kafka_protocol::messages::produce_request::TopicProduceData::default()
-                .with_name(TopicName::from(StrBytes::from_string(
-                    topic_name.to_string(),
-                )))
+                .with_name(TopicName::from(StrBytes::from_string(topic_name.to_owned())))
                 .with_partition_data(partition_data)
         })
         .collect();

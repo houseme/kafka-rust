@@ -76,7 +76,7 @@ pub fn fetch_init_producer_id(
         i32::from_be_bytes(buf)
     };
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = bytes::Bytes::from(resp_bytes);
+    let mut bytes = resp_bytes;
     let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
 
     let kp_resp =

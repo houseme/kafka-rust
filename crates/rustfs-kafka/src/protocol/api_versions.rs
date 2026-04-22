@@ -29,7 +29,10 @@ pub mod api_key {
 }
 
 /// The version of the `ApiVersions` request we send.
-const API_VERSIONS_REQUEST_VERSION: i16 = 3;
+///
+/// Use the most compatible non-flexible request to avoid broker/header schema
+/// mismatches during bootstrap negotiation.
+const API_VERSIONS_REQUEST_VERSION: i16 = 0;
 
 /// Negotiated API version ranges for a single broker.
 #[derive(Debug, Clone)]
@@ -85,22 +88,26 @@ pub fn fetch_api_versions(
     client_id: &str,
 ) -> Result<BrokerApiVersions> {
     use bytes::BytesMut;
-    use kafka_protocol::messages::{ApiVersionsRequest, RequestHeader, ResponseHeader};
-    use kafka_protocol::protocol::StrBytes;
-    use kafka_protocol::protocol::{Decodable, Encodable};
+    use kafka_protocol::messages::{
+        ApiVersionsRequest, ApiVersionsResponse, RequestHeader, ResponseHeader,
+    };
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
 
-    let request = ApiVersionsRequest::default()
-        .with_client_software_name(StrBytes::from_static_str("rustfs-kafka"));
+    let request = ApiVersionsRequest::default();
 
     let header = RequestHeader::default()
         .with_request_api_key(api_key::API_VERSIONS)
         .with_request_api_version(API_VERSIONS_REQUEST_VERSION)
         .with_correlation_id(correlation_id)
-        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
+        .with_client_id(Some(kafka_protocol::protocol::StrBytes::from_string(
+            client_id.to_owned(),
+        )));
+    let request_header_version = ApiVersionsRequest::header_version(API_VERSIONS_REQUEST_VERSION);
+    let response_header_version = ApiVersionsResponse::header_version(API_VERSIONS_REQUEST_VERSION);
 
     let mut header_buf = BytesMut::new();
     header
-        .encode(&mut header_buf, API_VERSIONS_REQUEST_VERSION)
+        .encode(&mut header_buf, request_header_version)
         .map_err(|_| Error::codec())?;
 
     let mut body_buf = BytesMut::new();
@@ -123,9 +130,9 @@ pub fn fetch_api_versions(
         i32::from_be_bytes(buf)
     };
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = bytes::Bytes::from(resp_bytes);
-    let _resp_header = ResponseHeader::decode(&mut bytes, API_VERSIONS_REQUEST_VERSION)
-        .map_err(|_| Error::codec())?;
+    let mut bytes = resp_bytes;
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, response_header_version).map_err(|_| Error::codec())?;
 
     let kp_resp = kafka_protocol::messages::ApiVersionsResponse::decode(
         &mut bytes,

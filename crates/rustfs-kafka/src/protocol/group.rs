@@ -86,13 +86,13 @@ fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<
     Ok(out.to_vec())
 }
 
-fn read_response(conn: &mut KafkaConnection, api_version: i16) -> Result<bytes::Bytes> {
+fn read_response(conn: &mut KafkaConnection, _api_version: i16) -> Result<bytes::Bytes> {
     let mut buf = [0u8; 4];
     conn.read_exact(&mut buf)?;
     let size = i32::from_be_bytes(buf);
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = bytes::Bytes::from(resp_bytes);
-    let _header = ResponseHeader::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
+    let mut bytes = resp_bytes;
+    let _header = ResponseHeader::decode(&mut bytes, 0).map_err(|_| Error::codec())?;
     Ok(bytes)
 }
 

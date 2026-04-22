@@ -1,5 +1,6 @@
 //! Async producer for sending messages to Kafka.
 
+use bytes::Bytes;
 use rustfs_kafka::client::RequiredAcks;
 use rustfs_kafka::error::Result;
 use rustfs_kafka::producer::{AsBytes, Producer, Record};
@@ -12,8 +13,8 @@ use crate::AsyncKafkaClient;
 enum ProducerCommand {
     Send {
         topic: String,
-        key: Vec<u8>,
-        value: Vec<u8>,
+        key: Bytes,
+        value: Bytes,
         partition: i32,
         response: oneshot::Sender<Result<()>>,
     },
@@ -119,8 +120,8 @@ impl AsyncProducer {
         self.sender
             .send(ProducerCommand::Send {
                 topic: record.topic.to_owned(),
-                key: record.key.as_bytes().to_vec(),
-                value: record.value.as_bytes().to_vec(),
+                key: Bytes::copy_from_slice(record.key.as_bytes()),
+                value: Bytes::copy_from_slice(record.value.as_bytes()),
                 partition: record.partition,
                 response: tx,
             })
@@ -171,11 +172,11 @@ impl AsyncProducer {
     fn do_send(
         producer: &mut Producer,
         topic: &str,
-        key: &[u8],
-        value: &[u8],
+        key: &Bytes,
+        value: &Bytes,
         partition: i32,
     ) -> Result<()> {
-        let record = Record::from_key_value(topic, key, value).with_partition(partition);
+        let record = Record::from_key_value(topic, key.as_ref(), value.as_ref()).with_partition(partition);
         producer.send(&record)
     }
 }
