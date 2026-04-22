@@ -1,5 +1,6 @@
 //! Async producer for sending messages to Kafka.
 
+use bytes::Bytes;
 use rustfs_kafka::client::RequiredAcks;
 use rustfs_kafka::error::Result;
 use rustfs_kafka::producer::{AsBytes, Producer, Record};
@@ -8,12 +9,16 @@ use tracing::{debug, info};
 
 use crate::AsyncKafkaClient;
 
-/// Command sent to the async producer's background task.
+/// Internal commands sent to the async producer's background task.
+///
+/// Variants that expect a result carry a `oneshot::Sender` so the async
+/// caller can await the outcome of the synchronous operation executed in the
+/// background task.
 enum ProducerCommand {
     Send {
         topic: String,
-        key: Vec<u8>,
-        value: Vec<u8>,
+        key: Bytes,
+        value: Bytes,
         partition: i32,
         response: oneshot::Sender<Result<()>>,
     },
@@ -25,9 +30,10 @@ enum ProducerCommand {
 
 /// An async Kafka producer.
 ///
-/// Sends messages to Kafka brokers asynchronously using a background
-/// task. Messages are queued via an MPSC channel and processed by a
-/// dedicated tokio task that holds the synchronous producer.
+/// This wrapper runs a synchronous `Producer` inside a tokio background task
+/// and exposes an async-friendly API. Calls to `send` queue the message on an
+/// MPSC channel and then await a `oneshot` response indicating success or
+/// failure of the underlying synchronous `Producer::send`.
 ///
 /// # Example
 ///
@@ -53,6 +59,10 @@ pub struct AsyncProducer {
 
 impl AsyncProducer {
     /// Creates a new async producer from an [`AsyncKafkaClient`].
+    ///
+    /// The function constructs a synchronous `Producer` configured with the
+    /// given client's bootstrap hosts and moves it into a background tokio
+    /// task. The returned `AsyncProducer` sends commands to that task.
     pub async fn new(client: AsyncKafkaClient) -> Result<Self> {
         let hosts = client.bootstrap_hosts().to_vec();
         let client_id = client.client_id().to_owned();
@@ -107,8 +117,10 @@ impl AsyncProducer {
 
     /// Sends a message to Kafka asynchronously.
     ///
-    /// The message is queued and sent by the background task. This method
-    /// returns once the message has been successfully sent to Kafka.
+    /// The message is queued to the background task which performs the
+    /// blocking `Producer::send` call. This method awaits a confirmation via
+    /// a `oneshot` channel and returns once the synchronous send completes or
+    /// fails.
     pub async fn send<K, V>(&self, record: &Record<'_, K, V>) -> Result<()>
     where
         K: AsBytes,
@@ -119,8 +131,8 @@ impl AsyncProducer {
         self.sender
             .send(ProducerCommand::Send {
                 topic: record.topic.to_owned(),
-                key: record.key.as_bytes().to_vec(),
-                value: record.value.as_bytes().to_vec(),
+                key: Bytes::copy_from_slice(record.key.as_bytes()),
+                value: Bytes::copy_from_slice(record.value.as_bytes()),
                 partition: record.partition,
                 response: tx,
             })
@@ -139,6 +151,10 @@ impl AsyncProducer {
     }
 
     /// Flushes any pending messages.
+    ///
+    /// The synchronous producer flushes on each send in this implementation,
+    /// so `flush` simply sends a no-op confirmation to the background task and
+    /// awaits the acknowledgement.
     pub async fn flush(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.sender
@@ -158,8 +174,8 @@ impl AsyncProducer {
 
     /// Gracefully shuts down the producer.
     ///
-    /// Sends a shutdown signal to the background task and waits for it
-    /// to complete.
+    /// Sends a shutdown signal to the background task and awaits the task
+    /// completion. After `close` returns, the background task has exited.
     pub async fn close(mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             let _ = self.sender.send(ProducerCommand::Shutdown).await;
@@ -171,19 +187,47 @@ impl AsyncProducer {
     fn do_send(
         producer: &mut Producer,
         topic: &str,
-        key: &[u8],
-        value: &[u8],
+        key: &Bytes,
+        value: &Bytes,
         partition: i32,
     ) -> Result<()> {
-        let record = Record::from_key_value(topic, key, value).with_partition(partition);
+        let record =
+            Record::from_key_value(topic, key.as_ref(), value.as_ref()).with_partition(partition);
         producer.send(&record)
     }
 }
 
 impl Drop for AsyncProducer {
     fn drop(&mut self) {
+        // On drop we abort the background task to avoid leaking it. Consumers
+        // who want a graceful shutdown should call `close().await`.
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rustfs_kafka::error::{ConnectionError, Error};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn from_hosts_fails_with_unreachable_hosts() {
+        let result = AsyncProducer::from_hosts(vec!["127.0.0.1:1".to_owned()]).await;
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
+    }
+
+    #[tokio::test]
+    async fn new_fails_with_unreachable_hosts() {
+        // AsyncKafkaClient with empty hosts succeeds (no connections attempted),
+        // but Producer::from_hosts will fail because it needs actual connections
+        let client = AsyncKafkaClient::new(vec![]).await.unwrap();
+        let result = AsyncProducer::new(client).await;
+        assert!(result.is_err());
     }
 }

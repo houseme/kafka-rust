@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: ["main", "master"]
+    branches: [ "main", "master" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -55,13 +55,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check documentation coverage
-        run: RUSTDOCFLAGS="--warn-missing-docs" cargo doc --no-deps 2>&1
+        run: RUSTDOCFLAGS="-Wmissing_docs" cargo doc --no-deps 2>&1
         continue-on-error: true
 
   integration-test:
     name: Integration (Kafka ${{ matrix.KAFKA_VER }}${{ matrix.SECURE_LABEL }})
     runs-on: ubuntu-latest
-    needs: [lint, unit-test, build]
+    needs: [ lint, unit-test, build ]
     strategy:
       fail-fast: false
       matrix:
@@ -88,12 +88,40 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Preload Kafka archive for local image build
+        run: |
+          ARCHIVE="kafka_2.13-${{ matrix.KAFKA_VER }}.tgz"
+          TARGET_DIR="crates/rustfs-kafka/tests/kafka-rust-image/preloaded"
+          TARGET="${TARGET_DIR}/${ARCHIVE}"
+          TMP_TARGET="${TARGET}.part"
+          MIRRORS=(
+            "https://mirrors.tuna.tsinghua.edu.cn/apache/kafka/${{ matrix.KAFKA_VER }}/${ARCHIVE}"
+            "https://mirrors.ustc.edu.cn/apache/kafka/${{ matrix.KAFKA_VER }}/${ARCHIVE}"
+            "https://archive.apache.org/dist/kafka/${{ matrix.KAFKA_VER }}/${ARCHIVE}"
+          )
+          mkdir -p "${TARGET_DIR}"
+          if [ ! -s "${TARGET}" ]; then
+            rm -f "${TMP_TARGET}"
+            for URL in "${MIRRORS[@]}"; do
+              echo "Preloading ${URL}"
+              if curl -fL --retry 3 --retry-delay 2 --retry-max-time 900 "${URL}" -o "${TMP_TARGET}"; then
+                mv "${TMP_TARGET}" "${TARGET}"
+                break
+              fi
+            done
+            if [ ! -s "${TARGET}" ]; then
+              echo "Failed to preload ${ARCHIVE}" >&2
+              exit 1
+            fi
+          else
+            echo "Using cached archive ${TARGET}"
+          fi
       - name: Run integration tests
         run: |
           export DOCKER_BUILDKIT=1
           export COMPOSE_DOCKER_CLI_BUILD=1
-          chmod +x ./tests/run-all-tests
-          ./tests/run-all-tests ${{ matrix.KAFKA_VER }}
+          chmod +x ./crates/rustfs-kafka/tests/run-all-tests
+          ./crates/rustfs-kafka/tests/run-all-tests ${{ matrix.KAFKA_VER }}
         env:
           KAFKA_VER: ${{ matrix.KAFKA_VER }}
           SECURES: ${{ matrix.SECURE }}
@@ -106,7 +134,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-audit
-        run: taiki-e/install-action@cargo-audit
+        run: cargo install cargo-audit
       - name: Run security audit
         run: cargo audit
         continue-on-error: true
@@ -144,13 +172,13 @@ jobs:
             extra_args: ""
           - name: "Explicit aws-lc-rs"
             features: "security"
-            extra_args: "--no-default-features --features=snappy,gzip,security"
+            extra_args: "--no-default-features --features=security"
           - name: "ring"
             features: "security-ring"
-            extra_args: "--no-default-features --features=snappy,gzip,security-ring"
+            extra_args: "--no-default-features --features=security-ring"
           - name: "No security"
             features: ""
-            extra_args: "--no-default-features --features=snappy,gzip"
+            extra_args: "--no-default-features"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -158,16 +186,16 @@ jobs:
       - name: Build - ${{ matrix.name }}
         run: |
           if [ -z "${{ matrix.extra_args }}" ]; then
-            cargo build --verbose
+            cargo build -p rustfs-kafka --verbose
           else
-            cargo build --verbose ${{ matrix.extra_args }}
+            cargo build -p rustfs-kafka --verbose ${{ matrix.extra_args }}
           fi
       - name: Test - ${{ matrix.name }}
         run: |
           if [ -z "${{ matrix.extra_args }}" ]; then
-            cargo test --verbose
+            cargo test -p rustfs-kafka --lib --tests --verbose
           else
-            cargo test --verbose ${{ matrix.extra_args }}
+            cargo test -p rustfs-kafka --lib --tests --verbose ${{ matrix.extra_args }}
           fi
 
   # Test musl build to verify pure-Rust TLS
@@ -183,8 +211,6 @@ jobs:
           toolchain: stable
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
-        with:
-          targets: x86_64-unknown-linux-musl
       - name: Install musl tools
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build for musl with rustls

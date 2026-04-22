@@ -1,7 +1,16 @@
-//! Async Kafka client built on tokio.
+//! Async Kafka client built on top of the tokio runtime.
 //!
-//! Provides [`AsyncKafkaClient`], [`AsyncProducer`], and [`AsyncConsumer`]
-//! for asynchronous interaction with Kafka brokers using the tokio runtime.
+//! This crate provides lightweight asynchronous wrappers around the
+//! synchronous APIs in `rustfs-kafka`. It exposes three primary types:
+//!
+//! - [`AsyncKafkaClient`]: bootstrap and connection management for async code.
+//! - [`AsyncProducer`]: an async-friendly producer which runs a synchronous
+//!   `Producer` inside a background tokio task.
+//! - [`AsyncConsumer`]: an async-friendly consumer which runs a synchronous
+//!   `Consumer` inside a dedicated background thread.
+//!
+//! These wrappers use MPSC/oneshot channels and join/abort semantics to bridge
+//! between the synchronous core implementation and asynchronous callers.
 //!
 //! # Example
 //!
@@ -11,9 +20,12 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> rustfs_kafka::error::Result<()> {
+//!     // Create an async client from bootstrap hosts
 //!     let client = AsyncKafkaClient::new(vec!["localhost:9092".to_owned()]).await?;
+//!     // Create an async producer which manages a background task
 //!     let mut producer = AsyncProducer::new(client).await?;
 //!
+//!     // Send a single message and close the producer
 //!     producer.send(&Record::from_value("test-topic", &b"hello"[..])).await?;
 //!     producer.close().await?;
 //!     Ok(())

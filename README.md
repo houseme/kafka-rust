@@ -45,7 +45,7 @@ time.
 |----------------------|---------|----------------------------------------------------------|
 | `security`           | Yes     | TLS via rustls with aws-lc-rs crypto provider            |
 | `security-ring`      | No      | TLS via rustls with ring crypto provider                 |
-| `producer_timestamp` | No      | Include timestamps in producer records (requires chrono) |
+| `producer_timestamp` | No      | Include timestamps in producer records                    |
 | `metrics`            | No      | Prometheus-compatible metrics support                    |
 | `nightly`            | No      | Enable nightly-only optimizations                        |
 | `integration_tests`  | No      | Compile integration tests                                |

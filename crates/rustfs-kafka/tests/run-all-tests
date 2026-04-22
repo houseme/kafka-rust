@@ -1,0 +1,140 @@
+#!/bin/bash
+#
+# Usage: ./run-all-tests [Kafka versions separated by ':'...]
+#
+# This script sets up the Docker environment for Kafka and runs all cargo
+# integration tests for each Kafka version specified. Compression is tested
+# within each Docker session (no restart needed). Secure mode requires a
+# separate Docker session.
+#
+# Examples:
+#   ./run-all-tests 3.9.2:4.1.2:4.2.0
+#   SECURES=:secure ./run-all-tests 4.2.0
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+export RUST_TEST_THREADS=1
+
+DEFAULT_VERS='3.9.2:4.1.2:4.2.0'
+DEFAULT_COMPRESSIONS='NONE:SNAPPY:GZIP'
+DEFAULT_SECURES=':secure'
+DEFAULT_SCALA_VER='2.13'
+PRELOADED_DIR="$SCRIPT_DIR/kafka-rust-image/preloaded"
+
+cleanup() {
+    docker compose down 2>/dev/null || true
+}
+trap cleanup EXIT
+
+preload_kafka_archive() {
+    local ver="$1"
+    local archive="kafka_${SCALA_VER}-${ver}.tgz"
+    local target="${PRELOADED_DIR}/${archive}"
+    local tmp_target="${target}.part"
+    local mirrors=(
+        "https://mirrors.tuna.tsinghua.edu.cn/apache/kafka/${ver}/${archive}"
+        "https://mirrors.ustc.edu.cn/apache/kafka/${ver}/${archive}"
+        "https://archive.apache.org/dist/kafka/${ver}/${archive}"
+    )
+
+    mkdir -p "$PRELOADED_DIR"
+    if [[ -s "$target" ]]; then
+        echo "Using cached Kafka archive: $target"
+        return 0
+    fi
+
+    rm -f "$tmp_target"
+    for url in "${mirrors[@]}"; do
+        echo "Preloading Kafka archive from: $url"
+        if curl -fL --retry 3 --retry-delay 2 --retry-max-time 900 "$url" -o "$tmp_target"; then
+            mv "$tmp_target" "$target"
+            echo "Kafka archive preloaded: $target"
+            return 0
+        fi
+    done
+
+    echo "Failed to preload Kafka archive for version ${ver}" >&2
+    rm -f "$tmp_target"
+    return 1
+}
+
+vers="${*:-$DEFAULT_VERS}"
+
+if [[ -z "${COMPRESSIONS+x}" ]]; then
+    COMPRESSIONS=$DEFAULT_COMPRESSIONS
+fi
+
+if [[ -z "${SECURES+x}" ]]; then
+    SECURES=$DEFAULT_SECURES
+elif [[ -z "${SECURES}" ]]; then
+    SECURES=''
+fi
+
+IFS=':' read -r -a secure_modes <<< "$SECURES"
+if [[ ${#secure_modes[@]} -eq 0 ]]; then
+    secure_modes=("")
+fi
+
+IFS=':' read -r -a versions <<< "$vers"
+if [[ ${#versions[@]} -eq 0 ]]; then
+    versions=("$DEFAULT_VERS")
+fi
+
+if [[ -z "${COMPRESSIONS}" ]]; then
+    compression_modes=("NONE")
+else
+    IFS=':' read -r -a compression_modes <<< "$COMPRESSIONS"
+    if [[ ${#compression_modes[@]} -eq 0 ]]; then
+        compression_modes=("NONE")
+    fi
+fi
+
+for ver in "${versions[@]}"; do
+    export KAFKA_VER=$ver
+    export SCALA_VER=$DEFAULT_SCALA_VER
+    preload_kafka_archive "$ver"
+
+    # Determine major version for KRaft vs ZooKeeper mode
+    KAFKA_MAJOR="${ver%%.*}"
+
+    for secure in "${secure_modes[@]}"; do
+        if [[ -z "$secure" || "$secure" == "none" ]]; then
+            export KAFKA_CLIENT_SECURE=""
+            secure_label="<none>"
+        else
+            export KAFKA_CLIENT_SECURE="$secure"
+            secure_label="$secure"
+        fi
+
+        echo "Starting Docker: KAFKA_VER=$KAFKA_VER, SCALA_VER=$SCALA_VER, SECURE=$secure_label"
+        cleanup
+
+        if [[ "$KAFKA_MAJOR" -ge 4 ]]; then
+            # KRaft mode: no ZooKeeper needed
+            docker compose build kafka
+            docker compose up -d kafka
+        else
+            # ZooKeeper mode: need ZooKeeper
+            docker compose --profile zk build kafka
+            docker compose --profile zk up -d zookeeper kafka
+        fi
+
+        # Wait for topics to be created
+        ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test\\.|Topic 'kafka-rust-test' already exists\\.\""
+        ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test2\\.|Topic 'kafka-rust-test2' already exists\\.\""
+
+        for compression in "${compression_modes[@]}"; do
+            if [[ -z "$compression" ]]; then
+                compression="NONE"
+            fi
+            export KAFKA_CLIENT_COMPRESSION=$compression
+            echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure_label"
+            cargo test --features "integration_tests,kafka-protocol/snappy,kafka-protocol/gzip"
+        done
+
+        docker compose down
+    done
+done
