@@ -34,9 +34,7 @@ async fn main() -> rustfs_kafka::Result<()> {
         .with_client_id("example-async-producer".to_owned())
         .build()
         .await?;
-    producer
-        .send(&Record::from_value("my-topic", b"hello async").with_partition(0))
-        .await?;
+    producer.send(&Record::from_value("my-topic", b"hello async")).await?;
     producer.flush().await?;
     producer.close().await?;
     Ok(())
@@ -46,5 +44,5 @@ async fn main() -> rustfs_kafka::Result<()> {
 ## Notes
 
 - This crate is intentionally lightweight and reuses the mature sync protocol/client logic from `rustfs-kafka`.
-- Native async producer path currently requires explicit `partition` on records.
+- Native async producer path now supports metadata-backed auto partition resolution.
 - For full feature details, consult the root crate docs and `docs/usage-guide.md` in the repository.

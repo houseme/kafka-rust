@@ -13,6 +13,7 @@ use rustfs_kafka::client::{Compression, RequiredAcks, SecurityConfig};
 use rustfs_kafka::error::{ConnectionError, Error, KafkaCode, ProtocolError, Result};
 use rustfs_kafka::producer::{AsBytes, Producer, Record};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -47,14 +48,28 @@ struct BridgedProducer {
 
 struct NativeProducer {
     client: Mutex<AsyncKafkaClient>,
+    state: Mutex<NativeProducerState>,
     required_acks: i16,
     ack_timeout_ms: i32,
     compression: Compression,
     correlation: AtomicI32,
 }
 
+#[derive(Default)]
+struct NativeProducerState {
+    brokers: HashMap<i32, String>,
+    topics: HashMap<String, TopicRoute>,
+    round_robin: HashMap<String, usize>,
+}
+
+#[derive(Default)]
+struct TopicRoute {
+    partitions: HashMap<i32, i32>, // partition -> leader_id
+    available_partitions: Vec<i32>,
+}
+
 enum AsyncProducerMode {
-    Native(NativeProducer),
+    Native(Box<NativeProducer>),
     Bridged(BridgedProducer),
 }
 
@@ -74,6 +89,7 @@ pub struct AsyncProducer {
 pub struct AsyncProducerConfig {
     required_acks: RequiredAcks,
     ack_timeout: Duration,
+    compression: Compression,
     security: Option<SecurityConfig>,
 }
 
@@ -83,6 +99,7 @@ impl AsyncProducerConfig {
         Self {
             required_acks: RequiredAcks::One,
             ack_timeout: Duration::from_secs(30),
+            compression: Compression::NONE,
             security: None,
         }
     }
@@ -96,6 +113,12 @@ impl AsyncProducerConfig {
     #[must_use]
     pub fn with_ack_timeout(mut self, ack_timeout: Duration) -> Self {
         self.ack_timeout = ack_timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
         self
     }
 
@@ -155,6 +178,13 @@ impl AsyncProducerBuilder {
         self
     }
 
+    /// Sets compression for produced record batches.
+    #[must_use]
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.config = self.config.with_compression(compression);
+        self
+    }
+
     /// Sets optional TLS/SASL security configuration.
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig) -> Self {
@@ -197,7 +227,8 @@ impl AsyncProducerBuilder {
             let mut builder = Producer::from_hosts(hosts)
                 .with_client_id(client_id)
                 .with_required_acks(config.required_acks)
-                .with_ack_timeout(config.ack_timeout);
+                .with_ack_timeout(config.ack_timeout)
+                .with_compression(config.compression);
 
             if let Some(security) = config.security {
                 builder = builder.with_security(security);
@@ -243,6 +274,7 @@ impl AsyncProducer {
             .with_client_id(client.client_id().to_owned())
             .with_required_acks(config.required_acks)
             .with_ack_timeout(config.ack_timeout)
+            .with_compression(config.compression)
             .build_with_optional_security(config.security)
             .await
     }
@@ -260,6 +292,7 @@ impl AsyncProducer {
         Self::builder(hosts)
             .with_required_acks(config.required_acks)
             .with_ack_timeout(config.ack_timeout)
+            .with_compression(config.compression)
             .build_with_optional_security(config.security)
             .await
     }
@@ -299,13 +332,17 @@ impl AsyncProducer {
 
         let ack_timeout_ms = to_millis_i32(config.ack_timeout)?;
         Ok(Self {
-            mode: AsyncProducerMode::Native(NativeProducer {
-                client: Mutex::new(client),
-                required_acks: config.required_acks as i16,
-                ack_timeout_ms,
-                compression: Compression::NONE,
-                correlation: AtomicI32::new(1),
-            }),
+            mode: AsyncProducerMode::Native(
+                NativeProducer {
+                    client: Mutex::new(client),
+                    state: Mutex::new(NativeProducerState::default()),
+                    required_acks: config.required_acks as i16,
+                    ack_timeout_ms,
+                    compression: config.compression,
+                    correlation: AtomicI32::new(1),
+                }
+                .into(),
+            ),
         })
     }
 }
@@ -423,24 +460,25 @@ impl NativeProducer {
         K: AsBytes,
         V: AsBytes,
     {
-        if record.partition < 0 {
-            return Err(Error::Config(
-                "native async producer requires explicit partition".to_owned(),
-            ));
-        }
-
         let topic = record.topic.to_owned();
-        let partition = record.partition;
+        let requested_partition = record.partition;
         let key = Bytes::copy_from_slice(record.key.as_bytes());
         let value = Bytes::copy_from_slice(record.value.as_bytes());
         let headers: Vec<(String, Bytes)> = record.headers.iter().cloned().collect();
 
         let correlation_id = self.correlation.fetch_add(1, Ordering::Relaxed);
         let mut client = self.client.lock().await;
+        let mut state = self.state.lock().await;
         client.ensure_connected().await?;
 
-        let leader_host =
-            resolve_leader_host(&mut client, &topic, partition, correlation_id).await?;
+        let (partition, leader_host) = resolve_partition_and_leader(
+            &mut client,
+            &mut state,
+            &topic,
+            requested_partition,
+            correlation_id,
+        )
+        .await?;
         let client_id = client.client_id().to_owned();
         let conn = client.get_connection(&leader_host).await?;
 
@@ -466,6 +504,9 @@ impl NativeProducer {
         for topic_resp in response.responses {
             for part in topic_resp.partition_responses {
                 if part.error_code != 0 {
+                    if let Some(code) = map_kafka_code(part.error_code) {
+                        return Err(Error::Kafka(code));
+                    }
                     return Err(Error::Kafka(KafkaCode::Unknown));
                 }
             }
@@ -475,12 +516,78 @@ impl NativeProducer {
     }
 }
 
-async fn resolve_leader_host(
+async fn resolve_partition_and_leader(
     client: &mut AsyncKafkaClient,
+    state: &mut NativeProducerState,
     topic: &str,
-    partition: i32,
+    requested_partition: i32,
     correlation_id: i32,
-) -> Result<String> {
+) -> Result<(i32, String)> {
+    for _ in 0..2 {
+        if let Some((partition, leader_host)) =
+            try_resolve_from_cache(state, topic, requested_partition)
+        {
+            return Ok((partition, leader_host));
+        }
+
+        refresh_topic_metadata(client, state, topic, correlation_id).await?;
+    }
+
+    Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+}
+
+fn try_resolve_from_cache(
+    state: &mut NativeProducerState,
+    topic: &str,
+    requested_partition: i32,
+) -> Option<(i32, String)> {
+    let route = state.topics.get(topic)?;
+    let partitions = route.partitions.clone();
+    let available_partitions = route.available_partitions.clone();
+    let partition = if requested_partition >= 0 {
+        requested_partition
+    } else {
+        pick_round_robin_partition(state, topic, &available_partitions)?
+    };
+
+    let leader_id = *partitions.get(&partition)?;
+    if leader_id < 0 {
+        return None;
+    }
+    let leader_host = state.brokers.get(&leader_id)?.clone();
+    Some((partition, leader_host))
+}
+
+fn pick_round_robin_partition(
+    state: &mut NativeProducerState,
+    topic: &str,
+    available_partitions: &[i32],
+) -> Option<i32> {
+    if available_partitions.is_empty() {
+        return None;
+    }
+
+    let len = available_partitions.len();
+    let idx = match state.round_robin.entry(topic.to_owned()) {
+        Entry::Occupied(mut occupied) => {
+            let idx = *occupied.get() % len;
+            *occupied.get_mut() = occupied.get().wrapping_add(1);
+            idx
+        }
+        Entry::Vacant(vacant) => {
+            vacant.insert(1);
+            0
+        }
+    };
+    available_partitions.get(idx).copied()
+}
+
+async fn refresh_topic_metadata(
+    client: &mut AsyncKafkaClient,
+    state: &mut NativeProducerState,
+    topic: &str,
+    correlation_id: i32,
+) -> Result<()> {
     let request_host = pick_request_host(client).ok_or_else(no_host_reachable_error)?;
     let client_id = client.client_id().to_owned();
     let conn = client.get_connection(&request_host).await?;
@@ -489,9 +596,8 @@ async fn resolve_leader_host(
     send_kp_request(conn, &header, &request, API_VERSION_METADATA).await?;
     let response = get_kp_response::<MetadataResponse>(conn, API_VERSION_METADATA).await?;
 
-    let mut brokers: HashMap<i32, String> = HashMap::new();
     for broker in response.brokers {
-        brokers.insert(
+        state.brokers.insert(
             i32::from(broker.node_id),
             format!("{}:{}", broker.host, broker.port),
         );
@@ -505,19 +611,20 @@ async fn resolve_leader_host(
             continue;
         }
 
+        let mut route = TopicRoute::default();
         for part in topic_meta.partitions {
-            if part.partition_index != partition {
-                continue;
-            }
-
+            let partition = part.partition_index;
             let leader = i32::from(part.leader_id);
-            if leader < 0 {
-                return Err(Error::Kafka(KafkaCode::LeaderNotAvailable));
-            }
-            if let Some(host) = brokers.get(&leader) {
-                return Ok(host.clone());
+            route.partitions.insert(partition, leader);
+            if leader >= 0 {
+                route.available_partitions.push(partition);
             }
         }
+
+        route.available_partitions.sort_unstable();
+        route.available_partitions.dedup();
+        state.topics.insert(topic.to_owned(), route);
+        return Ok(());
     }
 
     Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
@@ -629,6 +736,44 @@ fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {
         Compression::SNAPPY => kafka_protocol::records::Compression::Snappy,
         Compression::LZ4 => kafka_protocol::records::Compression::Lz4,
         Compression::ZSTD => kafka_protocol::records::Compression::Zstd,
+    }
+}
+
+fn map_kafka_code(code: i16) -> Option<KafkaCode> {
+    match code {
+        0 => None,
+        1 => Some(KafkaCode::OffsetOutOfRange),
+        2 => Some(KafkaCode::CorruptMessage),
+        3 => Some(KafkaCode::UnknownTopicOrPartition),
+        4 => Some(KafkaCode::InvalidMessageSize),
+        5 => Some(KafkaCode::LeaderNotAvailable),
+        6 => Some(KafkaCode::NotLeaderForPartition),
+        7 => Some(KafkaCode::RequestTimedOut),
+        8 => Some(KafkaCode::BrokerNotAvailable),
+        9 => Some(KafkaCode::ReplicaNotAvailable),
+        10 => Some(KafkaCode::MessageSizeTooLarge),
+        11 => Some(KafkaCode::StaleControllerEpoch),
+        12 => Some(KafkaCode::OffsetMetadataTooLarge),
+        13 => Some(KafkaCode::NetworkException),
+        14 => Some(KafkaCode::GroupLoadInProgress),
+        15 => Some(KafkaCode::GroupCoordinatorNotAvailable),
+        16 => Some(KafkaCode::NotCoordinatorForGroup),
+        17 => Some(KafkaCode::InvalidTopic),
+        22 => Some(KafkaCode::IllegalGeneration),
+        23 => Some(KafkaCode::InconsistentGroupProtocol),
+        24 => Some(KafkaCode::InvalidGroupId),
+        25 => Some(KafkaCode::UnknownMemberId),
+        26 => Some(KafkaCode::InvalidSessionTimeout),
+        27 => Some(KafkaCode::RebalanceInProgress),
+        28 => Some(KafkaCode::InvalidCommitOffsetSize),
+        29 => Some(KafkaCode::TopicAuthorizationFailed),
+        30 => Some(KafkaCode::GroupAuthorizationFailed),
+        31 => Some(KafkaCode::ClusterAuthorizationFailed),
+        32 => Some(KafkaCode::InvalidTimestamp),
+        33 => Some(KafkaCode::UnsupportedSaslMechanism),
+        34 => Some(KafkaCode::IllegalSaslState),
+        35 => Some(KafkaCode::UnsupportedVersion),
+        _ => Some(KafkaCode::Unknown),
     }
 }
 
