@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- `AsyncProducer` now defaults to a native async I/O path (Metadata + Produce over tokio sockets) and falls back to bridged sync mode when needed.
 - Reworked `AsyncProducer` internals to run synchronous producer operations on a dedicated background thread.
 - Moved async producer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.
 - Moved async consumer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.

@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 rustfs-kafka = { workspace = true }
 bytes.workspace = true
+kafka-protocol.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "rt", "macros"] }
 tracing.workspace = true
 

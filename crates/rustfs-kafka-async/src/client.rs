@@ -93,7 +93,10 @@ impl AsyncKafkaClient {
     /// or when the pool already contains connections.
     pub async fn ensure_connected(&mut self) -> Result<()> {
         if !self.bootstrap_hosts.is_empty() && self.pool.hosts().is_empty() {
-            connect_any_bootstrap(&mut self.pool, &self.bootstrap_hosts).await;
+            let connected = connect_any_bootstrap(&mut self.pool, &self.bootstrap_hosts).await;
+            if !connected {
+                return Err(Error::Connection(ConnectionError::NoHostReachable));
+            }
         }
         Ok(())
     }

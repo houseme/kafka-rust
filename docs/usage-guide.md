@@ -85,7 +85,9 @@ async fn main() -> rustfs_kafka::error::Result<()> {
         .with_client_id("demo-async-producer".to_owned())
         .build()
         .await?;
-    producer.send(&Record::from_value("demo-topic", b"hello async")).await?;
+    producer
+        .send(&Record::from_value("demo-topic", b"hello async").with_partition(0))
+        .await?;
     producer.flush().await?;
     producer.close().await?;
     Ok(())
