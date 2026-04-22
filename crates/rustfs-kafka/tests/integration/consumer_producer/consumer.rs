@@ -5,9 +5,12 @@ use rustfs_kafka::producer::Record;
 /// Tests that consuming one message works
 #[test]
 fn test_consumer_poll() {
+    let topic = unique_test_topic("kafka-rust-consumer-poll");
+    create_test_topic(&topic);
+
     // poll once to set a position in the topic
     let group = unique_test_group();
-    let mut consumer = test_consumer_with_group(&group);
+    let mut consumer = test_consumer_with_topic_and_group(&topic, &group);
     let mut messages = consumer.poll().unwrap();
     assert!(
         messages.is_empty(),
@@ -19,10 +22,7 @@ fn test_consumer_poll() {
     let correct_message_contents = "test_consumer_poll".as_bytes();
     let mut producer = test_producer();
     producer
-        .send(&Record::from_value(
-            TEST_TOPIC_NAME,
-            correct_message_contents,
-        ))
+        .send(&Record::from_value(&topic, correct_message_contents))
         .unwrap();
 
     const MAX_POLL_ATTEMPTS: usize = 100;
@@ -60,16 +60,14 @@ fn test_consumer_poll() {
 /// Test Consumer::commit_messageset
 #[test]
 fn test_consumer_commit_messageset() {
+    let topic = unique_test_topic("kafka-rust-commit-messageset");
+    create_test_topic(&topic);
+
     let group = unique_test_group();
-    let mut consumer = test_consumer_with_group(&group);
+    let mut consumer = test_consumer_with_topic_and_group(&topic, &group);
 
     // get the offsets at the beginning of the test
-    let start_offsets = get_group_offsets(
-        &mut new_ready_kafka_client(),
-        &group,
-        TEST_TOPIC_NAME,
-        Some(0),
-    );
+    let start_offsets = get_group_offsets(&mut new_ready_kafka_client(), &group, &topic, Some(0));
 
     debug!("start offsets: {:?}", start_offsets);
 
@@ -85,7 +83,7 @@ fn test_consumer_commit_messageset() {
     const NUM_MESSAGES_I64: i64 = 100;
     const NUM_MESSAGES_U32: u32 = 100;
     const NUM_MESSAGES_USIZE: usize = 100;
-    send_random_messages(&mut test_producer(), TEST_TOPIC_NAME, NUM_MESSAGES_U32);
+    send_random_messages(&mut test_producer(), &topic, NUM_MESSAGES_U32);
 
     let mut num_messages = 0;
 
@@ -123,12 +121,7 @@ fn test_consumer_commit_messageset() {
     assert_eq!(NUM_MESSAGES_USIZE, num_messages, "wrong number of messages");
 
     // get the latest offsets and make sure they add up to the number of messages
-    let latest_offsets = get_group_offsets(
-        &mut new_ready_kafka_client(),
-        &group,
-        TEST_TOPIC_NAME,
-        Some(0),
-    );
+    let latest_offsets = get_group_offsets(&mut new_ready_kafka_client(), &group, &topic, Some(0));
 
     debug!("end offsets: {:?}", latest_offsets);
 
@@ -140,10 +133,8 @@ fn test_consumer_commit_messageset() {
         "wrong number of messages committed"
     );
 
-    for partition in consumer.subscriptions().get(TEST_TOPIC_NAME).unwrap() {
-        let consumed_offset = consumer
-            .last_consumed_message(TEST_TOPIC_NAME, *partition)
-            .unwrap();
+    for partition in consumer.subscriptions().get(&topic).unwrap() {
+        let consumed_offset = consumer.last_consumed_message(&topic, *partition).unwrap();
         let latest_offset = latest_offsets.get(partition).unwrap();
         assert_eq!(
             *latest_offset - 1,
@@ -157,16 +148,14 @@ fn test_consumer_commit_messageset() {
 /// message sets, nothing is committed.
 #[test]
 fn test_consumer_commit_messageset_no_consumes() {
+    let topic = unique_test_topic("kafka-rust-commit-no-consume");
+    create_test_topic(&topic);
+
     let group = unique_test_group();
-    let mut consumer = test_consumer_with_group(&group);
+    let mut consumer = test_consumer_with_topic_and_group(&topic, &group);
 
     // get the offsets at the beginning of the test
-    let start_offsets = get_group_offsets(
-        &mut new_ready_kafka_client(),
-        &group,
-        TEST_TOPIC_NAME,
-        Some(0),
-    );
+    let start_offsets = get_group_offsets(&mut new_ready_kafka_client(), &group, &topic, Some(0));
 
     debug!("start offsets: {:?}", start_offsets);
 
@@ -181,7 +170,7 @@ fn test_consumer_commit_messageset_no_consumes() {
     // send some messages to the topic
     const NUM_MESSAGES_U32: u32 = 100;
     const NUM_MESSAGES_USIZE: usize = 100;
-    send_random_messages(&mut test_producer(), TEST_TOPIC_NAME, NUM_MESSAGES_U32);
+    send_random_messages(&mut test_producer(), &topic, NUM_MESSAGES_U32);
 
     let mut num_messages = 0;
 
@@ -221,12 +210,7 @@ fn test_consumer_commit_messageset_no_consumes() {
     assert_eq!(NUM_MESSAGES_USIZE, num_messages, "wrong number of messages");
 
     // get the latest offsets and make sure they add up to the number of messages
-    let latest_offsets = get_group_offsets(
-        &mut consumer.into_client(),
-        &group,
-        TEST_TOPIC_NAME,
-        Some(0),
-    );
+    let latest_offsets = get_group_offsets(&mut consumer.into_client(), &group, &topic, Some(0));
 
     debug!("end offsets: {:?}", latest_offsets);
 

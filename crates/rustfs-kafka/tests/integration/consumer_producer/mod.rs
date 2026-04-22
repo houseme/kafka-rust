@@ -1,6 +1,7 @@
 pub use super::*;
 
 use std::collections::{HashMap, HashSet};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -29,8 +30,8 @@ pub fn test_producer() -> Producer {
 ///
 /// TODO: This can go away if we don't use the builder pattern.
 macro_rules! test_consumer_config {
-    ( $x:expr, $group:expr ) => {
-        $x.with_topic_partitions(TEST_TOPIC_NAME.to_owned(), &TEST_TOPIC_PARTITIONS)
+    ( $x:expr, $topic:expr, $group:expr ) => {
+        $x.with_topic_partitions($topic.to_owned(), &TEST_TOPIC_PARTITIONS)
             .with_group($group.to_owned())
             .with_fallback_offset(rustfs_kafka::consumer::FetchOffset::Latest)
             .with_offset_storage(Some(rustfs_kafka::consumer::GroupOffsetStorage::Kafka))
@@ -44,22 +45,124 @@ pub fn unique_test_group() -> String {
     format!("kafka-rust-tester-{}-{seq}", std::process::id())
 }
 
+pub fn unique_test_topic(prefix: &str) -> String {
+    let seq = TEST_GROUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}", std::process::id())
+}
+
+pub fn create_test_topic(topic: &str) {
+    let tests_dir = format!("{}/tests", env!("CARGO_MANIFEST_DIR"));
+    let topic_spec = format!("{}:{}:1", topic, TEST_TOPIC_PARTITIONS.len());
+    const MAX_CREATE_TOPIC_ATTEMPTS: usize = 40;
+    let mut last_stdout = String::new();
+    let mut last_stderr = String::new();
+    let mut created = false;
+
+    for attempt in 0..MAX_CREATE_TOPIC_ATTEMPTS {
+        let output = Command::new("docker")
+            .args([
+                "compose",
+                "exec",
+                "-T",
+                "-e",
+                "KAFKA_PORT=9092",
+                "-e",
+                &format!("KAFKA_CREATE_TOPICS={topic_spec}"),
+                "kafka",
+                "/usr/bin/create-topics.sh",
+            ])
+            .current_dir(&tests_dir)
+            .output()
+            .unwrap_or_else(|err| {
+                panic!("failed to spawn docker compose for test topic {topic}: {err}")
+            });
+
+        last_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        last_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+        if output.status.success() {
+            created = true;
+            break;
+        }
+
+        if attempt % 5 == 0 {
+            debug!(
+                "still waiting to create test topic: topic={}, attempt={}, stderr={}",
+                topic,
+                attempt,
+                last_stderr.trim()
+            );
+        }
+        poll_backoff(500);
+    }
+
+    assert!(
+        created,
+        "failed to create test topic {} via docker compose after {} attempts\nstdout:\n{}\nstderr:\n{}",
+        topic, MAX_CREATE_TOPIC_ATTEMPTS, last_stdout, last_stderr
+    );
+
+    let mut client = new_ready_kafka_client();
+
+    const MAX_METADATA_ATTEMPTS: usize = 100;
+    for attempt in 0..MAX_METADATA_ATTEMPTS {
+        client.load_metadata_all().unwrap_or_else(|err| {
+            panic!("failed to reload metadata for test topic {topic}: {err}")
+        });
+
+        if let Some(partitions) = client.topics().partitions(topic) {
+            let mut available = partitions.available_ids().to_vec();
+            let mut expected = TEST_TOPIC_PARTITIONS.to_vec();
+            available.sort_unstable();
+            expected.sort_unstable();
+            if available == expected {
+                return;
+            }
+        }
+
+        if attempt % 10 == 0 {
+            debug!(
+                "still waiting for topic metadata: topic={}, attempt={}",
+                topic, attempt
+            );
+        }
+        poll_backoff(50);
+    }
+
+    panic!("timed out waiting for topic metadata for {topic}");
+}
+
 /// Return a Consumer builder with some defaults
 pub fn test_consumer_builder() -> rustfs_kafka::consumer::Builder {
     test_consumer_builder_with_group(TEST_GROUP_NAME)
 }
 
 pub fn test_consumer_builder_with_group(group: &str) -> rustfs_kafka::consumer::Builder {
-    test_consumer_config!(Consumer::from_client(new_ready_kafka_client()), group)
+    test_consumer_builder_with_topic_and_group(TEST_TOPIC_NAME, group)
 }
 
-pub fn test_consumer_with_group(group: &str) -> Consumer {
-    test_consumer_with_client_and_group(new_ready_kafka_client(), group)
+pub fn test_consumer_builder_with_topic_and_group(
+    topic: &str,
+    group: &str,
+) -> rustfs_kafka::consumer::Builder {
+    test_consumer_config!(
+        Consumer::from_client(new_ready_kafka_client()),
+        topic,
+        group
+    )
+}
+
+pub fn test_consumer_with_topic_and_group(topic: &str, group: &str) -> Consumer {
+    test_consumer_with_client_topic_and_group(new_ready_kafka_client(), topic, group)
 }
 
 /// Return a ready Kafka consumer with all default settings
-pub fn test_consumer_with_client_and_group(mut client: KafkaClient, group: &str) -> Consumer {
-    let topics = [TEST_TOPIC_NAME, TEST_TOPIC_NAME_2];
+pub fn test_consumer_with_client_topic_and_group(
+    mut client: KafkaClient,
+    topic: &str,
+    group: &str,
+) -> Consumer {
+    let topics = [topic, TEST_TOPIC_NAME_2];
 
     // Fetch the latest offsets and commit those so that this consumer
     // is always at the latest offset before being used.
@@ -81,14 +184,14 @@ pub fn test_consumer_with_client_and_group(mut client: KafkaClient, group: &str)
 
     client.load_metadata_all().expect("failed to load metadata");
     let partition_offsets: HashSet<PartitionOffset> = client
-        .fetch_group_topic_offset(group, TEST_TOPIC_NAME)
+        .fetch_group_topic_offset(group, topic)
         .unwrap()
         .into_iter()
         .collect();
 
     debug!("partition_offsets: {:?}", partition_offsets);
 
-    test_consumer_config!(Consumer::from_client(client), group)
+    test_consumer_config!(Consumer::from_client(client), topic, group)
         .create()
         .unwrap()
 }
