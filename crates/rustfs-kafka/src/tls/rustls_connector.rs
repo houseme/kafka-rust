@@ -10,10 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{TlsConfig, TlsStream};
+use rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
-use tracing::{debug, warn};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore, StreamOwned};
+use tracing::debug;
 
 /// rustls-based TLS stream
 pub struct RustlsStream {
@@ -64,17 +67,69 @@ impl Write for RustlsStream {
     }
 }
 
+/// Certificate verifier that accepts any server certificate (for testing).
+///
+/// # Safety
+///
+/// This verifier performs NO certificate validation. It should only be used
+/// in test environments where the server uses a self-signed certificate.
+#[derive(Debug)]
+struct InsecureVerifier;
+
+impl ServerCertVerifier for InsecureVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+        ]
+    }
+}
+
 /// rustls-based TLS connector
 pub struct RustlsConnector {
     config: Arc<ClientConfig>,
-    verify_hostname: bool,
 }
 
 impl RustlsConnector {
     /// Create a new rustls connector with the given configuration
     pub fn new(tls_config: &TlsConfig) -> io::Result<Self> {
-        let root_store = Self::load_root_store(tls_config)?;
-
         let provider = {
             #[cfg(feature = "security-ring")]
             {
@@ -86,27 +141,44 @@ impl RustlsConnector {
             }
         };
 
-        let config_builder = ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Failed to set protocol versions: {e}"),
-                )
-            })?
-            .with_root_certificates(root_store);
+        let config = if tls_config.verify_hostname {
+            // Secure mode: validate certificate chain
+            let root_store = Self::load_root_store(tls_config)?;
 
-        let config = if let (Some(cert_path), Some(key_path)) =
-            (&tls_config.client_cert_path, &tls_config.client_key_path)
-        {
-            Self::load_client_auth(config_builder, cert_path, key_path)?
+            let config_builder = ClientConfig::builder_with_provider(Arc::new(provider))
+                .with_safe_default_protocol_versions()
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to set protocol versions: {e}"),
+                    )
+                })?
+                .with_root_certificates(root_store);
+
+            if let (Some(cert_path), Some(key_path)) =
+                (&tls_config.client_cert_path, &tls_config.client_key_path)
+            {
+                Self::load_client_auth(config_builder, cert_path, key_path)?
+            } else {
+                config_builder.with_no_client_auth()
+            }
         } else {
-            config_builder.with_no_client_auth()
+            // Insecure mode: skip all certificate verification (for testing)
+            ClientConfig::builder_with_provider(Arc::new(provider))
+                .with_safe_default_protocol_versions()
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Failed to set protocol versions: {e}"),
+                    )
+                })?
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
+                .with_no_client_auth()
         };
 
         Ok(RustlsConnector {
             config: Arc::new(config),
-            verify_hostname: tls_config.verify_hostname,
         })
     }
 
@@ -221,17 +293,6 @@ impl RustlsConnector {
         let conn = ClientConnection::new(self.config.clone(), server_name)
             .map_err(|e| io::Error::other(format!("TLS connection error: {e}")))?;
 
-        // Disable hostname verification if requested (insecure!)
-        if !self.verify_hostname {
-            warn!(
-                "Hostname verification is disabled! This is insecure and should only be used for testing."
-            );
-            // Note: rustls doesn't provide a direct way to disable hostname verification
-            // after ClientConnection is created. The verification happens during
-            // ServerName creation, so we've already validated it above.
-            // For true insecure mode, users should use a custom verifier.
-        }
-
         let mut stream = StreamOwned::new(conn, tcp_stream);
 
         // Complete the TLS handshake
@@ -246,10 +307,6 @@ impl RustlsConnector {
 
 impl std::fmt::Debug for RustlsConnector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "RustlsConnector {{ verify_hostname: {} }}",
-            self.verify_hostname
-        )
+        write!(f, "RustlsConnector {{ config: <redacted> }}")
     }
 }
