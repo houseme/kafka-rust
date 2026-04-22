@@ -7,7 +7,8 @@ use rustfs_kafka::producer::Record;
 #[test]
 fn test_consumer_poll() {
     // poll once to set a position in the topic
-    let mut consumer = test_consumer();
+    let group = unique_test_group();
+    let mut consumer = test_consumer_with_group(&group);
     let mut messages = consumer.poll().unwrap();
     assert!(
         messages.is_empty(),
@@ -25,9 +26,23 @@ fn test_consumer_poll() {
         ))
         .unwrap();
 
-    messages = consumer.poll().unwrap();
-    let mut messages_iter = messages.iter();
-    let message_set = messages_iter.next().unwrap();
+    const MAX_POLL_ATTEMPTS: usize = 100;
+    let mut message_set = None;
+    for attempt in 0..MAX_POLL_ATTEMPTS {
+        messages = consumer.poll().unwrap();
+        if let Some(ms) = messages.iter().next()
+            && !ms.messages().is_empty() {
+                message_set = Some(ms);
+                break;
+            }
+        if attempt % 10 == 0 {
+            debug!(
+                "still waiting for produced message in test_consumer_poll: attempt={}",
+                attempt
+            );
+        }
+    }
+    let message_set = message_set.expect("timed out waiting for message in test_consumer_poll");
 
     assert_eq!(
         1,
@@ -45,12 +60,13 @@ fn test_consumer_poll() {
 /// Test Consumer::commit_messageset
 #[test]
 fn test_consumer_commit_messageset() {
-    let mut consumer = test_consumer();
+    let group = unique_test_group();
+    let mut consumer = test_consumer_with_group(&group);
 
     // get the offsets at the beginning of the test
     let start_offsets = get_group_offsets(
         &mut new_ready_kafka_client(),
-        TEST_GROUP_NAME,
+        &group,
         TEST_TOPIC_NAME,
         Some(0),
     );
@@ -73,7 +89,9 @@ fn test_consumer_commit_messageset() {
 
     let mut num_messages = 0;
 
-    'read: loop {
+    const MAX_POLL_ATTEMPTS: usize = 600;
+    let mut reached_target = false;
+    for attempt in 0..MAX_POLL_ATTEMPTS {
         for ms in consumer.poll().unwrap().iter() {
             let messages = ms.messages();
             num_messages += messages.len();
@@ -83,16 +101,30 @@ fn test_consumer_commit_messageset() {
         consumer.commit_consumed().unwrap();
 
         if num_messages >= NUM_MESSAGES_USIZE {
-            break 'read;
+            reached_target = true;
+            break;
+        }
+
+        if attempt % 50 == 0 {
+            debug!(
+                "still waiting for messages in test_consumer_commit_messageset: attempt={}, observed={}",
+                attempt, num_messages
+            );
         }
     }
+
+    assert!(
+        reached_target,
+        "timed out waiting for consumed messages: expected at least {}, got {}",
+        NUM_MESSAGES_USIZE, num_messages
+    );
 
     assert_eq!(NUM_MESSAGES_USIZE, num_messages, "wrong number of messages");
 
     // get the latest offsets and make sure they add up to the number of messages
     let latest_offsets = get_group_offsets(
         &mut new_ready_kafka_client(),
-        TEST_GROUP_NAME,
+        &group,
         TEST_TOPIC_NAME,
         Some(0),
     );
@@ -124,12 +156,13 @@ fn test_consumer_commit_messageset() {
 /// message sets, nothing is committed.
 #[test]
 fn test_consumer_commit_messageset_no_consumes() {
-    let mut consumer = test_consumer();
+    let group = unique_test_group();
+    let mut consumer = test_consumer_with_group(&group);
 
     // get the offsets at the beginning of the test
     let start_offsets = get_group_offsets(
         &mut new_ready_kafka_client(),
-        TEST_GROUP_NAME,
+        &group,
         TEST_TOPIC_NAME,
         Some(0),
     );
@@ -151,7 +184,9 @@ fn test_consumer_commit_messageset_no_consumes() {
 
     let mut num_messages = 0;
 
-    'read: loop {
+    const MAX_POLL_ATTEMPTS: usize = 600;
+    let mut reached_target = false;
+    for attempt in 0..MAX_POLL_ATTEMPTS {
         for ms in consumer.poll().unwrap().iter() {
             let messages = ms.messages();
             num_messages += messages.len();
@@ -163,16 +198,30 @@ fn test_consumer_commit_messageset_no_consumes() {
         consumer.commit_consumed().unwrap();
 
         if num_messages >= NUM_MESSAGES_USIZE {
-            break 'read;
+            reached_target = true;
+            break;
+        }
+
+        if attempt % 50 == 0 {
+            debug!(
+                "still waiting for messages in test_consumer_commit_messageset_no_consumes: attempt={}, observed={}",
+                attempt, num_messages
+            );
         }
     }
+
+    assert!(
+        reached_target,
+        "timed out waiting for consumed messages: expected at least {}, got {}",
+        NUM_MESSAGES_USIZE, num_messages
+    );
 
     assert_eq!(NUM_MESSAGES_USIZE, num_messages, "wrong number of messages");
 
     // get the latest offsets and make sure they add up to the number of messages
     let latest_offsets = get_group_offsets(
         &mut consumer.into_client(),
-        TEST_GROUP_NAME,
+        &group,
         TEST_TOPIC_NAME,
         Some(0),
     );

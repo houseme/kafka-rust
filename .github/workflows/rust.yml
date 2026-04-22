@@ -55,7 +55,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check documentation coverage
-        run: RUSTDOCFLAGS="--warn-missing-docs" cargo doc --no-deps 2>&1
+        run: RUSTDOCFLAGS="-Wmissing_docs" cargo doc --no-deps 2>&1
         continue-on-error: true
 
   integration-test:

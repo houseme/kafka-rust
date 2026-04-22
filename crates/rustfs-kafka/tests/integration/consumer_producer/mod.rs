@@ -1,6 +1,7 @@
 pub use super::*;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rustfs_kafka::client::{FetchOffset, KafkaClient, PartitionOffset};
@@ -28,25 +29,36 @@ pub fn test_producer() -> Producer {
 ///
 /// TODO: This can go away if we don't use the builder pattern.
 macro_rules! test_consumer_config {
-    ( $x:expr ) => {
+    ( $x:expr, $group:expr ) => {
         $x.with_topic_partitions(TEST_TOPIC_NAME.to_owned(), &TEST_TOPIC_PARTITIONS)
-            .with_group(TEST_GROUP_NAME.to_owned())
+            .with_group($group.to_owned())
             .with_fallback_offset(rustfs_kafka::consumer::FetchOffset::Latest)
             .with_offset_storage(Some(rustfs_kafka::consumer::GroupOffsetStorage::Kafka))
     };
 }
 
-/// Return a Consumer builder with some defaults
-pub fn test_consumer_builder() -> rustfs_kafka::consumer::Builder {
-    test_consumer_config!(Consumer::from_client(new_ready_kafka_client()))
+static TEST_GROUP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn unique_test_group() -> String {
+    let seq = TEST_GROUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("kafka-rust-tester-{}-{seq}", std::process::id())
 }
 
-pub fn test_consumer() -> Consumer {
-    test_consumer_with_client(new_ready_kafka_client())
+/// Return a Consumer builder with some defaults
+pub fn test_consumer_builder() -> rustfs_kafka::consumer::Builder {
+    test_consumer_builder_with_group(TEST_GROUP_NAME)
+}
+
+pub fn test_consumer_builder_with_group(group: &str) -> rustfs_kafka::consumer::Builder {
+    test_consumer_config!(Consumer::from_client(new_ready_kafka_client()), group)
+}
+
+pub fn test_consumer_with_group(group: &str) -> Consumer {
+    test_consumer_with_client_and_group(new_ready_kafka_client(), group)
 }
 
 /// Return a ready Kafka consumer with all default settings
-pub fn test_consumer_with_client(mut client: KafkaClient) -> Consumer {
+pub fn test_consumer_with_client_and_group(mut client: KafkaClient, group: &str) -> Consumer {
     let topics = [TEST_TOPIC_NAME, TEST_TOPIC_NAME_2];
 
     // Fetch the latest offsets and commit those so that this consumer
@@ -62,21 +74,21 @@ pub fn test_consumer_with_client(mut client: KafkaClient) -> Consumer {
             }
 
             client
-                .commit_offset(TEST_GROUP_NAME, &topic, po.partition, po.offset)
+                .commit_offset(group, &topic, po.partition, po.offset)
                 .unwrap();
         }
     }
 
     client.load_metadata_all().expect("failed to load metadata");
     let partition_offsets: HashSet<PartitionOffset> = client
-        .fetch_group_topic_offset(TEST_GROUP_NAME, TEST_TOPIC_NAME)
+        .fetch_group_topic_offset(group, TEST_TOPIC_NAME)
         .unwrap()
         .into_iter()
         .collect();
 
     debug!("partition_offsets: {:?}", partition_offsets);
 
-    test_consumer_config!(Consumer::from_client(client))
+    test_consumer_config!(Consumer::from_client(client), group)
         .create()
         .unwrap()
 }

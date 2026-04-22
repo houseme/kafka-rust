@@ -477,10 +477,10 @@ mod tests {
         let bv = BrokerApiVersions::from_response(resp);
         cache.insert("broker1:9092".to_string(), bv);
 
-        // Should negotiate within range, using fallback if API key unknown
+        // Known API keys are negotiated against broker ranges; unknown keys use fallback.
         assert_eq!(
             cache.get_or_fallback("broker1:9092", api_key::PRODUCE),
-            API_VERSION_PRODUCE
+            8
         );
         assert_eq!(
             cache.get_or_fallback("broker1:9092", api_key::FETCH),

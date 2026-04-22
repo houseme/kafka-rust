@@ -177,7 +177,7 @@ fn decode_partition_records(
 
     let raw_records = records_bytes.clone();
     let Ok(record_set) = RecordBatchDecoder::decode(&mut records_bytes) else {
-        let messages = decode_records_safe(raw_records.as_ref()).map_err(Arc::new)?;
+        let messages = decode_records_safe(raw_records).map_err(Arc::new)?;
         return Ok(OwnedData {
             highwatermark_offset: high_watermark,
             messages,
@@ -201,14 +201,14 @@ fn decode_partition_records(
 
 /// Safe entry point for fuzzing fetch response data — catches all panics.
 pub(crate) fn decode_records_safe(
-    records: &[u8],
+    records: Bytes,
 ) -> Result<Vec<OwnedMessage>, crate::error::Error> {
     const MAX_INPUT_SIZE: usize = 1_048_576;
     if records.len() > MAX_INPUT_SIZE {
         return Err(crate::error::Error::codec());
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut buf = Bytes::from(records.to_vec());
+        let mut buf = records;
         match RecordBatchDecoder::decode(&mut buf) {
             Ok(record_set) => {
                 let messages: Vec<OwnedMessage> = record_set

@@ -49,12 +49,14 @@ fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
     if bytes.len() < len {
         return Err(Error::codec());
     }
-    let s = String::from_utf8(bytes[..len].to_vec()).map_err(|_| Error::codec())?;
+    let s = std::str::from_utf8(&bytes[..len])
+        .map_err(|_| Error::codec())?
+        .to_owned();
     bytes.advance(len);
     Ok(s)
 }
 
-fn decode_bytes(bytes: &mut bytes::Bytes) -> Result<Vec<u8>> {
+fn decode_bytes(bytes: &mut bytes::Bytes) -> Result<bytes::Bytes> {
     if bytes.len() < 4 {
         return Err(Error::codec());
     }
@@ -65,9 +67,7 @@ fn decode_bytes(bytes: &mut bytes::Bytes) -> Result<Vec<u8>> {
     if bytes.len() < len {
         return Err(Error::codec());
     }
-    let data = bytes[..len].to_vec();
-    bytes.advance(len);
-    Ok(data)
+    Ok(bytes.split_to(len))
 }
 
 fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<bytes::Bytes> {
@@ -241,7 +241,7 @@ pub fn fetch_join_group(
         members.push(GroupMember {
             member_id: mid,
             group_instance_id: None,
-            metadata: metadata.into(),
+            metadata,
         });
     }
 
@@ -344,7 +344,7 @@ pub fn fetch_sync_group(
 
     Ok(SyncGroupResponseData {
         error_code,
-        assignment: assignment.into(),
+        assignment,
     })
 }
 
