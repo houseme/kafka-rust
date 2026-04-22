@@ -137,7 +137,10 @@ fn test_consumer_commit_messageset() {
     // add up the differences
     let num_new_messages_committed = diff_group_offsets(&start_offsets, &latest_offsets);
 
-    assert!(num_new_messages_committed > 0, "expected some committed messages");
+    assert!(
+        num_new_messages_committed > 0,
+        "expected some committed messages"
+    );
     assert_eq!(
         num_messages as i64, num_new_messages_committed,
         "wrong number of messages committed relative to consumed messages"
