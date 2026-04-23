@@ -12,8 +12,56 @@ use crate::tls::{RustlsConnector, TlsConfig, TlsStream};
 
 /// Security relevant configuration options for `KafkaClient`.
 #[cfg(feature = "security")]
+#[derive(Clone)]
 pub struct SecurityConfig {
     pub(crate) tls_config: TlsConfig,
+    pub(crate) sasl_config: Option<SaslConfig>,
+}
+
+/// SASL configuration options for `KafkaClient`.
+#[cfg(feature = "security")]
+#[derive(Clone, Debug)]
+pub struct SaslConfig {
+    pub(crate) mechanism: String,
+    pub(crate) username: String,
+    pub(crate) password: String,
+}
+
+#[cfg(feature = "security")]
+impl SaslConfig {
+    /// Creates a SASL configuration with explicit mechanism and credentials.
+    #[must_use]
+    pub fn new(mechanism: String, username: String, password: String) -> Self {
+        Self {
+            mechanism,
+            username,
+            password,
+        }
+    }
+
+    /// Creates a SASL/PLAIN configuration with username and password.
+    #[must_use]
+    pub fn plain(username: String, password: String) -> Self {
+        Self::new("PLAIN".to_owned(), username, password)
+    }
+
+    /// Returns SASL mechanism.
+    #[must_use]
+    pub fn mechanism(&self) -> &str {
+        &self.mechanism
+    }
+
+    /// Returns SASL username.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// Returns SASL password.
+    #[must_use]
+    pub fn password(&self) -> &str {
+        &self.password
+    }
 }
 
 #[cfg(feature = "security")]
@@ -23,13 +71,17 @@ impl SecurityConfig {
     pub fn new() -> Self {
         SecurityConfig {
             tls_config: TlsConfig::new(),
+            sasl_config: None,
         }
     }
 
     /// Create a `SecurityConfig` from a `TlsConfig`
     #[must_use]
     pub fn from_tls_config(tls_config: TlsConfig) -> SecurityConfig {
-        SecurityConfig { tls_config }
+        SecurityConfig {
+            tls_config,
+            sasl_config: None,
+        }
     }
 
     /// Initiates a client-side TLS session with/without performing hostname verification.
@@ -52,6 +104,32 @@ impl SecurityConfig {
         self.tls_config.client_cert_path = Some(cert_path);
         self.tls_config.client_key_path = Some(key_path);
         self
+    }
+
+    /// Sets SASL configuration.
+    #[must_use]
+    pub fn with_sasl(mut self, sasl_config: SaslConfig) -> SecurityConfig {
+        self.sasl_config = Some(sasl_config);
+        self
+    }
+
+    /// Sets SASL/PLAIN username and password.
+    #[must_use]
+    pub fn with_sasl_plain(mut self, username: String, password: String) -> SecurityConfig {
+        self.sasl_config = Some(SaslConfig::plain(username, password));
+        self
+    }
+
+    /// Returns the underlying TLS configuration.
+    #[must_use]
+    pub fn tls_config(&self) -> &TlsConfig {
+        &self.tls_config
+    }
+
+    /// Returns optional SASL configuration.
+    #[must_use]
+    pub fn sasl_config(&self) -> Option<&SaslConfig> {
+        self.sasl_config.as_ref()
     }
 }
 

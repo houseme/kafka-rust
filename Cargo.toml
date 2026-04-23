@@ -46,9 +46,14 @@ rustls-native-certs = "0.8.3"
 
 # Optional: metrics
 metrics = "0.24.3"
+base64 = "0.22.1"
+hmac = "0.12.1"
+sha2 = "0.10.9"
+pbkdf2 = "0.12.2"
 
 # Async runtime
 tokio = "1.52.1"
+tokio-rustls = "0.26.4"
 
 # Dev dependencies
 ctor = "0.10.1"

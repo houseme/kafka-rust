@@ -1,20 +1,15 @@
 //! Async Kafka client built on top of the tokio runtime.
 //!
-//! This crate provides lightweight asynchronous wrappers around the
-//! synchronous APIs in `rustfs-kafka`. It exposes three primary types:
+//! This crate provides native asynchronous Kafka clients built on tokio.
+//! It exposes three primary types:
 //!
 //! - [`AsyncKafkaClient`]: bootstrap and connection management for async code.
-//! - [`AsyncProducer`]: an async-friendly producer which runs a synchronous
-//!   `Producer` inside a dedicated background thread.
+//! - [`AsyncProducer`]: an async producer using non-blocking Kafka protocol I/O.
 //! - [`AsyncProducerBuilder`]: async builder for configuring and creating an
 //!   `AsyncProducer` without blocking the tokio scheduler.
-//! - [`AsyncConsumer`]: an async-friendly consumer which runs a synchronous
-//!   `Consumer` inside a dedicated background thread.
+//! - [`AsyncConsumer`]: an async consumer using non-blocking Kafka protocol I/O.
 //! - [`AsyncConsumerBuilder`]: async builder for configuring and creating an
 //!   `AsyncConsumer` without blocking the tokio scheduler.
-//!
-//! These wrappers use MPSC/oneshot channels and thread/task handoff semantics to bridge
-//! between the synchronous core implementation and asynchronous callers.
 //!
 //! # Example
 //!
@@ -47,6 +42,6 @@ pub use consumer::{AsyncConsumer, AsyncConsumerBuilder};
 pub use producer::{AsyncProducer, AsyncProducerBuilder, AsyncProducerConfig};
 
 // Re-export core types from the sync crate for convenience
-pub use rustfs_kafka::client::{RequiredAcks, SecurityConfig};
+pub use rustfs_kafka::client::{RequiredAcks, SaslConfig, SecurityConfig};
 pub use rustfs_kafka::error;
 pub use rustfs_kafka::producer::{AsBytes, Headers, Record};

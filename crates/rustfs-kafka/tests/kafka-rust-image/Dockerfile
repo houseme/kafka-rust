@@ -32,7 +32,7 @@ COPY create-topics.sh /usr/bin/create-topics.sh
 RUN chmod +x /usr/bin/start-kafka.sh /usr/bin/create-topics.sh
 
 ENV KAFKA_ZOOKEEPER_CONNECT zookeeper
-COPY server.properties secure.server.properties client-ssl.properties kraft-server.properties kraft-secure-server.properties /opt/kafka/config/
+COPY server.properties secure.server.properties sasl-secure.server.properties client-ssl.properties kraft-server.properties kraft-secure-server.properties kraft-sasl-secure-server.properties /opt/kafka/config/
 
 # set up an SSL certificate for secure mode
 RUN keytool \

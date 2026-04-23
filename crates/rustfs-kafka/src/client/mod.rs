@@ -55,7 +55,9 @@ use std::collections::hash_map::HashMap;
 use std::time::Duration;
 
 #[cfg(feature = "security")]
-pub use crate::network::SecurityConfig;
+pub use crate::network::{SaslConfig, SecurityConfig};
+#[cfg(feature = "security")]
+pub use crate::tls::TlsConfig;
 
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;

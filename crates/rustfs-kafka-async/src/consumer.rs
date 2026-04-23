@@ -13,15 +13,14 @@ use kafka_protocol::messages::{
 };
 use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
 use kafka_protocol::records::RecordBatchDecoder;
-use rustfs_kafka::consumer::{Consumer, FetchOffset, MessageSets};
+use rustfs_kafka::client::SecurityConfig;
+use rustfs_kafka::consumer::{FetchOffset, MessageSets};
 use rustfs_kafka::error::{ConsumerError, Error, KafkaCode, ProtocolError, Result};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::AsyncKafkaClient;
 use crate::connection::AsyncConnection;
@@ -38,22 +37,6 @@ const DEFAULT_NATIVE_RECENT_ERROR_LIMIT: usize = 32;
 const FETCH_MIN_BYTES: i32 = 1;
 const FETCH_MAX_WAIT_MS: i32 = 100;
 const FETCH_PARTITION_MAX_BYTES: i32 = 1_048_576;
-
-/// Internal commands sent to the bridged consumer background thread.
-enum ConsumerCommand {
-    Poll {
-        response: oneshot::Sender<Result<MessageSets>>,
-    },
-    Commit {
-        response: oneshot::Sender<Result<()>>,
-    },
-    Shutdown,
-}
-
-struct BridgedConsumer {
-    sender: mpsc::Sender<ConsumerCommand>,
-    handle: Option<thread::JoinHandle<()>>,
-}
 
 struct NativeConsumer {
     client: AsyncKafkaClient,
@@ -72,7 +55,6 @@ struct NativeConsumer {
 
 enum AsyncConsumerMode {
     Native(Box<NativeConsumer>),
-    Bridged(BridgedConsumer),
 }
 
 /// Native consumer error snapshot for diagnostics.
@@ -142,6 +124,7 @@ pub struct AsyncConsumerBuilder {
     hosts: Vec<String>,
     group: Option<String>,
     topics: Vec<String>,
+    security: Option<SecurityConfig>,
     channel_capacity: usize,
     native_async: bool,
     fallback_offset: FetchOffset,
@@ -158,6 +141,7 @@ impl AsyncConsumerBuilder {
             hosts,
             group: None,
             topics: Vec::new(),
+            security: None,
             channel_capacity: 64,
             native_async: true,
             fallback_offset: FetchOffset::Latest,
@@ -188,14 +172,21 @@ impl AsyncConsumerBuilder {
         self
     }
 
-    /// Sets command channel capacity used in bridged mode.
+    /// Sets optional TLS security configuration for broker connections.
+    #[must_use]
+    pub fn with_security(mut self, security: SecurityConfig) -> Self {
+        self.security = Some(security);
+        self
+    }
+
+    /// Backward-compatible no-op kept for API compatibility.
     #[must_use]
     pub fn with_channel_capacity(mut self, channel_capacity: usize) -> Self {
         self.channel_capacity = channel_capacity.max(1);
         self
     }
 
-    /// Enables or disables native async I/O mode.
+    /// Backward-compatible setting kept for API compatibility.
     #[must_use]
     pub fn with_native_async(mut self, native_async: bool) -> Self {
         self.native_async = native_async;
@@ -232,52 +223,52 @@ impl AsyncConsumerBuilder {
 
     /// Builds an async consumer.
     pub async fn build(self) -> Result<AsyncConsumer> {
-        let group = self
-            .group
-            .ok_or(Error::Consumer(ConsumerError::UnsetGroupId))?;
-        if self.topics.is_empty() {
+        let AsyncConsumerBuilder {
+            hosts,
+            group,
+            topics,
+            security,
+            channel_capacity,
+            native_async,
+            fallback_offset,
+            native_retry_attempts,
+            native_retry_backoff,
+            native_recent_error_limit,
+        } = self;
+
+        let group = group.ok_or(Error::Consumer(ConsumerError::UnsetGroupId))?;
+        if topics.is_empty() {
             return Err(Error::Consumer(ConsumerError::NoTopicsAssigned));
         }
 
-        if self.native_async {
-            let client = AsyncKafkaClient::new(self.hosts).await?;
-            return Ok(AsyncConsumer {
-                mode: AsyncConsumerMode::Native(Box::new(NativeConsumer {
-                    client,
-                    group,
-                    topics: self.topics,
-                    fallback_offset: self.fallback_offset,
-                    offsets: HashMap::new(),
-                    dirty_offsets: HashMap::new(),
-                    leaders: HashMap::new(),
-                    coordinator: None,
-                    correlation: 1,
-                    retry_attempts: self.native_retry_attempts,
-                    retry_backoff: self.native_retry_backoff,
-                    observability: NativeConsumerObservability::new(self.native_recent_error_limit),
-                })),
-            });
+        if !native_async {
+            debug!(
+                "AsyncConsumerBuilder::with_native_async(false) is ignored: consumer always uses native async I/O"
+            );
         }
-
-        let hosts = self.hosts;
-        let topics = self.topics;
-        let channel_capacity = self.channel_capacity;
-
-        let consumer = tokio::task::spawn_blocking(move || {
-            let mut builder = Consumer::from_hosts(hosts).with_group(group);
-            for topic in topics {
-                builder = builder.with_topic(topic);
-            }
-            builder.create()
-        })
-        .await
-        .map_err(|e| Error::Config(format!("failed to build consumer task: {e}")))??;
+        let _ = channel_capacity;
+        let client = AsyncKafkaClient::with_client_id_and_security(
+            hosts,
+            "rustfs-kafka-async".to_owned(),
+            security,
+        )
+        .await?;
 
         Ok(AsyncConsumer {
-            mode: AsyncConsumerMode::Bridged(BridgedConsumer::from_sync(
-                consumer,
-                channel_capacity,
-            )),
+            mode: AsyncConsumerMode::Native(Box::new(NativeConsumer {
+                client,
+                group,
+                topics,
+                fallback_offset,
+                offsets: HashMap::new(),
+                dirty_offsets: HashMap::new(),
+                leaders: HashMap::new(),
+                coordinator: None,
+                correlation: 1,
+                retry_attempts: native_retry_attempts,
+                retry_backoff: native_retry_backoff,
+                observability: NativeConsumerObservability::new(native_recent_error_limit),
+            })),
         })
     }
 }
@@ -336,7 +327,6 @@ impl AsyncConsumer {
     pub async fn poll(&mut self) -> Result<MessageSets> {
         match &mut self.mode {
             AsyncConsumerMode::Native(native) => native.poll().await,
-            AsyncConsumerMode::Bridged(bridged) => bridged.poll().await,
         }
     }
 
@@ -344,16 +334,12 @@ impl AsyncConsumer {
     pub async fn commit(&mut self) -> Result<()> {
         match &mut self.mode {
             AsyncConsumerMode::Native(native) => native.commit().await,
-            AsyncConsumerMode::Bridged(bridged) => bridged.commit().await,
         }
     }
 
     /// Gracefully closes the consumer.
     pub async fn close(self) -> Result<()> {
-        match self.mode {
-            AsyncConsumerMode::Native(_) => Ok(()),
-            AsyncConsumerMode::Bridged(bridged) => bridged.close().await,
-        }
+        Ok(())
     }
 
     /// Returns native consumer error statistics when running in native mode.
@@ -361,7 +347,6 @@ impl AsyncConsumer {
     pub fn native_error_stats(&self) -> Option<NativeConsumerErrorStats> {
         match &self.mode {
             AsyncConsumerMode::Native(native) => Some(native.error_stats()),
-            AsyncConsumerMode::Bridged(_) => None,
         }
     }
 
@@ -374,87 +359,7 @@ impl AsyncConsumer {
                 native.reset_error_stats();
                 true
             }
-            AsyncConsumerMode::Bridged(_) => false,
         }
-    }
-}
-
-impl BridgedConsumer {
-    fn from_sync(consumer: Consumer, channel_capacity: usize) -> Self {
-        let (sender, mut receiver) = mpsc::channel::<ConsumerCommand>(channel_capacity.max(1));
-
-        let handle = thread::spawn(move || {
-            let mut consumer = consumer;
-            loop {
-                match receiver.blocking_recv() {
-                    Some(ConsumerCommand::Poll { response }) => {
-                        let result = consumer.poll();
-                        let _ = response.send(result);
-                    }
-                    Some(ConsumerCommand::Commit { response }) => {
-                        let result = consumer.commit_consumed();
-                        let _ = response.send(result);
-                    }
-                    Some(ConsumerCommand::Shutdown) | None => {
-                        debug!("AsyncConsumer thread shutting down");
-                        break;
-                    }
-                }
-            }
-            info!("AsyncConsumer background thread exited");
-        });
-
-        info!("AsyncConsumer created");
-        Self {
-            sender,
-            handle: Some(handle),
-        }
-    }
-
-    async fn poll(&mut self) -> Result<MessageSets> {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(ConsumerCommand::Poll { response: tx })
-            .await
-            .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?;
-        rx.await
-            .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
-    }
-
-    async fn commit(&mut self) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(ConsumerCommand::Commit { response: tx })
-            .await
-            .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?;
-        rx.await
-            .map_err(|_| Error::Consumer(ConsumerError::NoTopicsAssigned))?
-    }
-
-    async fn close(mut self) -> Result<()> {
-        if let Some(handle) = self.handle.take() {
-            let _ = self.sender.send(ConsumerCommand::Shutdown).await;
-            let join_result = tokio::task::spawn_blocking(move || handle.join())
-                .await
-                .map_err(|e| Error::Config(format!("failed to join consumer thread: {e}")))?;
-            if join_result.is_err() {
-                return Err(Error::Config("consumer thread panicked".to_owned()));
-            }
-        }
-        Ok(())
-    }
-
-    fn request_shutdown_non_blocking(&mut self) {
-        if self.handle.is_some() {
-            let _ = self.sender.try_send(ConsumerCommand::Shutdown);
-            self.handle.take();
-        }
-    }
-}
-
-impl Drop for BridgedConsumer {
-    fn drop(&mut self) {
-        self.request_shutdown_non_blocking();
     }
 }
 

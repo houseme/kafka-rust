@@ -11,7 +11,7 @@ pub(crate) use self::connection::KafkaConnection;
 pub use self::pool::Connections;
 
 #[cfg(feature = "security")]
-pub use self::connection::SecurityConfig;
+pub use self::connection::{SaslConfig, SecurityConfig};
 
 /// A wrapper to track the last checkout time of a pooled item.
 pub(crate) struct Pooled<T> {

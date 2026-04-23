@@ -11,40 +11,19 @@ use kafka_protocol::records::{
 };
 use rustfs_kafka::client::{Compression, RequiredAcks, SecurityConfig};
 use rustfs_kafka::error::{ConnectionError, Error, KafkaCode, ProtocolError, Result};
-use rustfs_kafka::producer::{AsBytes, Producer, Record};
+use rustfs_kafka::producer::{AsBytes, Record};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::thread;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc, oneshot};
-use tracing::{debug, info};
+use tokio::sync::Mutex;
+use tracing::debug;
 
 use crate::AsyncKafkaClient;
 use crate::connection::AsyncConnection;
 
 const API_VERSION_PRODUCE: i16 = 9;
 const API_VERSION_METADATA: i16 = 1;
-
-/// Internal commands sent to the bridged producer background thread.
-enum ProducerCommand {
-    Send {
-        topic: String,
-        key: Bytes,
-        value: Bytes,
-        partition: i32,
-        response: oneshot::Sender<Result<()>>,
-    },
-    Flush {
-        response: oneshot::Sender<Result<()>>,
-    },
-    Shutdown,
-}
-
-struct BridgedProducer {
-    sender: mpsc::Sender<ProducerCommand>,
-    handle: Option<thread::JoinHandle<()>>,
-}
 
 struct NativeProducer {
     client: Mutex<AsyncKafkaClient>,
@@ -70,17 +49,11 @@ struct TopicRoute {
 
 enum AsyncProducerMode {
     Native(Box<NativeProducer>),
-    Bridged(BridgedProducer),
 }
 
 /// An async Kafka producer.
 ///
-/// This producer supports two execution modes:
-/// - Native async I/O mode (default): direct async Kafka Metadata/Produce calls
-///   using `tokio` sockets.
-/// - Bridged mode: runs synchronous `rustfs_kafka::producer::Producer` on a
-///   dedicated background thread (used when security config is supplied or
-///   when native mode is explicitly disabled).
+/// This producer always uses native async I/O via tokio sockets.
 pub struct AsyncProducer {
     mode: AsyncProducerMode,
 }
@@ -185,21 +158,21 @@ impl AsyncProducerBuilder {
         self
     }
 
-    /// Sets optional TLS/SASL security configuration.
+    /// Sets optional TLS security configuration.
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig) -> Self {
         self.config = self.config.with_security(security);
         self
     }
 
-    /// Sets command channel capacity for bridged mode.
+    /// Backward-compatible no-op kept for API compatibility.
     #[must_use]
     pub fn with_channel_capacity(mut self, channel_capacity: usize) -> Self {
         self.channel_capacity = channel_capacity.max(1);
         self
     }
 
-    /// Enables or disables native async I/O mode.
+    /// Backward-compatible setting kept for API compatibility.
     #[must_use]
     pub fn with_native_async(mut self, native_async: bool) -> Self {
         self.native_async = native_async;
@@ -216,35 +189,20 @@ impl AsyncProducerBuilder {
             native_async,
         } = self;
 
-        let has_security = config.security.is_some();
-
-        if native_async && !has_security {
-            let client = AsyncKafkaClient::with_client_id(hosts, client_id).await?;
-            return AsyncProducer::from_native(client, config);
+        if !native_async {
+            debug!(
+                "AsyncProducerBuilder::with_native_async(false) is ignored: producer always uses native async I/O"
+            );
         }
+        let _ = channel_capacity;
 
-        let sync_producer = tokio::task::spawn_blocking(move || {
-            let mut builder = Producer::from_hosts(hosts)
-                .with_client_id(client_id)
-                .with_required_acks(config.required_acks)
-                .with_ack_timeout(config.ack_timeout)
-                .with_compression(config.compression);
-
-            if let Some(security) = config.security {
-                builder = builder.with_security(security);
-            }
-
-            builder.create()
-        })
-        .await
-        .map_err(|e| Error::Config(format!("failed to build producer task: {e}")))??;
-
-        Ok(AsyncProducer {
-            mode: AsyncProducerMode::Bridged(BridgedProducer::from_sync(
-                sync_producer,
-                channel_capacity,
-            )),
-        })
+        let client = AsyncKafkaClient::with_client_id_and_security(
+            hosts,
+            client_id,
+            config.security.clone(),
+        )
+        .await?;
+        AsyncProducer::from_native(client, config)
     }
 }
 
@@ -265,18 +223,17 @@ impl AsyncProducer {
         client: AsyncKafkaClient,
         config: AsyncProducerConfig,
     ) -> Result<Self> {
-        if config.security.is_none() {
-            return Self::from_native(client, config);
+        if config.security.is_some() && client.security().is_none() {
+            return Self::builder(client.bootstrap_hosts().to_vec())
+                .with_client_id(client.client_id().to_owned())
+                .with_required_acks(config.required_acks)
+                .with_ack_timeout(config.ack_timeout)
+                .with_compression(config.compression)
+                .build_with_optional_security(config.security)
+                .await;
         }
 
-        // security flow still uses bridged sync producer path
-        Self::builder(client.bootstrap_hosts().to_vec())
-            .with_client_id(client.client_id().to_owned())
-            .with_required_acks(config.required_acks)
-            .with_ack_timeout(config.ack_timeout)
-            .with_compression(config.compression)
-            .build_with_optional_security(config.security)
-            .await
+        Self::from_native(client, config)
     }
 
     /// Creates a new async producer directly from bootstrap hosts.
@@ -305,24 +262,17 @@ impl AsyncProducer {
     {
         match &self.mode {
             AsyncProducerMode::Native(native) => native.send(record).await,
-            AsyncProducerMode::Bridged(bridged) => bridged.send(record).await,
         }
     }
 
     /// Flushes any pending messages.
     pub async fn flush(&self) -> Result<()> {
-        match &self.mode {
-            AsyncProducerMode::Native(_) => Ok(()),
-            AsyncProducerMode::Bridged(bridged) => bridged.flush().await,
-        }
+        Ok(())
     }
 
     /// Gracefully shuts down the producer.
     pub async fn close(self) -> Result<()> {
-        match self.mode {
-            AsyncProducerMode::Native(_) => Ok(()),
-            AsyncProducerMode::Bridged(bridged) => bridged.close().await,
-        }
+        Ok(())
     }
 
     fn from_native(client: AsyncKafkaClient, config: AsyncProducerConfig) -> Result<Self> {
@@ -357,100 +307,6 @@ impl AsyncProducerBuilder {
         } else {
             self.build().await
         }
-    }
-}
-
-impl BridgedProducer {
-    fn from_sync(sync_producer: Producer, channel_capacity: usize) -> Self {
-        let (sender, mut receiver) = mpsc::channel::<ProducerCommand>(channel_capacity.max(1));
-
-        let handle = thread::spawn(move || {
-            let mut producer = sync_producer;
-            while let Some(cmd) = receiver.blocking_recv() {
-                match cmd {
-                    ProducerCommand::Send {
-                        topic,
-                        key,
-                        value,
-                        partition,
-                        response,
-                    } => {
-                        let record =
-                            Record::from_key_value(topic.as_str(), key.as_ref(), value.as_ref())
-                                .with_partition(partition);
-                        let result = producer.send(&record);
-                        let _ = response.send(result);
-                    }
-                    ProducerCommand::Flush { response } => {
-                        let _ = response.send(Ok(()));
-                    }
-                    ProducerCommand::Shutdown => {
-                        debug!("Async producer shutting down");
-                        break;
-                    }
-                }
-            }
-            info!("Async producer background thread exited");
-        });
-
-        Self {
-            sender,
-            handle: Some(handle),
-        }
-    }
-
-    async fn send<K, V>(&self, record: &Record<'_, K, V>) -> Result<()>
-    where
-        K: AsBytes,
-        V: AsBytes,
-    {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(ProducerCommand::Send {
-                topic: record.topic.to_owned(),
-                key: Bytes::copy_from_slice(record.key.as_bytes()),
-                value: Bytes::copy_from_slice(record.value.as_bytes()),
-                partition: record.partition,
-                response: tx,
-            })
-            .await
-            .map_err(|_| no_host_reachable_error())?;
-        rx.await.map_err(|_| no_host_reachable_error())?
-    }
-
-    async fn flush(&self) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-        self.sender
-            .send(ProducerCommand::Flush { response: tx })
-            .await
-            .map_err(|_| no_host_reachable_error())?;
-        rx.await.map_err(|_| no_host_reachable_error())?
-    }
-
-    async fn close(mut self) -> Result<()> {
-        if let Some(handle) = self.handle.take() {
-            let _ = self.sender.send(ProducerCommand::Shutdown).await;
-            let join_result = tokio::task::spawn_blocking(move || handle.join())
-                .await
-                .map_err(|e| Error::Config(format!("failed to join producer thread: {e}")))?;
-            if join_result.is_err() {
-                return Err(Error::Config("producer thread panicked".to_owned()));
-            }
-        }
-        Ok(())
-    }
-
-    fn request_shutdown_non_blocking(&mut self) {
-        if self.handle.is_some() {
-            let _ = self.sender.try_send(ProducerCommand::Shutdown);
-            self.handle.take();
-        }
-    }
-}
-
-impl Drop for BridgedProducer {
-    fn drop(&mut self) {
-        self.request_shutdown_non_blocking();
     }
 }
 

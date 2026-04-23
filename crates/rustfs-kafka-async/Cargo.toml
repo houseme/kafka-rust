@@ -22,9 +22,18 @@ rustdoc-args = ["--cfg", "docsrs"]
 rustfs-kafka = { workspace = true }
 bytes.workspace = true
 kafka-protocol.workspace = true
-tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "rt", "macros"] }
+tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "rt", "macros", "fs"] }
+tokio-rustls.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+rustls-native-certs.workspace = true
 tracing.workspace = true
 metrics = { workspace = true, optional = true }
+base64.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+pbkdf2.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
@@ -34,3 +43,4 @@ ctor.workspace = true
 [features]
 default = ["metrics"]
 metrics = ["dep:metrics", "rustfs-kafka/metrics"]
+integration_tests = []

@@ -1,5 +1,6 @@
 //! Async Kafka client for metadata and connection management.
 
+use rustfs_kafka::client::SecurityConfig;
 use rustfs_kafka::error::{ConnectionError, Error, Result};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
@@ -19,12 +20,13 @@ pub struct AsyncKafkaClient {
     pool: AsyncConnectionPool,
     bootstrap_hosts: Vec<String>,
     client_id: String,
+    security: Option<SecurityConfig>,
 }
 
 impl AsyncKafkaClient {
     /// Creates a new async client and connects to the bootstrap brokers.
     pub async fn new(hosts: Vec<String>) -> Result<Self> {
-        Self::with_client_id(hosts, "rustfs-kafka-async".to_owned()).await
+        Self::with_client_id_and_security(hosts, "rustfs-kafka-async".to_owned(), None).await
     }
 
     /// Creates a new async client with a specific client ID.
@@ -34,8 +36,17 @@ impl AsyncKafkaClient {
     /// non-empty, an error `Error::Connection(ConnectionError::NoHostReachable)`
     /// is returned.
     pub async fn with_client_id(hosts: Vec<String>, client_id: String) -> Result<Self> {
-        let mut pool = AsyncConnectionPool::new();
-        let connected = connect_any_bootstrap(&mut pool, &hosts).await;
+        Self::with_client_id_and_security(hosts, client_id, None).await
+    }
+
+    /// Creates a new async client with optional TLS security.
+    pub async fn with_client_id_and_security(
+        hosts: Vec<String>,
+        client_id: String,
+        security: Option<SecurityConfig>,
+    ) -> Result<Self> {
+        let mut pool = AsyncConnectionPool::new_with_security(security.clone());
+        let connected = connect_any_bootstrap(&mut pool, &hosts, security.as_ref()).await;
 
         if !connected && !hosts.is_empty() {
             return Err(Error::Connection(ConnectionError::NoHostReachable));
@@ -50,6 +61,7 @@ impl AsyncKafkaClient {
             pool,
             bootstrap_hosts: hosts,
             client_id,
+            security,
         })
     }
 
@@ -63,6 +75,12 @@ impl AsyncKafkaClient {
     #[must_use]
     pub fn bootstrap_hosts(&self) -> &[String] {
         &self.bootstrap_hosts
+    }
+
+    /// Returns the configured optional security settings.
+    #[must_use]
+    pub fn security(&self) -> Option<&SecurityConfig> {
+        self.security.as_ref()
     }
 
     /// Gets (or creates) a mutable reference to a connection for `host`.
@@ -93,7 +111,10 @@ impl AsyncKafkaClient {
     /// or when the pool already contains connections.
     pub async fn ensure_connected(&mut self) -> Result<()> {
         if !self.bootstrap_hosts.is_empty() && self.pool.hosts().is_empty() {
-            let connected = connect_any_bootstrap(&mut self.pool, &self.bootstrap_hosts).await;
+            let security = self.security.clone();
+            let connected =
+                connect_any_bootstrap(&mut self.pool, &self.bootstrap_hosts, security.as_ref())
+                    .await;
             if !connected {
                 return Err(Error::Connection(ConnectionError::NoHostReachable));
             }
@@ -102,12 +123,18 @@ impl AsyncKafkaClient {
     }
 }
 
-async fn connect_any_bootstrap(pool: &mut AsyncConnectionPool, hosts: &[String]) -> bool {
+async fn connect_any_bootstrap(
+    pool: &mut AsyncConnectionPool,
+    hosts: &[String],
+    security: Option<&SecurityConfig>,
+) -> bool {
     let mut set = JoinSet::new();
     for host in hosts {
         let host = host.clone();
+        let security = security.cloned();
         set.spawn(async move {
-            let connection = crate::connection::AsyncConnection::connect(&host).await;
+            let connection =
+                crate::connection::AsyncConnection::connect(&host, security.as_ref()).await;
             (host, connection)
         });
     }
@@ -173,6 +200,7 @@ mod tests {
             pool: AsyncConnectionPool::new(),
             bootstrap_hosts: vec![],
             client_id: "test".to_owned(),
+            security: None,
         };
         // ensure_connected with empty bootstrap_hosts is a no-op
         assert!(client.bootstrap_hosts.is_empty());
