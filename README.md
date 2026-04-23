@@ -13,14 +13,14 @@ Fork project: forked from [kafka-rust](https://github.com/kafka-rust/kafka-rust)
 - `rustfs-kafka`: synchronous client/producer/consumer/admin APIs.
 - `rustfs-kafka-async`: async wrapper crate based on tokio.
 
-Current release target: `1.1.0`.
+Current release target: `1.2.0`.
 
 ## Crates
 
 ```toml
 [dependencies]
-rustfs-kafka = "1.1.0"
-rustfs-kafka-async = "1.1.0"
+rustfs-kafka = "1.2.0"
+rustfs-kafka-async = "1.2.0"
 ```
 
 ## Core Features
@@ -30,6 +30,7 @@ rustfs-kafka-async = "1.1.0"
 - TLS support via rustls:
     - `security` (default, aws-lc-rs provider)
     - `security-ring` (ring provider)
+- Async security authentication support includes SASL `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512` over TLS.
 - Optional `metrics` support.
 - Optional `producer_timestamp`.
 - Integration test harness with Kafka `3.9.2`, `4.1.2`, and `4.2.0`.
@@ -68,6 +69,7 @@ Integration tests (Docker required):
 ```bash
 cd crates/rustfs-kafka/tests
 ./run-all-tests
+./run-async-secure-tests
 ```
 
 ## License

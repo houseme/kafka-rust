@@ -1,14 +1,14 @@
 # rustfs-kafka-async Agent Notes
 
 Scope: async wrapper crate for `rustfs-kafka`.
-Current release target: `1.1.0`.
+Current release target: `1.2.0`.
 
 ## What This Crate Owns
 
 - `AsyncKafkaClient`
 - `AsyncProducer`
 - `AsyncConsumer`
-- async bridging and lifecycle management (channels/tasks/threads)
+- native async transport and lifecycle management
 
 ## Design Constraints
 
@@ -26,6 +26,13 @@ cargo clippy -p rustfs-kafka-async --all-targets --all-features -- -D warnings
 
 If async changes impact sync behavior assumptions, run integration checks in
 `crates/rustfs-kafka/tests`.
+
+Secure SASL coverage:
+
+```bash
+cd crates/rustfs-kafka/tests
+./run-async-secure-tests
+```
 
 ## Docs Sync
 

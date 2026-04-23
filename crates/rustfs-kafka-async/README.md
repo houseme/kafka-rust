@@ -16,16 +16,17 @@ This crate provides:
 - `AsyncConsumer`
 - `AsyncConsumerBuilder`
 
-The current implementation uses background tasks/threads to bridge the sync core APIs.
+The current implementation uses native tokio async I/O for metadata,
+produce/fetch, and commit request paths.
 
-Producer/consumer creation uses async builders and blocking-safe handoff so
-sync Kafka setup does not stall the tokio scheduler.
+Security flow supports TLS and SASL authentication in native async mode,
+including `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 
 ## Installation
 
 ```toml
 [dependencies]
-rustfs-kafka-async = "1.1.0"
+rustfs-kafka-async = "1.2.0"
 ```
 
 ## Quick Example
@@ -49,6 +50,7 @@ async fn main() -> rustfs_kafka::Result<()> {
 
 ## Notes
 
-- This crate is intentionally lightweight and reuses the mature sync protocol/client logic from `rustfs-kafka`.
-- Native async producer path now supports metadata-backed auto partition resolution.
+- This crate is intentionally lightweight and reuses protocol data structures from `rustfs-kafka`.
+- Native async producer path supports metadata-backed auto partition resolution.
+- Secure integration coverage includes Docker end-to-end checks for SASL `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 - For full feature details, consult the root crate docs and `docs/usage-guide.md` in the repository.
