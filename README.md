@@ -69,6 +69,7 @@ Integration tests (Docker required):
 ```bash
 cd crates/rustfs-kafka/tests
 ./run-all-tests
+./run-sync-secure-tests
 ./run-async-secure-tests
 ```
 

@@ -27,13 +27,7 @@ impl PoolConfig {
 
     #[cfg(feature = "security")]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
-        KafkaConnection::new(
-            id,
-            host,
-            self.rw_timeout,
-            self.security_config.as_ref().map(|c| &c.tls_config),
-        )
-        .map(|c| {
+        KafkaConnection::new(id, host, self.rw_timeout, self.security_config.as_ref()).map(|c| {
             debug!("Established: {:?}", c);
             c
         })

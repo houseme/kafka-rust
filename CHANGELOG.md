@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Added native sync SASL support in `rustfs-kafka` for:
+  - `PLAIN`
+  - `SCRAM-SHA-256`
+  - `SCRAM-SHA-512`
 - Added native async SASL support in `rustfs-kafka-async` for:
   - `PLAIN`
   - `SCRAM-SHA-256`
@@ -18,12 +22,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Added SCRAM challenge/response loop handling in native async auth flow, including server challenge parsing and final server-signature verification.
 - Added Docker secure integration acceptance script:
   - `crates/rustfs-kafka/tests/run-async-secure-tests`
+  - `crates/rustfs-kafka/tests/run-sync-secure-tests`
 - Added async secure integration test:
   - `crates/rustfs-kafka-async/tests/sasl_secure_integration.rs`
 
 ### Changed
 
 - `AsyncProducer` and `AsyncConsumer` now run on native async I/O paths only; legacy bridged sync fallback behavior is removed from runtime behavior (compat flags remain no-op for API compatibility).
+- `KafkaConnection` sync secure path now performs SASL handshake/authenticate before entering pooled request flow.
 - Extended secure Docker test harness to support SASL mechanisms in secure profile (`PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`) for end-to-end validation.
 - Updated workspace/crate versions and release docs to `1.2.0` (`README.md`, `docs/usage-guide.md`, `CHANGELOG.md`, `AGENT.md`, crate agent/readme docs).
 

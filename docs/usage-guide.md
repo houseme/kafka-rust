@@ -147,5 +147,6 @@ COMPRESSIONS=NONE:SNAPPY:GZIP ./run-all-tests 3.9.2:4.1.2:4.2.0
 Async secure SASL acceptance checks:
 
 ```bash
+./run-sync-secure-tests
 ./run-async-secure-tests
 ```

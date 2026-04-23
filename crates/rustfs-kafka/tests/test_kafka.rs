@@ -9,7 +9,9 @@ mod integration {
     use temp_env::with_var;
     use tracing::debug;
 
-    use rustfs_kafka::client::{Compression, GroupOffsetStorage, KafkaClient, SecurityConfig};
+    use rustfs_kafka::client::{
+        Compression, GroupOffsetStorage, KafkaClient, SaslConfig, SecurityConfig,
+    };
 
     mod client;
     mod consumer_producer;
@@ -28,6 +30,9 @@ mod integration {
 
     const KAFKA_CLIENT_SECURE: &str = "KAFKA_CLIENT_SECURE";
     const KAFKA_CLIENT_COMPRESSION: &str = "KAFKA_CLIENT_COMPRESSION";
+    const KAFKA_CLIENT_SASL_MECHANISM: &str = "KAFKA_CLIENT_SASL_MECHANISM";
+    const KAFKA_CLIENT_SASL_USERNAME: &str = "KAFKA_CLIENT_SASL_USERNAME";
+    const KAFKA_CLIENT_SASL_PASSWORD: &str = "KAFKA_CLIENT_SASL_PASSWORD";
 
     fn parse_compression(s: &str) -> Compression {
         match s.to_uppercase().as_str() {
@@ -78,7 +83,16 @@ mod integration {
     /// If the `KAFKA_CLIENT_SECURE` environment variable is set, return a
     /// `SecurityConfig`.
     pub(crate) fn get_security_config() -> SecurityConfig {
-        SecurityConfig::new().with_hostname_verification(false)
+        let mut security = SecurityConfig::new().with_hostname_verification(false);
+        let mechanism = std::env::var(KAFKA_CLIENT_SASL_MECHANISM).unwrap_or_default();
+        if !mechanism.is_empty() {
+            let username =
+                std::env::var(KAFKA_CLIENT_SASL_USERNAME).unwrap_or_else(|_| "test".to_owned());
+            let password = std::env::var(KAFKA_CLIENT_SASL_PASSWORD)
+                .unwrap_or_else(|_| "test-pass".to_owned());
+            security = security.with_sasl(SaslConfig::new(mechanism, username, password));
+        }
+        security
     }
 
     #[test]

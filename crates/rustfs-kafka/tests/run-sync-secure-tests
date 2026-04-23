@@ -1,0 +1,45 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+DEFAULT_KAFKA_VER="4.2.0"
+DEFAULT_SCALA_VER="2.13"
+DEFAULT_SASL_MECHANISMS="PLAIN:SCRAM-SHA-256:SCRAM-SHA-512"
+
+KAFKA_VER="${KAFKA_VER:-$DEFAULT_KAFKA_VER}"
+SCALA_VER="${SCALA_VER:-$DEFAULT_SCALA_VER}"
+SASL_MECHANISMS="${SASL_MECHANISMS:-$DEFAULT_SASL_MECHANISMS}"
+
+export KAFKA_CLIENT_SECURE="secure"
+export KAFKA_CLIENT_SASL_USERNAME="${KAFKA_CLIENT_SASL_USERNAME:-test}"
+export KAFKA_CLIENT_SASL_PASSWORD="${KAFKA_CLIENT_SASL_PASSWORD:-test-pass}"
+export KAFKA_CLIENT_COMPRESSION="NONE"
+export RUST_TEST_THREADS=1
+
+cleanup() {
+    docker compose down 2>/dev/null || true
+}
+trap cleanup EXIT
+
+IFS=':' read -r -a mechanisms <<< "$SASL_MECHANISMS"
+
+for mechanism in "${mechanisms[@]}"; do
+    export KAFKA_VER
+    export SCALA_VER
+    export KAFKA_CLIENT_SASL_MECHANISM="$mechanism"
+
+    echo "Starting Docker secure profile: KAFKA_VER=$KAFKA_VER, SASL=$mechanism"
+    cleanup
+
+    docker compose build kafka
+    docker compose up -d kafka
+
+    ./do_until_success "docker compose logs kafka | grep -E \"Created topic kafka-rust-test\\.|Topic 'kafka-rust-test' already exists\\.\""
+
+    echo "Running sync integration tests with SASL=$mechanism"
+    cargo test --features integration_tests --test test_kafka integration::client::test_kafka_client_load_metadata -- --nocapture
+    cargo test --features integration_tests --test test_kafka integration::client::test_produce_fetch_messages -- --nocapture
+
+done

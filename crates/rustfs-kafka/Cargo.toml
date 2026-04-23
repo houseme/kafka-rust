@@ -33,6 +33,11 @@ tracing.workspace = true
 rustls = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+pbkdf2 = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 
 # Optional: metrics
 metrics = { workspace = true, optional = true }
@@ -67,12 +72,22 @@ security = [
     "dep:rustls",
     "dep:webpki-roots",
     "dep:rustls-native-certs",
+    "dep:base64",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:pbkdf2",
+    "dep:rand",
     "rustls/aws-lc-rs",
 ]
 security-ring = [
     "dep:rustls",
     "dep:webpki-roots",
     "dep:rustls-native-certs",
+    "dep:base64",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:pbkdf2",
+    "dep:rand",
     "rustls/ring",
 ]
 
