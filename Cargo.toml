@@ -47,9 +47,9 @@ rustls-native-certs = "0.8.3"
 # Optional: metrics
 metrics = "0.24.3"
 base64 = "0.22.1"
-hmac = "0.12.1"
-sha2 = "0.10.9"
-pbkdf2 = "0.12.2"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+pbkdf2 = "0.13.0"
 
 # Async runtime
 tokio = "1.52.1"
