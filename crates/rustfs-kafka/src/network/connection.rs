@@ -322,6 +322,7 @@ const API_VERSION_SASL_AUTHENTICATE: i16 = 1;
 const DEFAULT_CLIENT_ID: &str = "rustfs-kafka";
 
 #[cfg(feature = "security")]
+#[derive(Clone, Copy)]
 enum ScramAlgorithm {
     Sha256,
     Sha512,
@@ -419,6 +420,7 @@ fn perform_sasl_plain_authenticate(
 }
 
 #[cfg(feature = "security")]
+#[allow(clippy::too_many_lines)]
 fn perform_sasl_scram_authenticate(
     stream: &mut KafkaStream,
     sasl: &SaslConfig,
@@ -436,7 +438,7 @@ fn perform_sasl_scram_authenticate(
         .with_request_api_version(API_VERSION_SASL_AUTHENTICATE)
         .with_correlation_id(correlation_id);
     let auth_request_1 =
-        SaslAuthenticateRequest::default().with_auth_bytes(Bytes::from(client_first.clone()));
+        SaslAuthenticateRequest::default().with_auth_bytes(Bytes::from(client_first));
     send_kp_request_on_stream(
         stream,
         &auth_header_1,
@@ -484,7 +486,7 @@ fn perform_sasl_scram_authenticate(
     let client_final_without_proof = format!("c=biws,r={server_nonce}");
     let auth_message = format!("{client_first_bare},{server_first},{client_final_without_proof}");
     let (client_proof, expected_server_signature) = compute_scram_proof_and_server_signature(
-        &algorithm,
+        algorithm,
         sasl.password(),
         &salt,
         iterations,
@@ -549,7 +551,7 @@ fn build_sasl_plain_auth_bytes(sasl: &SaslConfig) -> Bytes {
 
 #[cfg(feature = "security")]
 fn compute_scram_proof_and_server_signature(
-    algorithm: &ScramAlgorithm,
+    algorithm: ScramAlgorithm,
     password: &str,
     salt: &[u8],
     iterations: u32,

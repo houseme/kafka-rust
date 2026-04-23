@@ -34,6 +34,7 @@ impl Default for TlsConfig {
 
 impl TlsConfig {
     /// Create a new TLS configuration with default settings
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }

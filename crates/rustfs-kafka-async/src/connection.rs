@@ -38,7 +38,7 @@ enum ScramAlgorithm {
 
 enum AsyncKafkaStream {
     Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 /// Certificate verifier that accepts any server certificate (for testing).
@@ -127,7 +127,7 @@ impl AsyncConnection {
                         "TLS handshake failed: {e}"
                     ))))
                 })?;
-            AsyncKafkaStream::Tls(tls)
+            AsyncKafkaStream::Tls(Box::new(tls))
         } else {
             AsyncKafkaStream::Plain(tcp_stream)
         };
