@@ -504,7 +504,7 @@ fn hmac_bytes<M>(key: &[u8], data: &[u8]) -> Result<Vec<u8>>
 where
     M: Mac + hmac::digest::KeyInit,
 {
-    let mut mac = <M as Mac>::new_from_slice(key)
+    let mut mac = <M as hmac::digest::KeyInit>::new_from_slice(key)
         .map_err(|e| Error::Config(format!("hmac init failed: {e}")))?;
     mac.update(data);
     Ok(mac.finalize().into_bytes().to_vec())
