@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-23
+
 ### Added
 
 - Added `AsyncProducerBuilder` in `rustfs-kafka-async` with async `build()` and producer configuration methods.
@@ -21,10 +23,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Native async consumer now retries recoverable `Fetch`/`Commit` failures by refreshing leader metadata or group coordinator.
 - Native async consumer retry policy is now configurable (attempts + backoff) via async builder settings.
 - Native async consumer now exposes error observability: cumulative error-class/code counters and latest error snapshot.
+- Native async consumer observability now also emits metrics counters on key failure paths (`total`, `by_phase`, `by_class`, `by_kafka_code`) under feature-gated `metrics`.
 - Reworked `AsyncProducer` internals to run synchronous producer operations on a dedicated background thread.
 - Moved async producer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.
 - Moved async consumer construction to blocking-safe setup (`spawn_blocking`) to avoid blocking the tokio scheduler.
 - Updated async producer/consumer shutdown paths to avoid blocking `Drop` on tokio runtime threads.
+- Bumped workspace/crate versions to `1.1.0` and synced release docs (`README.md`, `crates/rustfs-kafka-async/README.md`, `docs/usage-guide.md`, `AGENT.md`).
 
 ## [1.0.0] - 2026-04-22
 

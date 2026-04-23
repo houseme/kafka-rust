@@ -1,5 +1,11 @@
 # rustfs-kafka-async
 
+[![Rust](https://github.com/houseme/kafka-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/houseme/kafka-rust/actions/workflows/rust.yml)
+[![crates.io](https://img.shields.io/crates/v/rustfs-kafka-async.svg)](https://crates.io/crates/rustfs-kafka-async)
+[![docs.rs](https://docs.rs/rustfs-kafka-async/badge.svg)](https://docs.rs/rustfs-kafka-async/)
+[![License](https://img.shields.io/crates/l/rustfs-kafka-async)](../../LICENSE)
+[![Crates.io](https://img.shields.io/crates/d/rustfs-kafka-async)](https://crates.io/crates/rustfs-kafka-async)
+
 Async wrappers for `rustfs-kafka`, built on top of `tokio`.
 
 This crate provides:
@@ -19,7 +25,7 @@ sync Kafka setup does not stall the tokio scheduler.
 
 ```toml
 [dependencies]
-rustfs-kafka-async = "1.0.0"
+rustfs-kafka-async = "1.1.0"
 ```
 
 ## Quick Example

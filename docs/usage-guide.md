@@ -9,8 +9,8 @@ This guide covers common usage for both:
 
 ```toml
 [dependencies]
-rustfs-kafka = "1.0.0"
-rustfs-kafka-async = "1.0.0"
+rustfs-kafka = "1.1.0"
+rustfs-kafka-async = "1.1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -124,7 +124,7 @@ async fn main() -> rustfs_kafka::error::Result<()> {
 - Disable all default features:
 
 ```toml
-rustfs-kafka = { version = "1.0.0", default-features = false }
+rustfs-kafka = { version = "1.1.0", default-features = false }
 ```
 
 ## 5. Integration Testing

@@ -9,6 +9,7 @@ repository.
 - `crates/rustfs-kafka-async`: async wrappers based on tokio.
 - `docs/`: project usage and API guides.
 - `crates/rustfs-kafka/tests`: Docker-based integration test harness.
+- Current release target: `1.1.0`.
 
 ## Primary Capabilities
 
@@ -44,10 +45,10 @@ cd crates/rustfs-kafka/tests
 ./run-all-tests
 ```
 
-## Release Checklist (1.x)
+## Release Checklist (1.1.x)
 
 1. Bump workspace version in `Cargo.toml`.
-2. Confirm crate docs/readme examples use the new version.
+2. Confirm crate docs/readme examples use the new version (`README.md`, `docs/usage-guide.md`, crate READMEs).
 3. Update `CHANGELOG.md`.
 4. Run quality gates (`fmt`, `clippy`, tests).
 5. Ensure docs in `docs/` match current behavior.
