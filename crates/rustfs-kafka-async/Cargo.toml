@@ -24,8 +24,12 @@ bytes.workspace = true
 kafka-protocol.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "rt", "macros"] }
 tracing.workspace = true
+metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber.workspace = true
 ctor.workspace = true
+
+[features]
+metrics = ["dep:metrics", "rustfs-kafka/metrics"]

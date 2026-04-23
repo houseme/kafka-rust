@@ -796,19 +796,26 @@ impl NativeConsumer {
     fn record_error(&mut self, phase: &str, err: &Error) {
         self.observability.total_errors = self.observability.total_errors.saturating_add(1);
         let class = error_class(err);
+        let kafka_code = kafka_code_from_error(err);
+        let kafka_code_label = kafka_code.map(|code| format!("{code:?}"));
+
         *self
             .observability
             .class_counts
             .entry(class.clone())
             .or_insert(0) += 1;
-        if let Some(code) = kafka_code_from_error(err) {
-            let key = format!("{code:?}");
-            *self.observability.kafka_code_counts.entry(key).or_insert(0) += 1;
+        if let Some(code) = &kafka_code_label {
+            *self
+                .observability
+                .kafka_code_counts
+                .entry(code.clone())
+                .or_insert(0) += 1;
         }
+        crate::metrics::record_native_consumer_error(phase, &class, kafka_code_label.as_deref());
         self.observability.last_error = Some(NativeConsumerErrorSnapshot {
             phase: phase.to_owned(),
             class,
-            kafka_code: kafka_code_from_error(err),
+            kafka_code,
             message: err.to_string(),
             timestamp_unix_ms: now_unix_ms(),
         });

@@ -988,6 +988,7 @@ dependencies = [
  "bytes",
  "ctor",
  "kafka-protocol",
+ "metrics",
  "rustfs-kafka",
  "tokio",
  "tracing",

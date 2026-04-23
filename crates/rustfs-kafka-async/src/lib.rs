@@ -39,6 +39,7 @@
 mod client;
 mod connection;
 mod consumer;
+mod metrics;
 mod producer;
 
 pub use client::AsyncKafkaClient;
