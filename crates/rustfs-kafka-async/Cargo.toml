@@ -32,4 +32,5 @@ tracing-subscriber.workspace = true
 ctor.workspace = true
 
 [features]
+default = ["metrics"]
 metrics = ["dep:metrics", "rustfs-kafka/metrics"]

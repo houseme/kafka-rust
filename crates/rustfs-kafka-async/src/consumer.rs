@@ -15,7 +15,7 @@ use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
 use kafka_protocol::records::RecordBatchDecoder;
 use rustfs_kafka::consumer::{Consumer, FetchOffset, MessageSets};
 use rustfs_kafka::error::{ConsumerError, Error, KafkaCode, ProtocolError, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -34,6 +34,7 @@ const API_VERSION_OFFSET_FETCH: i16 = 2;
 const API_VERSION_LIST_OFFSETS: i16 = 1;
 const DEFAULT_NATIVE_RETRY_ATTEMPTS: usize = 3;
 const DEFAULT_NATIVE_RETRY_BACKOFF_MS: u64 = 100;
+const DEFAULT_NATIVE_RECENT_ERROR_LIMIT: usize = 32;
 const FETCH_MIN_BYTES: i32 = 1;
 const FETCH_MAX_WAIT_MS: i32 = 100;
 const FETCH_PARTITION_MAX_BYTES: i32 = 1_048_576;
@@ -91,14 +92,44 @@ pub struct NativeConsumerErrorStats {
     pub kafka_code_counts: HashMap<String, u64>,
     pub class_counts: HashMap<String, u64>,
     pub last_error: Option<NativeConsumerErrorSnapshot>,
+    pub recent_errors: Vec<NativeConsumerErrorSnapshot>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct NativeConsumerObservability {
     total_errors: u64,
     kafka_code_counts: HashMap<String, u64>,
     class_counts: HashMap<String, u64>,
     last_error: Option<NativeConsumerErrorSnapshot>,
+    recent_errors: VecDeque<NativeConsumerErrorSnapshot>,
+    recent_error_limit: usize,
+}
+
+impl Default for NativeConsumerObservability {
+    fn default() -> Self {
+        Self::new(DEFAULT_NATIVE_RECENT_ERROR_LIMIT)
+    }
+}
+
+impl NativeConsumerObservability {
+    fn new(recent_error_limit: usize) -> Self {
+        Self {
+            total_errors: 0,
+            kafka_code_counts: HashMap::new(),
+            class_counts: HashMap::new(),
+            last_error: None,
+            recent_errors: VecDeque::new(),
+            recent_error_limit: recent_error_limit.max(1),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.total_errors = 0;
+        self.kafka_code_counts.clear();
+        self.class_counts.clear();
+        self.last_error = None;
+        self.recent_errors.clear();
+    }
 }
 
 /// An async Kafka consumer.
@@ -116,6 +147,7 @@ pub struct AsyncConsumerBuilder {
     fallback_offset: FetchOffset,
     native_retry_attempts: usize,
     native_retry_backoff: Duration,
+    native_recent_error_limit: usize,
 }
 
 impl AsyncConsumerBuilder {
@@ -131,6 +163,7 @@ impl AsyncConsumerBuilder {
             fallback_offset: FetchOffset::Latest,
             native_retry_attempts: DEFAULT_NATIVE_RETRY_ATTEMPTS,
             native_retry_backoff: Duration::from_millis(DEFAULT_NATIVE_RETRY_BACKOFF_MS),
+            native_recent_error_limit: DEFAULT_NATIVE_RECENT_ERROR_LIMIT,
         }
     }
 
@@ -190,6 +223,13 @@ impl AsyncConsumerBuilder {
         self
     }
 
+    /// Sets the max number of native recent error snapshots retained in memory.
+    #[must_use]
+    pub fn with_native_recent_error_limit(mut self, limit: usize) -> Self {
+        self.native_recent_error_limit = limit.max(1);
+        self
+    }
+
     /// Builds an async consumer.
     pub async fn build(self) -> Result<AsyncConsumer> {
         let group = self
@@ -214,7 +254,7 @@ impl AsyncConsumerBuilder {
                     correlation: 1,
                     retry_attempts: self.native_retry_attempts,
                     retry_backoff: self.native_retry_backoff,
-                    observability: NativeConsumerObservability::default(),
+                    observability: NativeConsumerObservability::new(self.native_recent_error_limit),
                 })),
             });
         }
@@ -786,18 +826,19 @@ impl NativeConsumer {
             kafka_code_counts: self.observability.kafka_code_counts.clone(),
             class_counts: self.observability.class_counts.clone(),
             last_error: self.observability.last_error.clone(),
+            recent_errors: self.observability.recent_errors.iter().cloned().collect(),
         }
     }
 
     fn reset_error_stats(&mut self) {
-        self.observability = NativeConsumerObservability::default();
+        self.observability.clear();
     }
 
     fn record_error(&mut self, phase: &str, err: &Error) {
         self.observability.total_errors = self.observability.total_errors.saturating_add(1);
         let class = error_class(err);
-        let kafka_code = kafka_code_from_error(err);
-        let kafka_code_label = kafka_code.map(|code| format!("{code:?}"));
+        let kafka_code = kafka_code_from_error(err).map(kafka_code_to_i16);
+        let kafka_code_label = kafka_code.map(|code| code.to_string());
 
         *self
             .observability
@@ -811,14 +852,25 @@ impl NativeConsumer {
                 .entry(code.clone())
                 .or_insert(0) += 1;
         }
-        crate::metrics::record_native_consumer_error(phase, &class, kafka_code_label.as_deref());
-        self.observability.last_error = Some(NativeConsumerErrorSnapshot {
+        let snapshot = NativeConsumerErrorSnapshot {
             phase: phase.to_owned(),
             class,
-            kafka_code,
+            kafka_code: kafka_code.and_then(map_kafka_code),
             message: err.to_string(),
             timestamp_unix_ms: now_unix_ms(),
-        });
+        };
+        self.observability.last_error = Some(snapshot.clone());
+        self.observability.recent_errors.push_back(snapshot.clone());
+        while self.observability.recent_errors.len() > self.observability.recent_error_limit {
+            let _ = self.observability.recent_errors.pop_front();
+        }
+        crate::metrics::record_native_consumer_error(
+            phase,
+            &snapshot.class,
+            kafka_code_label.as_deref(),
+            self.observability.recent_errors.len(),
+            snapshot.timestamp_unix_ms,
+        );
     }
 }
 
@@ -1290,6 +1342,47 @@ fn map_kafka_code(code: i16) -> Option<KafkaCode> {
     }
 }
 
+fn kafka_code_to_i16(code: KafkaCode) -> i16 {
+    match code {
+        KafkaCode::OffsetOutOfRange => 1,
+        KafkaCode::CorruptMessage => 2,
+        KafkaCode::UnknownTopicOrPartition => 3,
+        KafkaCode::InvalidMessageSize => 4,
+        KafkaCode::LeaderNotAvailable => 5,
+        KafkaCode::NotLeaderForPartition => 6,
+        KafkaCode::RequestTimedOut => 7,
+        KafkaCode::BrokerNotAvailable => 8,
+        KafkaCode::ReplicaNotAvailable => 9,
+        KafkaCode::MessageSizeTooLarge => 10,
+        KafkaCode::StaleControllerEpoch => 11,
+        KafkaCode::OffsetMetadataTooLarge => 12,
+        KafkaCode::NetworkException => 13,
+        KafkaCode::GroupLoadInProgress => 14,
+        KafkaCode::GroupCoordinatorNotAvailable => 15,
+        KafkaCode::NotCoordinatorForGroup => 16,
+        KafkaCode::InvalidTopic => 17,
+        KafkaCode::RecordListTooLarge => 18,
+        KafkaCode::NotEnoughReplicas => 19,
+        KafkaCode::NotEnoughReplicasAfterAppend => 20,
+        KafkaCode::InvalidRequiredAcks => 21,
+        KafkaCode::IllegalGeneration => 22,
+        KafkaCode::InconsistentGroupProtocol => 23,
+        KafkaCode::InvalidGroupId => 24,
+        KafkaCode::UnknownMemberId => 25,
+        KafkaCode::InvalidSessionTimeout => 26,
+        KafkaCode::RebalanceInProgress => 27,
+        KafkaCode::InvalidCommitOffsetSize => 28,
+        KafkaCode::TopicAuthorizationFailed => 29,
+        KafkaCode::GroupAuthorizationFailed => 30,
+        KafkaCode::ClusterAuthorizationFailed => 31,
+        KafkaCode::InvalidTimestamp => 32,
+        KafkaCode::UnsupportedSaslMechanism => 33,
+        KafkaCode::IllegalSaslState => 34,
+        KafkaCode::UnsupportedVersion => 35,
+        KafkaCode::Unknown => -1,
+    }
+}
+
 fn usize_to_i32(value: usize) -> Result<i32> {
     i32::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
 }
@@ -1371,5 +1464,46 @@ mod tests {
             result,
             Err(Error::Consumer(ConsumerError::NoTopicsAssigned))
         ));
+    }
+
+    #[tokio::test]
+    async fn native_observability_tracks_recent_snapshots_and_numeric_codes() {
+        let client = AsyncKafkaClient::new(vec![]).await.unwrap();
+        let mut native = NativeConsumer {
+            client,
+            group: "g".to_owned(),
+            topics: vec!["t".to_owned()],
+            fallback_offset: FetchOffset::Latest,
+            offsets: HashMap::new(),
+            dirty_offsets: HashMap::new(),
+            leaders: HashMap::new(),
+            coordinator: None,
+            correlation: 1,
+            retry_attempts: DEFAULT_NATIVE_RETRY_ATTEMPTS,
+            retry_backoff: Duration::from_millis(DEFAULT_NATIVE_RETRY_BACKOFF_MS),
+            observability: NativeConsumerObservability::new(2),
+        };
+
+        native.record_error("poll", &Error::Kafka(KafkaCode::LeaderNotAvailable));
+        native.record_error("poll", &Error::Kafka(KafkaCode::NotLeaderForPartition));
+        native.record_error(
+            "commit",
+            &Error::Kafka(KafkaCode::GroupCoordinatorNotAvailable),
+        );
+
+        let stats = native.error_stats();
+        assert_eq!(stats.total_errors, 3);
+        assert_eq!(stats.kafka_code_counts.get("5").copied(), Some(1));
+        assert_eq!(stats.kafka_code_counts.get("6").copied(), Some(1));
+        assert_eq!(stats.kafka_code_counts.get("15").copied(), Some(1));
+        assert_eq!(stats.recent_errors.len(), 2);
+        assert_eq!(stats.recent_errors[0].phase, "poll");
+        assert_eq!(stats.recent_errors[1].phase, "commit");
+
+        native.reset_error_stats();
+        let reset = native.error_stats();
+        assert_eq!(reset.total_errors, 0);
+        assert!(reset.kafka_code_counts.is_empty());
+        assert!(reset.recent_errors.is_empty());
     }
 }
