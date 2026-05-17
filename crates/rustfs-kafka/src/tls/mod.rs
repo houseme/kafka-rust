@@ -64,7 +64,7 @@ impl TlsConfig {
 
 /// Trait for TLS stream implementations
 #[allow(dead_code)] // Methods may not be used in all configurations
-pub trait TlsStream: io::Read + io::Write + Send {
+pub trait TlsStream: io::Read + io::Write + Send + Sync {
     /// Returns true if this is a secured (TLS) connection
     fn is_secured(&self) -> bool;
 
