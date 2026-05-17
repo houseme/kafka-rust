@@ -16,7 +16,7 @@ mod integration {
     mod client;
     mod consumer_producer;
 
-    #[ctor::ctor]
+    #[ctor::ctor(unsafe)]
     fn init_tracing() {
         let _ = tracing_subscriber::fmt::try_init();
     }
