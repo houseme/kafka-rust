@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped workspace dependencies:
+  - `rustls`: `0.23.39` -> `0.23.40`
+  - `metrics`: `0.24.3` -> `0.24.6`
+  - `tokio`: `1.52.1` -> `1.52.3`
+  - `ctor`: `0.10.1` -> `1.0.6`
+- Updated CI benchmark workflow artifact upload action:
+  - `actions/upload-artifact`: `v4` -> `v6`
+
+### Fixed
+
+- Updated integration test ctor annotation to match `ctor` `1.x` requirements:
+  - `#[ctor::ctor]` -> `#[ctor::ctor(unsafe)]` in `crates/rustfs-kafka/tests/test_kafka.rs`
+
 ## [1.2.0] - 2026-04-23
 
 ### Added
