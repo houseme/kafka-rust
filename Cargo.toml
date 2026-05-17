@@ -40,23 +40,23 @@ thiserror = "2.0.18"
 tracing = "0.1.44"
 
 # Optional dependencies (made optional in consuming crates via dep: syntax)
-rustls = { version = "0.23.39", default-features = false, features = ["logging", "std", "tls12"] }
+rustls = { version = "0.23.40", default-features = false, features = ["logging", "std", "tls12"] }
 webpki-roots = "1.0.7"
 rustls-native-certs = "0.8.3"
 
 # Optional: metrics
-metrics = "0.24.3"
+metrics = "0.24.6"
 base64 = "0.22.1"
 hmac = "0.13.0"
 sha2 = "0.11.0"
 pbkdf2 = "0.13.0"
 
 # Async runtime
-tokio = "1.52.1"
+tokio = "1.52.3"
 tokio-rustls = "0.26.4"
 
 # Dev dependencies
-ctor = "0.10.1"
+ctor = "1.0.6"
 getopts = "0.2.24"
 tracing-subscriber = "0.3"
 rand = "0.10.1"
