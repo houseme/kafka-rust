@@ -75,9 +75,16 @@ pub use crate::protocol::admin::{
 };
 pub use crate::protocol::api_versions::{
     ApiVersionCache, ApiVersions, ApiVersionsResponseData, BrokerApiVersion, api_key,
+    convert_api_versions_response,
 };
-pub use crate::protocol::create_topics::{CreateTopicsResponseData, TopicConfig, TopicResult};
-pub use crate::protocol::delete_topics::{DeleteTopicResult, DeleteTopicsResponseData};
+pub use crate::protocol::create_topics::{
+    CreateTopicsResponseData, TopicConfig, TopicResult, build_create_topics_protocol_request,
+    build_create_topics_request, convert_create_topics_response,
+};
+pub use crate::protocol::delete_topics::{
+    DeleteTopicResult, DeleteTopicsResponseData, build_delete_topics_protocol_request,
+    build_delete_topics_request, convert_delete_topics_response,
+};
 #[cfg(feature = "producer_timestamp")]
 pub use crate::protocol::produce::ProducerTimestamp;
 pub use crate::protocol::share_consumer::{
@@ -90,13 +97,18 @@ pub use crate::protocol::share_consumer::{
     ShareFetchOptions, ShareFetchPartition, ShareFetchPartitionResponse, ShareFetchResponseData,
     ShareFetchSessionConfig, ShareFetchTopic, ShareFetchTopicResponse, ShareGroupHeartbeatOptions,
     ShareGroupHeartbeatResponseData, ShareHeartbeatResponseData, ShareLeader, ShareNodeEndpoint,
-    ShareTopicPartitions,
+    ShareTopicPartitions, build_consumer_group_heartbeat_request, build_share_acknowledge_request,
+    build_share_fetch_request, build_share_group_heartbeat_request,
+    convert_consumer_group_heartbeat_response, convert_share_acknowledge_response,
+    convert_share_fetch_response, convert_share_group_heartbeat_response,
 };
 pub use crate::protocol::telemetry::{
     GetTelemetrySubscriptionsOptions, GetTelemetrySubscriptionsResponseData, PushTelemetryOptions,
     PushTelemetryResponseData, TELEMETRY_COMPRESSION_GZIP, TELEMETRY_COMPRESSION_LZ4,
     TELEMETRY_COMPRESSION_NONE, TELEMETRY_COMPRESSION_SNAPPY, TELEMETRY_COMPRESSION_ZSTD,
     TelemetrySession, TelemetrySubscriptionsResponseData,
+    build_get_telemetry_subscriptions_request, build_push_telemetry_request,
+    convert_get_telemetry_subscriptions_response, convert_push_telemetry_response,
 };
 pub use crate::utils::PartitionOffset;
 

@@ -1,9 +1,11 @@
 //! `CreateTopics` protocol (API key 19) for topic administration.
 
-use bytes::{Buf, BufMut, BytesMut};
-use kafka_protocol::messages::{RequestHeader, ResponseHeader};
-use kafka_protocol::protocol::StrBytes;
-use kafka_protocol::protocol::{Decodable, Encodable};
+use bytes::BytesMut;
+use kafka_protocol::messages::{
+    CreateTopicsRequest, CreateTopicsResponse, RequestHeader, ResponseHeader,
+    create_topics_request::{CreatableTopic, CreatableTopicConfig},
+};
+use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
 
 use crate::error::{Error, Result};
 use crate::network::KafkaConnection;
@@ -76,50 +78,43 @@ pub struct CreateTopicsResponseData {
     pub results: Vec<TopicResult>,
 }
 
-fn encode_string(buf: &mut BytesMut, s: &str) {
-    let len = crate::protocol::usize_to_i16(s.len())
-        .expect("Kafka string length must fit in i16 for protocol encoding");
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(s.as_bytes());
+/// Build a generated `CreateTopics` request and header.
+#[must_use]
+pub fn build_create_topics_protocol_request(
+    correlation_id: i32,
+    client_id: &str,
+    topics: &[TopicConfig],
+    timeout_ms: i32,
+) -> (RequestHeader, CreateTopicsRequest) {
+    let header = RequestHeader::default()
+        .with_request_api_key(API_KEY_CREATE_TOPICS)
+        .with_request_api_version(API_VERSION_CREATE_TOPICS)
+        .with_correlation_id(correlation_id)
+        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
+    let topics = topics.iter().map(to_creatable_topic).collect();
+    let request = CreateTopicsRequest::default()
+        .with_topics(topics)
+        .with_timeout_ms(timeout_ms);
+
+    (header, request)
 }
 
-fn encode_nullable_string(buf: &mut BytesMut, s: &str) {
-    let len = crate::protocol::usize_to_i16(s.len())
-        .expect("Kafka string length must fit in i16 for protocol encoding");
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(s.as_bytes());
-}
-
-fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
-    if bytes.len() < 2 {
-        return Err(Error::codec());
-    }
-    let len = crate::protocol::non_negative_i16_to_usize(i16::from_be_bytes([bytes[0], bytes[1]]))?;
-    bytes.advance(2);
-    if bytes.len() < len {
-        return Err(Error::codec());
-    }
-    let s = String::from_utf8(bytes[..len].to_vec()).map_err(|_| Error::codec())?;
-    bytes.advance(len);
-    Ok(s)
-}
-
-fn decode_nullable_string(bytes: &mut bytes::Bytes) -> Result<Option<String>> {
-    if bytes.len() < 2 {
-        return Err(Error::codec());
-    }
-    let len = i16::from_be_bytes([bytes[0], bytes[1]]);
-    bytes.advance(2);
-    if len < 0 {
-        return Ok(None);
-    }
-    let len = crate::protocol::non_negative_i16_to_usize(len)?;
-    if bytes.len() < len {
-        return Err(Error::codec());
-    }
-    let s = String::from_utf8(bytes[..len].to_vec()).map_err(|_| Error::codec())?;
-    bytes.advance(len);
-    Ok(Some(s))
+fn to_creatable_topic(topic: &TopicConfig) -> CreatableTopic {
+    CreatableTopic::default()
+        .with_name(StrBytes::from_string(topic.name.clone()).into())
+        .with_num_partitions(topic.num_partitions)
+        .with_replication_factor(topic.replication_factor)
+        .with_configs(
+            topic
+                .configs
+                .iter()
+                .map(|(key, value)| {
+                    CreatableTopicConfig::default()
+                        .with_name(StrBytes::from_string(key.clone()))
+                        .with_value(Some(StrBytes::from_string(value.clone())))
+                })
+                .collect(),
+        )
 }
 
 /// Build a `CreateTopics` request.
@@ -129,51 +124,57 @@ pub fn build_create_topics_request(
     topics: &[TopicConfig],
     timeout_ms: i32,
 ) -> Result<Vec<u8>> {
+    let (header, request) =
+        build_create_topics_protocol_request(correlation_id, client_id, topics, timeout_ms);
+    encode_framed_create_topics_request(&header, &request)
+}
+
+fn encode_framed_create_topics_request(
+    header: &RequestHeader,
+    request: &CreateTopicsRequest,
+) -> Result<Vec<u8>> {
     let version = API_VERSION_CREATE_TOPICS;
-
-    let mut body = BytesMut::new();
-    // topics array length
-    body.extend_from_slice(&crate::protocol::usize_to_i32(topics.len())?.to_be_bytes());
-    for topic in topics {
-        encode_string(&mut body, &topic.name);
-        body.extend_from_slice(&topic.num_partitions.to_be_bytes());
-        body.extend_from_slice(&topic.replication_factor.to_be_bytes());
-        // configs array
-        body.extend_from_slice(&crate::protocol::usize_to_i32(topic.configs.len())?.to_be_bytes());
-        for (key, value) in &topic.configs {
-            encode_nullable_string(&mut body, key);
-            encode_nullable_string(&mut body, value);
-        }
-        // tagged fields (empty, 0 tags)
-        body.put_u8(0);
-    }
-    // timeout_ms
-    body.extend_from_slice(&timeout_ms.to_be_bytes());
-    // tagged fields (empty)
-    body.put_u8(0);
-
-    let header = RequestHeader::default()
-        .with_request_api_key(API_KEY_CREATE_TOPICS)
-        .with_request_api_version(version)
-        .with_correlation_id(correlation_id)
-        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
-
     let mut header_buf = BytesMut::new();
     header
-        .encode(&mut header_buf, version)
+        .encode(
+            &mut header_buf,
+            CreateTopicsRequest::header_version(version),
+        )
         .map_err(|_| Error::codec())?;
 
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body.len())?;
+    let mut body_buf = BytesMut::new();
+    request
+        .encode(&mut body_buf, version)
+        .map_err(|_| Error::codec())?;
+
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
     let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
     let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body);
+    out.extend_from_slice(&body_buf);
 
     Ok(out.to_vec())
 }
 
+/// Convert a generated `CreateTopicsResponse` into the crate's public shape.
+#[must_use]
+pub fn convert_create_topics_response(response: CreateTopicsResponse) -> CreateTopicsResponseData {
+    CreateTopicsResponseData {
+        results: response
+            .topics
+            .into_iter()
+            .map(|topic| TopicResult {
+                name: topic.name.to_string(),
+                error_code: topic.error_code,
+                error_message: topic.error_message.map(|message| message.to_string()),
+            })
+            .collect(),
+    }
+}
+
 /// Send a `CreateTopics` request and parse the response.
+#[allow(dead_code)]
 pub fn fetch_create_topics(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -194,61 +195,19 @@ pub fn fetch_create_topics(
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = resp_bytes;
 
-    let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, CreateTopicsResponse::header_version(version))
+            .map_err(|_| Error::codec())?;
+    let response = CreateTopicsResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
 
-    // throttle_time_ms
-    if bytes.len() < 4 {
-        return Err(Error::codec());
-    }
-    bytes.advance(4);
-
-    // results array length
-    if bytes.len() < 4 {
-        return Err(Error::codec());
-    }
-    let num_results = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-    ]))?;
-    bytes.advance(4);
-
-    let mut results = Vec::with_capacity(num_results);
-    for _ in 0..num_results {
-        let name = decode_string(&mut bytes)?;
-        if bytes.len() < 2 {
-            return Err(Error::codec());
-        }
-        let error_code = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-
-        let error_message = if version >= 1 && !bytes.is_empty() {
-            decode_nullable_string(&mut bytes)?
-        } else {
-            None
-        };
-
-        // Skip remaining fields we don't need (configs, partitions, etc.)
-        // For simplicity, skip the rest of the topic result
-        // In a production impl we'd parse all fields properly
-
-        // tagged fields
-        if !bytes.is_empty() {
-            let _tag_count = bytes[0];
-            bytes.advance(1);
-        }
-
-        results.push(TopicResult {
-            name,
-            error_code,
-            error_message,
-        });
-    }
-
-    Ok(CreateTopicsResponseData { results })
+    Ok(convert_create_topics_response(response))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{Buf, Bytes};
+    use kafka_protocol::messages::create_topics_response::CreatableTopicResult;
 
     #[test]
     fn test_topic_config_builder() {
@@ -279,5 +238,99 @@ mod tests {
             Err(e) => panic!("build failed: {e:?}"),
             Ok(bytes) => assert!(bytes.len() > 4),
         }
+    }
+
+    #[test]
+    fn test_build_create_topics_protocol_request_preserves_fields() {
+        let topics = vec![
+            TopicConfig::new("test")
+                .with_partitions(3)
+                .with_replication_factor(2)
+                .with_config("cleanup.policy", "compact"),
+        ];
+        let (header, request) = build_create_topics_protocol_request(42, "client", &topics, 30000);
+
+        assert_eq!(header.request_api_key, API_KEY_CREATE_TOPICS);
+        assert_eq!(header.request_api_version, API_VERSION_CREATE_TOPICS);
+        assert_eq!(header.correlation_id, 42);
+        assert_eq!(request.timeout_ms, 30000);
+        assert_eq!(request.topics.len(), 1);
+        assert_eq!(request.topics[0].name.to_string(), "test");
+        assert_eq!(request.topics[0].num_partitions, 3);
+        assert_eq!(request.topics[0].replication_factor, 2);
+        assert_eq!(request.topics[0].configs.len(), 1);
+        assert_eq!(
+            request.topics[0].configs[0].name.to_string(),
+            "cleanup.policy"
+        );
+        assert_eq!(
+            request.topics[0].configs[0]
+                .value
+                .as_ref()
+                .map(ToString::to_string),
+            Some("compact".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_build_create_topics_request_writes_v2_body_without_flexible_tags() {
+        let topics = vec![
+            TopicConfig::new("topic-a")
+                .with_partitions(3)
+                .with_replication_factor(2)
+                .with_config("retention.ms", "60000"),
+        ];
+        let frame = build_create_topics_request(7, "client-a", &topics, 10_000).unwrap();
+        let mut bytes = Bytes::from(frame);
+        let frame_len = bytes.get_i32();
+        assert_eq!(usize::try_from(frame_len).unwrap(), bytes.remaining());
+
+        let header = RequestHeader::decode(
+            &mut bytes,
+            CreateTopicsRequest::header_version(API_VERSION_CREATE_TOPICS),
+        )
+        .unwrap();
+        assert_eq!(header.request_api_key, API_KEY_CREATE_TOPICS);
+        assert_eq!(header.request_api_version, API_VERSION_CREATE_TOPICS);
+        assert_eq!(header.correlation_id, 7);
+        assert_eq!(
+            header.client_id.as_ref().map(ToString::to_string),
+            Some("client-a".to_owned())
+        );
+
+        assert_eq!(bytes.get_i32(), 1);
+        assert_eq!(bytes.get_i16(), 7);
+        assert_eq!(&bytes.copy_to_bytes(7)[..], b"topic-a");
+        assert_eq!(bytes.get_i32(), 3);
+        assert_eq!(bytes.get_i16(), 2);
+        assert_eq!(bytes.get_i32(), 0);
+        assert_eq!(bytes.get_i32(), 1);
+        assert_eq!(bytes.get_i16(), 12);
+        assert_eq!(&bytes.copy_to_bytes(12)[..], b"retention.ms");
+        assert_eq!(bytes.get_i16(), 5);
+        assert_eq!(&bytes.copy_to_bytes(5)[..], b"60000");
+        assert_eq!(bytes.get_i32(), 10_000);
+        assert_eq!(bytes.get_u8(), 0);
+        assert!(!bytes.has_remaining());
+    }
+
+    #[test]
+    fn test_convert_create_topics_response_preserves_error_message() {
+        let response = CreateTopicsResponse::default().with_topics(vec![
+            CreatableTopicResult::default()
+                .with_name(StrBytes::from_static_str("topic-a").into())
+                .with_error_code(36)
+                .with_error_message(Some(StrBytes::from_static_str("already exists"))),
+        ]);
+
+        let converted = convert_create_topics_response(response);
+
+        assert_eq!(converted.results.len(), 1);
+        assert_eq!(converted.results[0].name, "topic-a");
+        assert_eq!(converted.results[0].error_code, 36);
+        assert_eq!(
+            converted.results[0].error_message.as_deref(),
+            Some("already exists")
+        );
     }
 }

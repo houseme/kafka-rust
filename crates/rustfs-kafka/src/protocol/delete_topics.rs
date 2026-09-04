@@ -1,9 +1,10 @@
 //! `DeleteTopics` protocol (API key 20) for topic administration.
 
-use bytes::{Buf, BufMut, BytesMut};
-use kafka_protocol::messages::{RequestHeader, ResponseHeader};
-use kafka_protocol::protocol::StrBytes;
-use kafka_protocol::protocol::{Decodable, Encodable};
+use bytes::BytesMut;
+use kafka_protocol::messages::{
+    DeleteTopicsRequest, DeleteTopicsResponse, RequestHeader, ResponseHeader,
+};
+use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
 
 use crate::error::{Error, Result};
 use crate::network::KafkaConnection;
@@ -27,25 +28,28 @@ pub struct DeleteTopicsResponseData {
     pub results: Vec<DeleteTopicResult>,
 }
 
-fn encode_string(buf: &mut BytesMut, s: &str) {
-    let len = crate::protocol::usize_to_i16(s.len())
-        .expect("Kafka string length must fit in i16 for protocol encoding");
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(s.as_bytes());
-}
+/// Build a generated `DeleteTopics` request and header.
+#[must_use]
+pub fn build_delete_topics_protocol_request(
+    correlation_id: i32,
+    client_id: &str,
+    topic_names: &[&str],
+    timeout_ms: i32,
+) -> (RequestHeader, DeleteTopicsRequest) {
+    let header = RequestHeader::default()
+        .with_request_api_key(API_KEY_DELETE_TOPICS)
+        .with_request_api_version(API_VERSION_DELETE_TOPICS)
+        .with_correlation_id(correlation_id)
+        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
+    let topic_names = topic_names
+        .iter()
+        .map(|name| StrBytes::from_string((*name).to_owned()).into())
+        .collect();
+    let request = DeleteTopicsRequest::default()
+        .with_topic_names(topic_names)
+        .with_timeout_ms(timeout_ms);
 
-fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
-    if bytes.len() < 2 {
-        return Err(Error::codec());
-    }
-    let len = crate::protocol::non_negative_i16_to_usize(i16::from_be_bytes([bytes[0], bytes[1]]))?;
-    bytes.advance(2);
-    if bytes.len() < len {
-        return Err(Error::codec());
-    }
-    let s = String::from_utf8(bytes[..len].to_vec()).map_err(|_| Error::codec())?;
-    bytes.advance(len);
-    Ok(s)
+    (header, request)
 }
 
 /// Build a `DeleteTopics` request.
@@ -55,43 +59,56 @@ pub fn build_delete_topics_request(
     topic_names: &[&str],
     timeout_ms: i32,
 ) -> Result<Vec<u8>> {
+    let (header, request) =
+        build_delete_topics_protocol_request(correlation_id, client_id, topic_names, timeout_ms);
+    encode_framed_delete_topics_request(&header, &request)
+}
+
+fn encode_framed_delete_topics_request(
+    header: &RequestHeader,
+    request: &DeleteTopicsRequest,
+) -> Result<Vec<u8>> {
     let version = API_VERSION_DELETE_TOPICS;
-
-    let mut body = BytesMut::new();
-    // topics array length
-    body.extend_from_slice(&crate::protocol::usize_to_i32(topic_names.len())?.to_be_bytes());
-    for name in topic_names {
-        encode_string(&mut body, name);
-        // tagged fields (empty)
-        body.put_u8(0);
-    }
-    // timeout_ms
-    body.extend_from_slice(&timeout_ms.to_be_bytes());
-    // tagged fields (empty)
-    body.put_u8(0);
-
-    let header = RequestHeader::default()
-        .with_request_api_key(API_KEY_DELETE_TOPICS)
-        .with_request_api_version(version)
-        .with_correlation_id(correlation_id)
-        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
-
     let mut header_buf = BytesMut::new();
     header
-        .encode(&mut header_buf, version)
+        .encode(
+            &mut header_buf,
+            DeleteTopicsRequest::header_version(version),
+        )
         .map_err(|_| Error::codec())?;
 
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body.len())?;
+    let mut body_buf = BytesMut::new();
+    request
+        .encode(&mut body_buf, version)
+        .map_err(|_| Error::codec())?;
+
+    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
     let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
     let mut out = BytesMut::with_capacity(4 + out_len);
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body);
+    out.extend_from_slice(&body_buf);
 
     Ok(out.to_vec())
 }
 
+/// Convert a generated `DeleteTopicsResponse` into the crate's public shape.
+#[must_use]
+pub fn convert_delete_topics_response(response: DeleteTopicsResponse) -> DeleteTopicsResponseData {
+    DeleteTopicsResponseData {
+        results: response
+            .responses
+            .into_iter()
+            .map(|topic| DeleteTopicResult {
+                name: topic.name.map(|name| name.to_string()).unwrap_or_default(),
+                error_code: topic.error_code,
+            })
+            .collect(),
+    }
+}
+
 /// Send a `DeleteTopics` request and parse the response.
+#[allow(dead_code)]
 pub fn fetch_delete_topics(
     conn: &mut KafkaConnection,
     correlation_id: i32,
@@ -113,47 +130,19 @@ pub fn fetch_delete_topics(
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
     let mut bytes = resp_bytes;
 
-    let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, DeleteTopicsResponse::header_version(version))
+            .map_err(|_| Error::codec())?;
+    let response = DeleteTopicsResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
 
-    // throttle_time_ms
-    if bytes.len() < 4 {
-        return Err(Error::codec());
-    }
-    bytes.advance(4);
-
-    // results array length
-    if bytes.len() < 4 {
-        return Err(Error::codec());
-    }
-    let num_results = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-    ]))?;
-    bytes.advance(4);
-
-    let mut results = Vec::with_capacity(num_results);
-    for _ in 0..num_results {
-        let name = decode_string(&mut bytes)?;
-        if bytes.len() < 2 {
-            return Err(Error::codec());
-        }
-        let error_code = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-
-        // tagged fields
-        if !bytes.is_empty() {
-            let _tag_count = bytes[0];
-            bytes.advance(1);
-        }
-
-        results.push(DeleteTopicResult { name, error_code });
-    }
-
-    Ok(DeleteTopicsResponseData { results })
+    Ok(convert_delete_topics_response(response))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::{Buf, Bytes};
+    use kafka_protocol::messages::delete_topics_response::DeletableTopicResult as KpDeletableTopicResult;
 
     #[test]
     fn test_delete_topics_request_builds() {
@@ -166,5 +155,64 @@ mod tests {
     fn test_delete_topics_empty_list() {
         let req = build_delete_topics_request(1, "test-client", &[], 10000);
         assert!(req.is_ok());
+    }
+
+    #[test]
+    fn test_build_delete_topics_protocol_request_preserves_fields() {
+        let (header, request) =
+            build_delete_topics_protocol_request(42, "client", &["topic-a", "topic-b"], 30000);
+
+        assert_eq!(header.request_api_key, API_KEY_DELETE_TOPICS);
+        assert_eq!(header.request_api_version, API_VERSION_DELETE_TOPICS);
+        assert_eq!(header.correlation_id, 42);
+        assert_eq!(request.timeout_ms, 30000);
+        assert_eq!(request.topic_names.len(), 2);
+        assert_eq!(request.topic_names[0].to_string(), "topic-a");
+        assert_eq!(request.topic_names[1].to_string(), "topic-b");
+    }
+
+    #[test]
+    fn test_build_delete_topics_request_writes_v2_body_without_flexible_tags() {
+        let frame =
+            build_delete_topics_request(7, "client-a", &["topic-a", "topic-b"], 10_000).unwrap();
+        let mut bytes = Bytes::from(frame);
+        let frame_len = bytes.get_i32();
+        assert_eq!(usize::try_from(frame_len).unwrap(), bytes.remaining());
+
+        let header = RequestHeader::decode(
+            &mut bytes,
+            DeleteTopicsRequest::header_version(API_VERSION_DELETE_TOPICS),
+        )
+        .unwrap();
+        assert_eq!(header.request_api_key, API_KEY_DELETE_TOPICS);
+        assert_eq!(header.request_api_version, API_VERSION_DELETE_TOPICS);
+        assert_eq!(header.correlation_id, 7);
+        assert_eq!(
+            header.client_id.as_ref().map(ToString::to_string),
+            Some("client-a".to_owned())
+        );
+
+        assert_eq!(bytes.get_i32(), 2);
+        assert_eq!(bytes.get_i16(), 7);
+        assert_eq!(&bytes.copy_to_bytes(7)[..], b"topic-a");
+        assert_eq!(bytes.get_i16(), 7);
+        assert_eq!(&bytes.copy_to_bytes(7)[..], b"topic-b");
+        assert_eq!(bytes.get_i32(), 10_000);
+        assert!(!bytes.has_remaining());
+    }
+
+    #[test]
+    fn test_convert_delete_topics_response_preserves_topic_errors() {
+        let response = DeleteTopicsResponse::default().with_responses(vec![
+            KpDeletableTopicResult::default()
+                .with_name(Some(StrBytes::from_static_str("topic-a").into()))
+                .with_error_code(3),
+        ]);
+
+        let converted = convert_delete_topics_response(response);
+
+        assert_eq!(converted.results.len(), 1);
+        assert_eq!(converted.results[0].name, "topic-a");
+        assert_eq!(converted.results[0].error_code, 3);
     }
 }

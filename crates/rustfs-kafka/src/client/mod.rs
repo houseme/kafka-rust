@@ -477,34 +477,20 @@ impl KafkaClient {
         topics: &[TopicConfig],
         timeout: Duration,
     ) -> Result<CreateTopicsResponseData> {
-        let correlation_id = self.state.next_correlation_id();
         let timeout_ms = protocol::to_millis_i32(timeout)?;
-        let now = std::time::Instant::now();
-        let hosts = self.config.hosts.clone();
-        let mut last_err: Option<Error> = None;
-
-        for host in hosts {
-            let conn = match self.conn_pool.get_conn(&host, now) {
-                Ok(conn) => conn,
-                Err(e) => {
-                    last_err = Some(e.with_broker_context(&host, "CreateTopics"));
-                    continue;
-                }
-            };
-
-            match protocol::create_topics::fetch_create_topics(
-                conn,
-                correlation_id,
-                &self.config.client_id,
-                topics,
-                timeout_ms,
-            ) {
-                Ok(resp) => return Ok(resp),
-                Err(e) => last_err = Some(e.with_broker_context(&host, "CreateTopics")),
-            }
-        }
-
-        Err(last_err.unwrap_or_else(Error::no_host_reachable))
+        self.try_admin_request(
+            "CreateTopics",
+            protocol::create_topics::API_VERSION_CREATE_TOPICS,
+            |correlation_id, client_id| {
+                protocol::create_topics::build_create_topics_protocol_request(
+                    correlation_id,
+                    client_id,
+                    topics,
+                    timeout_ms,
+                )
+            },
+            protocol::create_topics::convert_create_topics_response,
+        )
     }
 
     /// Deletes one or more topics by name.
@@ -519,34 +505,20 @@ impl KafkaClient {
         topic_names: &[&str],
         timeout: Duration,
     ) -> Result<DeleteTopicsResponseData> {
-        let correlation_id = self.state.next_correlation_id();
         let timeout_ms = protocol::to_millis_i32(timeout)?;
-        let now = std::time::Instant::now();
-        let hosts = self.config.hosts.clone();
-        let mut last_err: Option<Error> = None;
-
-        for host in hosts {
-            let conn = match self.conn_pool.get_conn(&host, now) {
-                Ok(conn) => conn,
-                Err(e) => {
-                    last_err = Some(e.with_broker_context(&host, "DeleteTopics"));
-                    continue;
-                }
-            };
-
-            match protocol::delete_topics::fetch_delete_topics(
-                conn,
-                correlation_id,
-                &self.config.client_id,
-                topic_names,
-                timeout_ms,
-            ) {
-                Ok(resp) => return Ok(resp),
-                Err(e) => last_err = Some(e.with_broker_context(&host, "DeleteTopics")),
-            }
-        }
-
-        Err(last_err.unwrap_or_else(Error::no_host_reachable))
+        self.try_admin_request(
+            "DeleteTopics",
+            protocol::delete_topics::API_VERSION_DELETE_TOPICS,
+            |correlation_id, client_id| {
+                protocol::delete_topics::build_delete_topics_protocol_request(
+                    correlation_id,
+                    client_id,
+                    topic_names,
+                    timeout_ms,
+                )
+            },
+            protocol::delete_topics::convert_delete_topics_response,
+        )
     }
 
     // -- fetch operations (delegated to fetch_ops.rs) --
