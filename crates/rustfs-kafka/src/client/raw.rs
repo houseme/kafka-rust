@@ -82,7 +82,7 @@ mod tests {
     use super::*;
     use crate::protocol;
 
-    fn assert_no_host<T>(result: Result<T>) {
+    fn assert_no_host<T>(result: &Result<T>) {
         assert!(matches!(
             result,
             Err(Error::Connection(
@@ -112,6 +112,6 @@ mod tests {
             &request,
         );
 
-        assert_no_host(result);
+        assert_no_host(&result);
     }
 }
