@@ -64,7 +64,7 @@ impl TlsConfig {
 
 /// Trait for TLS stream implementations
 #[allow(dead_code)] // Methods may not be used in all configurations
-pub trait TlsStream: io::Read + io::Write + Send {
+pub trait TlsStream: io::Read + io::Write + Send + Sync {
     /// Returns true if this is a secured (TLS) connection
     fn is_secured(&self) -> bool;
 
@@ -123,5 +123,19 @@ impl io::Write for PlainStream {
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_sync<T: Sync>() {}
+
+    #[test]
+    fn tls_stream_types_are_sync() {
+        assert_sync::<Box<dyn TlsStream>>();
+        assert_sync::<PlainStream>();
+        assert_sync::<rustls_connector::RustlsStream>();
     }
 }

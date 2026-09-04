@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - Default TLS root loading now uses the bundled `webpki-roots` set plus explicit `ca_cert_path` configuration only.
   `rustls-native-certs` and its platform-specific transitive crates are no longer dependencies.
 - `rustfs-kafka-async` now re-exports `TlsConfig` alongside `SecurityConfig` for easier async TLS configuration.
+- Sync TLS stream implementations now require `Sync` in addition to `Send`, allowing TLS-backed sync
+  connections to satisfy thread-sharing bounds in multi-threaded callers.
 - Bumped workspace dependencies:
   - `rustls`: `0.23.39` -> `0.23.40`
   - `metrics`: `0.24.3` -> `0.24.6`
