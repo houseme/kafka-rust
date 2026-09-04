@@ -1,7 +1,7 @@
 //! Kafka client telemetry protocol helpers.
 //!
-//! These helpers cover Kafka's telemetry wire messages without introducing a
-//! runtime telemetry scheduler or OpenTelemetry encoder.
+//! These helpers cover Kafka's telemetry wire messages and subscription state
+//! without introducing a background scheduler or OpenTelemetry encoder.
 
 use bytes::Bytes;
 use kafka_protocol::messages::{
@@ -72,6 +72,119 @@ pub struct GetTelemetrySubscriptionsResponseData {
 
 /// Backwards-friendly shorter alias for telemetry subscription responses.
 pub type TelemetrySubscriptionsResponseData = GetTelemetrySubscriptionsResponseData;
+
+/// Client-side telemetry subscription state.
+///
+/// This helper tracks the broker-assigned telemetry subscription metadata and
+/// builds matching `PushTelemetry` options. It intentionally does not encode
+/// OpenTelemetry protobuf payloads or run a background scheduler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelemetrySession {
+    /// Unique ID for this client instance.
+    pub client_instance_id: Uuid,
+    /// Current subscription set ID.
+    pub subscription_id: i32,
+    /// Accepted Kafka compression type codes for pushed telemetry.
+    pub accepted_compression_types: Vec<i8>,
+    /// Broker-selected push interval in milliseconds.
+    pub push_interval_ms: i32,
+    /// Maximum telemetry payload bytes accepted by the broker.
+    pub telemetry_max_bytes: i32,
+    /// Whether monotonic/counter metrics should be emitted as deltas.
+    pub delta_temporality: bool,
+    /// Requested metric name prefixes.
+    pub requested_metrics: Vec<String>,
+}
+
+impl TelemetrySession {
+    /// Create an initial session before the broker assigns a client instance ID.
+    #[must_use]
+    pub fn initial() -> Self {
+        Self {
+            client_instance_id: Uuid::nil(),
+            subscription_id: 0,
+            accepted_compression_types: vec![TELEMETRY_COMPRESSION_NONE],
+            push_interval_ms: 0,
+            telemetry_max_bytes: 0,
+            delta_temporality: false,
+            requested_metrics: Vec::new(),
+        }
+    }
+
+    /// Create a session from a successful subscription response.
+    #[must_use]
+    pub fn from_subscription(response: &GetTelemetrySubscriptionsResponseData) -> Self {
+        let mut session = Self::initial();
+        let _ = session.apply_subscription(response);
+        session
+    }
+
+    /// Build options for the next `GetTelemetrySubscriptions` request.
+    #[must_use]
+    pub fn subscription_options(&self) -> GetTelemetrySubscriptionsOptions {
+        GetTelemetrySubscriptionsOptions::for_client_instance(self.client_instance_id)
+    }
+
+    /// Merge a subscription response into this session.
+    ///
+    /// Returns `true` when the response was successful and the session was
+    /// updated. Non-zero Kafka error responses are left for callers to handle
+    /// and do not modify the current session.
+    #[must_use]
+    pub fn apply_subscription(&mut self, response: &GetTelemetrySubscriptionsResponseData) -> bool {
+        if response.error_code != 0 {
+            return false;
+        }
+
+        self.client_instance_id = response.client_instance_id;
+        self.subscription_id = response.subscription_id;
+        self.accepted_compression_types
+            .clone_from(&response.accepted_compression_types);
+        self.push_interval_ms = response.push_interval_ms;
+        self.telemetry_max_bytes = response.telemetry_max_bytes;
+        self.delta_temporality = response.delta_temporality;
+        self.requested_metrics
+            .clone_from(&response.requested_metrics);
+        true
+    }
+
+    /// Choose a compression type supported by the broker.
+    ///
+    /// The first preferred type accepted by the broker wins. If none match,
+    /// the first broker-accepted type is returned, falling back to no
+    /// compression when the broker returned an empty list.
+    #[must_use]
+    pub fn select_compression_type(&self, preferred: &[i8]) -> i8 {
+        preferred
+            .iter()
+            .copied()
+            .find(|candidate| self.accepted_compression_types.contains(candidate))
+            .or_else(|| self.accepted_compression_types.first().copied())
+            .unwrap_or(TELEMETRY_COMPRESSION_NONE)
+    }
+
+    /// Build a non-terminating telemetry push using broker-compatible compression.
+    #[must_use]
+    pub fn push_options(
+        &self,
+        metrics: Bytes,
+        preferred_compression: &[i8],
+    ) -> PushTelemetryOptions {
+        PushTelemetryOptions::new(self.client_instance_id, self.subscription_id, metrics)
+            .with_compression_type(self.select_compression_type(preferred_compression))
+    }
+
+    /// Build a terminating telemetry push using broker-compatible compression.
+    #[must_use]
+    pub fn terminating_push_options(
+        &self,
+        metrics: Bytes,
+        preferred_compression: &[i8],
+    ) -> PushTelemetryOptions {
+        self.push_options(metrics, preferred_compression)
+            .with_terminating(true)
+    }
+}
 
 /// Options for a `PushTelemetry` request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,5 +434,87 @@ mod tests {
                 error_code: 42,
             }
         );
+    }
+
+    #[test]
+    fn telemetry_session_tracks_successful_subscription_response() {
+        let client_instance_id = Uuid::from_u128(4);
+        let response = GetTelemetrySubscriptionsResponseData {
+            throttle_time_ms: 0,
+            error_code: 0,
+            client_instance_id,
+            subscription_id: 9,
+            accepted_compression_types: vec![
+                TELEMETRY_COMPRESSION_ZSTD,
+                TELEMETRY_COMPRESSION_GZIP,
+            ],
+            push_interval_ms: 15_000,
+            telemetry_max_bytes: 65_536,
+            delta_temporality: true,
+            requested_metrics: vec!["org.apache.kafka.producer".to_owned()],
+        };
+
+        let session = TelemetrySession::from_subscription(&response);
+
+        assert_eq!(session.client_instance_id, client_instance_id);
+        assert_eq!(session.subscription_id, 9);
+        assert_eq!(session.push_interval_ms, 15_000);
+        assert_eq!(session.telemetry_max_bytes, 65_536);
+        assert!(session.delta_temporality);
+        assert_eq!(
+            session.subscription_options().client_instance_id,
+            client_instance_id
+        );
+    }
+
+    #[test]
+    fn telemetry_session_ignores_error_subscription_response() {
+        let mut session = TelemetrySession::initial();
+        let response = GetTelemetrySubscriptionsResponseData {
+            throttle_time_ms: 0,
+            error_code: 42,
+            client_instance_id: Uuid::from_u128(5),
+            subscription_id: 10,
+            accepted_compression_types: vec![TELEMETRY_COMPRESSION_ZSTD],
+            push_interval_ms: 30_000,
+            telemetry_max_bytes: 100,
+            delta_temporality: true,
+            requested_metrics: vec!["ignored".to_owned()],
+        };
+
+        assert!(!session.apply_subscription(&response));
+        assert_eq!(session, TelemetrySession::initial());
+    }
+
+    #[test]
+    fn telemetry_session_builds_push_options_with_preferred_compression() {
+        let client_instance_id = Uuid::from_u128(6);
+        let session = TelemetrySession {
+            client_instance_id,
+            subscription_id: 11,
+            accepted_compression_types: vec![
+                TELEMETRY_COMPRESSION_GZIP,
+                TELEMETRY_COMPRESSION_ZSTD,
+            ],
+            push_interval_ms: 1_000,
+            telemetry_max_bytes: 1_024,
+            delta_temporality: false,
+            requested_metrics: Vec::new(),
+        };
+
+        let push = session.push_options(
+            Bytes::from_static(b"metrics"),
+            &[TELEMETRY_COMPRESSION_LZ4, TELEMETRY_COMPRESSION_ZSTD],
+        );
+        let terminating =
+            session.terminating_push_options(Bytes::new(), &[TELEMETRY_COMPRESSION_LZ4]);
+
+        assert_eq!(push.client_instance_id, client_instance_id);
+        assert_eq!(push.subscription_id, 11);
+        assert_eq!(push.compression_type, TELEMETRY_COMPRESSION_ZSTD);
+        assert_eq!(push.metrics, Bytes::from_static(b"metrics"));
+        assert!(!push.terminating);
+        assert_eq!(terminating.compression_type, TELEMETRY_COMPRESSION_GZIP);
+        assert!(terminating.terminating);
     }
 }

@@ -59,8 +59,14 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   - `share_acknowledge`
 - Added `KafkaClient::send_raw_protocol_request` for advanced typed access to generated
   `kafka-protocol` requests that are not represented by stable high-level client APIs.
+- Added `AsyncKafkaClient::send_raw_protocol_request` to provide the same typed raw protocol escape
+  hatch for native tokio clients.
 - Added API version defaults and `api_key` constants for remaining generated broker, controller,
   coordinator, raft, and share-state protocol messages.
+- Added `TelemetrySession` for tracking broker telemetry subscriptions and building compatible
+  `PushTelemetryOptions`.
+- Added `ShareConsumerSession` and `ShareFetchSessionConfig` for composing share-consumer
+  heartbeat, fetch, and acknowledgement calls from coordinator assignment state.
 - Added public response data types for broker API versions, cluster brokers, config resources/entries, config resource
   discovery, listed groups, deleted groups, described groups, described group members, ACL resources, ACL mutation
   results, config mutation results, delegation tokens, log directory diagnostics, KRaft quorum state, topic partition

@@ -4,6 +4,7 @@
 //! data types for all supported Kafka APIs.
 
 pub mod admin;
+pub mod api_keys;
 pub mod api_versions;
 pub mod consumer;
 pub mod create_topics;

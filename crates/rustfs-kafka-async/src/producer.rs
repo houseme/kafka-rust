@@ -3,9 +3,9 @@
 use bytes::{Bytes, BytesMut};
 use kafka_protocol::messages::{
     ApiKey, MetadataRequest, MetadataResponse, ProduceRequest, ProduceResponse, RequestHeader,
-    ResponseHeader, TopicName, metadata_request::MetadataRequestTopic,
+    TopicName, metadata_request::MetadataRequestTopic,
 };
-use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
+use kafka_protocol::protocol::StrBytes;
 use kafka_protocol::records::{
     Record as KpRecord, RecordBatchEncoder, RecordEncodeOptions, TimestampType,
 };
@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::AsyncKafkaClient;
-use crate::connection::AsyncConnection;
+use crate::wire::{get_kp_response, kafka_code_from_protocol as map_kafka_code, send_kp_request};
 
 const API_VERSION_PRODUCE: i16 = 9;
 const API_VERSION_METADATA: i16 = 1;
@@ -604,91 +604,6 @@ fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {
     }
 }
 
-fn map_kafka_code(code: i16) -> Option<KafkaCode> {
-    match code {
-        0 => None,
-        1 => Some(KafkaCode::OffsetOutOfRange),
-        2 => Some(KafkaCode::CorruptMessage),
-        3 => Some(KafkaCode::UnknownTopicOrPartition),
-        4 => Some(KafkaCode::InvalidMessageSize),
-        5 => Some(KafkaCode::LeaderNotAvailable),
-        6 => Some(KafkaCode::NotLeaderForPartition),
-        7 => Some(KafkaCode::RequestTimedOut),
-        8 => Some(KafkaCode::BrokerNotAvailable),
-        9 => Some(KafkaCode::ReplicaNotAvailable),
-        10 => Some(KafkaCode::MessageSizeTooLarge),
-        11 => Some(KafkaCode::StaleControllerEpoch),
-        12 => Some(KafkaCode::OffsetMetadataTooLarge),
-        13 => Some(KafkaCode::NetworkException),
-        14 => Some(KafkaCode::GroupLoadInProgress),
-        15 => Some(KafkaCode::GroupCoordinatorNotAvailable),
-        16 => Some(KafkaCode::NotCoordinatorForGroup),
-        17 => Some(KafkaCode::InvalidTopic),
-        22 => Some(KafkaCode::IllegalGeneration),
-        23 => Some(KafkaCode::InconsistentGroupProtocol),
-        24 => Some(KafkaCode::InvalidGroupId),
-        25 => Some(KafkaCode::UnknownMemberId),
-        26 => Some(KafkaCode::InvalidSessionTimeout),
-        27 => Some(KafkaCode::RebalanceInProgress),
-        28 => Some(KafkaCode::InvalidCommitOffsetSize),
-        29 => Some(KafkaCode::TopicAuthorizationFailed),
-        30 => Some(KafkaCode::GroupAuthorizationFailed),
-        31 => Some(KafkaCode::ClusterAuthorizationFailed),
-        32 => Some(KafkaCode::InvalidTimestamp),
-        33 => Some(KafkaCode::UnsupportedSaslMechanism),
-        34 => Some(KafkaCode::IllegalSaslState),
-        35 => Some(KafkaCode::UnsupportedVersion),
-        _ => Some(KafkaCode::Unknown),
-    }
-}
-
-async fn send_kp_request<T>(
-    conn: &mut AsyncConnection,
-    header: &RequestHeader,
-    body: &T,
-    api_version: i16,
-) -> Result<()>
-where
-    T: Encodable + kafka_protocol::protocol::HeaderVersion,
-{
-    let header_version = T::header_version(api_version);
-
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let total_len = usize_to_i32(header_buf.len() + body_buf.len())?;
-    let mut out = BytesMut::with_capacity(4 + non_negative_i32_to_usize(total_len)?);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
-    conn.send(&out).await
-}
-
-async fn get_kp_response<R>(conn: &mut AsyncConnection, api_version: i16) -> Result<R>
-where
-    R: Decodable + kafka_protocol::protocol::HeaderVersion,
-{
-    let size_bytes = conn.read_exact(4).await?;
-    let size = i32::from_be_bytes(
-        <[u8; 4]>::try_from(size_bytes.as_ref())
-            .map_err(|_| Error::Protocol(ProtocolError::Codec))?,
-    );
-    let mut bytes = conn.read_exact(non_negative_i32_to_u64(size)?).await?;
-
-    let response_header_version = R::header_version(api_version);
-    let _resp_header = ResponseHeader::decode(&mut bytes, response_header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    R::decode(&mut bytes, api_version).map_err(|_| Error::Protocol(ProtocolError::Codec))
-}
-
 fn to_millis_i32(d: Duration) -> Result<i32> {
     let m = d
         .as_secs()
@@ -699,18 +614,6 @@ fn to_millis_i32(d: Duration) -> Result<i32> {
     } else {
         i32::try_from(m).map_err(|_| Error::Protocol(ProtocolError::InvalidDuration))
     }
-}
-
-fn usize_to_i32(value: usize) -> Result<i32> {
-    i32::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
-}
-
-fn non_negative_i32_to_usize(value: i32) -> Result<usize> {
-    usize::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
-}
-
-fn non_negative_i32_to_u64(value: i32) -> Result<u64> {
-    u64::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
 }
 
 fn no_host_reachable_error() -> Error {

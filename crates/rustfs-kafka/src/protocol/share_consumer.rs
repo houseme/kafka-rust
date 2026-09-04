@@ -1,7 +1,8 @@
 //! Low-level helpers for modern consumer/share-consumer protocol messages.
 //!
 //! These helpers expose generated Kafka request/response shapes through crate
-//! DTOs without introducing a share-consumer runtime state machine.
+//! DTOs and a small client-side session helper. They do not run a background
+//! fetch or acknowledgement loop.
 
 use bytes::Bytes;
 use kafka_protocol::messages::{
@@ -15,6 +16,9 @@ use kafka_protocol::messages::{
 };
 use kafka_protocol::protocol::StrBytes;
 use uuid::Uuid;
+
+mod session;
+pub use session::{ShareConsumerSession, ShareFetchSessionConfig};
 
 use super::{
     API_VERSION_CONSUMER_GROUP_HEARTBEAT, API_VERSION_SHARE_ACKNOWLEDGE, API_VERSION_SHARE_FETCH,

@@ -119,6 +119,15 @@ async fn main() -> rustfs_kafka::error::Result<()> {
 
 ## 4. TLS and Feature Flags
 
+### Low-Level Protocol Building Blocks
+
+`KafkaClient::send_raw_protocol_request` and
+`AsyncKafkaClient::send_raw_protocol_request` expose advanced typed access to
+generated `kafka-protocol` request/response pairs. `TelemetrySession` tracks
+broker telemetry subscriptions and builds compatible push options, while
+`ShareConsumerSession` composes share-group heartbeat, fetch, and acknowledgement
+options from local member/assignment state.
+
 - Default TLS feature: `security` (rustls + aws-lc-rs).
 - Alternative TLS provider: `security-ring`.
 - Default trust roots come from `webpki-roots`; configure private or enterprise CAs with

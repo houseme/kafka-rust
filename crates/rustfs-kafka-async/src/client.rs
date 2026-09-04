@@ -5,7 +5,11 @@ use rustfs_kafka::error::{ConnectionError, Error, Result};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
+use kafka_protocol::messages::RequestHeader;
+use kafka_protocol::protocol::StrBytes;
+
 use crate::connection::{AsyncConnection, AsyncConnectionPool};
+use crate::wire::{get_kp_response, send_kp_request};
 
 /// An async Kafka client for bootstrap and connection management.
 ///
@@ -21,6 +25,7 @@ pub struct AsyncKafkaClient {
     bootstrap_hosts: Vec<String>,
     client_id: String,
     security: Option<SecurityConfig>,
+    correlation: i32,
 }
 
 impl AsyncKafkaClient {
@@ -62,6 +67,7 @@ impl AsyncKafkaClient {
             bootstrap_hosts: hosts,
             client_id,
             security,
+            correlation: 0,
         })
     }
 
@@ -121,6 +127,75 @@ impl AsyncKafkaClient {
         }
         Ok(())
     }
+
+    fn next_correlation_id(&mut self) -> i32 {
+        self.correlation = (self.correlation + 1) % (1i32 << 30);
+        self.correlation
+    }
+
+    /// Sends a typed low-level `kafka-protocol` request and returns its raw generated response.
+    ///
+    /// This is intended for advanced users who need async protocol coverage beyond
+    /// the stable high-level async producer and consumer methods. Callers are
+    /// responsible for choosing a valid `api_key`, `api_version`, and generated
+    /// request/response type pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable, the request cannot be
+    /// encoded, the response cannot be decoded, or the selected API/version is
+    /// not accepted by the broker.
+    pub async fn send_raw_protocol_request<Req, Resp>(
+        &mut self,
+        api_key: i16,
+        api_version: i16,
+        request: &Req,
+    ) -> Result<Resp>
+    where
+        Req: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
+        Resp: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+    {
+        let hosts = self.request_hosts();
+        let correlation_id = self.next_correlation_id();
+        let mut last_err: Option<Error> = None;
+
+        for host in hosts {
+            let client_id = self.client_id.clone();
+            let conn = match self.get_connection(&host).await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    last_err = Some(e.with_broker_context(&host, "RawProtocolRequest"));
+                    continue;
+                }
+            };
+
+            let header = RequestHeader::default()
+                .with_client_id(Some(StrBytes::from_string(client_id)))
+                .with_request_api_key(api_key)
+                .with_request_api_version(api_version)
+                .with_correlation_id(correlation_id);
+            match send_kp_request(conn, &header, request, api_version).await {
+                Ok(()) => match get_kp_response::<Resp>(conn, api_version).await {
+                    Ok(resp) => return Ok(resp),
+                    Err(e) => last_err = Some(e.with_broker_context(&host, "RawProtocolRequest")),
+                },
+                Err(e) => last_err = Some(e.with_broker_context(&host, "RawProtocolRequest")),
+            }
+        }
+
+        Err(last_err.unwrap_or(Error::Connection(ConnectionError::NoHostReachable)))
+    }
+
+    fn request_hosts(&self) -> Vec<String> {
+        if self.bootstrap_hosts.is_empty() {
+            self.connected_hosts()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        } else {
+            self.bootstrap_hosts.clone()
+        }
+    }
 }
 
 async fn connect_any_bootstrap(
@@ -159,7 +234,12 @@ async fn connect_any_bootstrap(
 
 #[cfg(test)]
 mod tests {
+    use bytes::Buf;
+    use kafka_protocol::messages::{ApiKey, ApiVersionsRequest, ApiVersionsResponse};
+    use kafka_protocol::protocol::{Decodable, HeaderVersion};
     use rustfs_kafka::error::{ConnectionError, Error};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -201,9 +281,87 @@ mod tests {
             bootstrap_hosts: vec![],
             client_id: "test".to_owned(),
             security: None,
+            correlation: 0,
         };
         // ensure_connected with empty bootstrap_hosts is a no-op
         assert!(client.bootstrap_hosts.is_empty());
         assert!(client.connected_hosts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn raw_protocol_request_surfaces_no_host() {
+        let mut client = AsyncKafkaClient::new(vec![]).await.unwrap();
+        let request = kafka_protocol::messages::FetchSnapshotRequest::default();
+
+        let result: Result<kafka_protocol::messages::FetchSnapshotResponse> = client
+            .send_raw_protocol_request(
+                kafka_protocol::messages::ApiKey::FetchSnapshot as i16,
+                1,
+                &request,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
+    }
+
+    #[tokio::test]
+    async fn raw_protocol_request_round_trips_generated_types() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut size_buf = [0u8; 4];
+            socket.read_exact(&mut size_buf).await.unwrap();
+            let size = i32::from_be_bytes(size_buf);
+            let mut frame = vec![0; usize::try_from(size).unwrap()];
+            socket.read_exact(&mut frame).await.unwrap();
+
+            let mut bytes = bytes::Bytes::from(frame);
+            let header =
+                RequestHeader::decode(&mut bytes, ApiVersionsRequest::header_version(0)).unwrap();
+            assert_eq!(header.request_api_key, ApiKey::ApiVersions as i16);
+            assert_eq!(header.request_api_version, 0);
+            assert_eq!(header.correlation_id, 1);
+            assert_eq!(
+                header.client_id.as_ref().map(ToString::to_string),
+                Some("async-raw-test".to_owned())
+            );
+            assert!(!bytes.has_remaining());
+
+            let mut response_frame = Vec::new();
+            response_frame.extend_from_slice(&1i32.to_be_bytes());
+            response_frame.extend_from_slice(&0i16.to_be_bytes());
+            response_frame.extend_from_slice(&1i32.to_be_bytes());
+            response_frame.extend_from_slice(&(ApiKey::ApiVersions as i16).to_be_bytes());
+            response_frame.extend_from_slice(&0i16.to_be_bytes());
+            response_frame.extend_from_slice(&4i16.to_be_bytes());
+
+            let total_len = i32::try_from(response_frame.len()).unwrap();
+            socket.write_all(&total_len.to_be_bytes()).await.unwrap();
+            socket.write_all(&response_frame).await.unwrap();
+        });
+
+        let mut client =
+            AsyncKafkaClient::with_client_id(vec![addr.to_string()], "async-raw-test".to_owned())
+                .await
+                .unwrap();
+
+        let response: ApiVersionsResponse = client
+            .send_raw_protocol_request(
+                ApiKey::ApiVersions as i16,
+                0,
+                &ApiVersionsRequest::default(),
+            )
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(response.error_code, 0);
+        assert_eq!(response.api_keys.len(), 1);
+        assert_eq!(response.api_keys[0].api_key, ApiKey::ApiVersions as i16);
     }
 }

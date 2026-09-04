@@ -34,6 +34,7 @@ rustfs-kafka-async = "1.2.0"
   and share group inspection/mutation APIs.
 - Typed raw `kafka-protocol` request support for advanced generated protocol messages that do not
   have a stable high-level client workflow.
+- Runtime building blocks for telemetry subscription tracking and share-consumer request composition.
 - High-level `Consumer` and `Producer` abstractions.
 - TLS support via rustls:
     - `security` (default, aws-lc-rs provider, `webpki-roots` trust store)

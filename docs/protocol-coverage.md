@@ -18,9 +18,11 @@ Source checked:
 - Public or high-level runtime coverage: 62 APIs.
 - Internal runtime coverage without direct public API: 10 APIs.
 - Raw generated protocol coverage: all remaining generated request/response APIs can be sent through
-  `KafkaClient::send_raw_protocol_request` with explicit `api_key` and `api_version`.
+  `KafkaClient::send_raw_protocol_request` or `AsyncKafkaClient::send_raw_protocol_request` with
+  explicit `api_key` and `api_version`.
 - Client-facing backlog: 0 APIs.
-- Advanced runtime backlog: no missing public protocol adapters; full share-consumer and telemetry subsystems remain pending.
+- Advanced runtime backlog: no missing public protocol adapters; share-consumer and telemetry session helpers are
+  available, while automatic background runtime loops remain pending.
 - Broker/controller/internal backlog: 0 public adapters; high-level workflows remain intentionally absent for
   quorum, coordinator, broker, controller, raft snapshot, and share-state internals.
 
@@ -95,15 +97,15 @@ Source checked:
 | 68 | ConsumerGroupHeartbeat | Public low-level consumer heartbeat protocol API implemented | Full modern consumer-group runtime still pending. |
 | 69 | ConsumerGroupDescribe | Public diagnostic implemented | Done. |
 | 70 | ControllerRegistration | Raw generated protocol access implemented | Controller-internal; no high-level client API. |
-| 71 | GetTelemetrySubscriptions | Public low-level telemetry protocol API implemented | Full automatic telemetry scheduler/export pipeline still pending. |
-| 72 | PushTelemetry | Public low-level telemetry protocol API implemented | Full automatic telemetry scheduler/export pipeline still pending. |
+| 71 | GetTelemetrySubscriptions | Public low-level telemetry protocol API implemented | Use `TelemetrySession` for subscription state; full automatic telemetry scheduler/export pipeline still pending. |
+| 72 | PushTelemetry | Public low-level telemetry protocol API implemented | Use `TelemetrySession` to build compatible push options; OpenTelemetry encoding remains caller-owned. |
 | 73 | AssignReplicasToDirs | Public broker storage admin implemented | Done; use only with explicit JBOD/directory-assignment workflow. |
 | 74 | ListConfigResources | Public admin implemented | Done. |
 | 75 | DescribeTopicPartitions | Public diagnostic implemented | Done. |
-| 76 | ShareGroupHeartbeat | Public low-level share-consumer protocol API implemented | Full share-consumer runtime still pending. |
+| 76 | ShareGroupHeartbeat | Public low-level share-consumer protocol API implemented | Use `ShareConsumerSession` for member/assignment state; full fetch loop still pending. |
 | 77 | ShareGroupDescribe | Public diagnostic implemented | Done. |
-| 78 | ShareFetch | Public low-level share-consumer protocol API implemented | Full share-consumer runtime still pending. |
-| 79 | ShareAcknowledge | Public low-level share-consumer protocol API implemented | Full share-consumer runtime still pending. |
+| 78 | ShareFetch | Public low-level share-consumer protocol API implemented | Use `ShareConsumerSession` to compose assignment-based fetch options. |
+| 79 | ShareAcknowledge | Public low-level share-consumer protocol API implemented | Use `ShareConsumerSession` to compose acknowledgement options. |
 | 80 | AddRaftVoter | Public KRaft quorum admin implemented | Done; explicit KRaft voter workflow only. |
 | 81 | RemoveRaftVoter | Public KRaft quorum admin implemented | Done; explicit KRaft voter workflow only. |
 | 82 | UpdateRaftVoter | Public KRaft quorum admin implemented | Done; explicit KRaft voter workflow only. |
@@ -121,7 +123,7 @@ Source checked:
 All visible client-facing protocol adapters are now implemented. Remaining generated protocol messages
 are reachable through the typed raw request API. Remaining high-level work is runtime-level:
 
-1. Share consumer runtime: build the full session state machine, fetch loop, and acknowledgement scheduler on top of `consumer_group_heartbeat`, `share_group_heartbeat`, `share_fetch`, and `share_acknowledge`.
-2. Telemetry runtime: build the automatic scheduler/export pipeline on top of `get_telemetry_subscriptions` and `push_telemetry`.
+1. Share consumer runtime: `ShareConsumerSession` composes stateful request options; the remaining work is the full fetch loop and acknowledgement scheduler.
+2. Telemetry runtime: `TelemetrySession` tracks broker subscriptions; the remaining work is the automatic scheduler/export pipeline.
 3. Keep broker, controller, coordinator, and raft-log internals out of stable high-level APIs unless a dedicated
    controller client is introduced.

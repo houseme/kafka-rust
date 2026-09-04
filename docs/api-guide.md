@@ -143,10 +143,10 @@ use rustfs_kafka::client::{
     IncrementalAlterConfigsResource, KafkaClient, KafkaPrincipal, LeaderEpochPartitionRequest,
     LeaderEpochTopicRequest, ListTransactionsOptions, PartitionReassignmentSpec,
     PartitionReassignmentTopicSpec, SCRAM_MECHANISM_SHA_512, ScramCredentialUpsertion,
-    ShareGroupOffsetRequest, TopicPartitionFilter, TopicPartitionsCursor,
-    TxnOffsetCommitTopicPartition, ACL_OPERATION_READ, ACL_PATTERN_TYPE_LITERAL,
-    ACL_PERMISSION_TYPE_ALLOW, ACL_RESOURCE_TYPE_TOPIC, CONFIG_RESOURCE_TYPE_BROKER,
-    CONFIG_RESOURCE_TYPE_TOPIC,
+    ShareConsumerSession, ShareGroupOffsetRequest, ShareFetchSessionConfig,
+    TelemetrySession, TopicPartitionFilter, TopicPartitionsCursor, TxnOffsetCommitTopicPartition,
+    ACL_OPERATION_READ, ACL_PATTERN_TYPE_LITERAL, ACL_PERMISSION_TYPE_ALLOW,
+    ACL_RESOURCE_TYPE_TOPIC, CONFIG_RESOURCE_TYPE_BROKER, CONFIG_RESOURCE_TYPE_TOPIC,
 };
 
 let mut client = KafkaClient::new(vec!["localhost:9092".to_owned()]);
@@ -532,6 +532,30 @@ let feature_preview = client
     .unwrap();
 println!("feature_update_results={}", feature_preview.results.len());
 
+let mut telemetry = TelemetrySession::initial();
+let subscription = client
+    .get_telemetry_subscriptions(telemetry.client_instance_id)
+    .unwrap();
+if telemetry.apply_subscription(&subscription) {
+    let push = telemetry.push_options(
+        bytes::Bytes::from_static(b"encoded-otel-metrics"),
+        &[rustfs_kafka::client::TELEMETRY_COMPRESSION_ZSTD],
+    );
+    let _ = client.push_telemetry(&push).unwrap();
+}
+
+let share_session = ShareConsumerSession::new("my-share-group", "member-a")
+    .with_subscribed_topic_names(["my-topic"])
+    .with_fetch_config(ShareFetchSessionConfig {
+        max_wait_ms: 500,
+        min_bytes: 1,
+        max_bytes: 1_048_576,
+        max_records: 100,
+        batch_size: 10,
+    });
+let heartbeat = share_session.heartbeat_options();
+let _ = client.share_group_heartbeat(&heartbeat).unwrap();
+
 ```
 
 Optional variants expose the highest fields currently wired from `kafka-protocol`:
@@ -582,6 +606,12 @@ Optional variants expose the highest fields currently wired from `kafka-protocol
   quorum voter administration.
 - `send_raw_protocol_request(api_key, api_version, request)` for advanced typed access to generated
   `kafka-protocol` requests that do not have a stable high-level client workflow.
+- `AsyncKafkaClient::send_raw_protocol_request(api_key, api_version, request)` provides the same
+  low-level generated protocol access for native tokio callers.
+- `TelemetrySession` tracks successful telemetry subscription responses and builds broker-compatible
+  `PushTelemetryOptions`.
+- `ShareConsumerSession` composes share-group heartbeat, fetch, and acknowledgement options from the latest
+  coordinator assignment.
 - `alter_configs(options)` is deprecated; prefer `incremental_alter_configs(options)`.
 
 ### 4.3 Topic create/delete

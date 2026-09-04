@@ -34,11 +34,14 @@
 mod client;
 mod connection;
 mod consumer;
+mod consumer_observability;
 mod metrics;
 mod producer;
+mod wire;
 
 pub use client::AsyncKafkaClient;
 pub use consumer::{AsyncConsumer, AsyncConsumerBuilder};
+pub use consumer_observability::{NativeConsumerErrorSnapshot, NativeConsumerErrorStats};
 pub use producer::{AsyncProducer, AsyncProducerBuilder, AsyncProducerConfig};
 
 // Re-export core types from the sync crate for convenience
@@ -112,20 +115,20 @@ pub use rustfs_kafka::client::{
     ScramCredentialInfo, ScramCredentialUpsertion, SecurityConfig, ShareAcknowledgeOptions,
     ShareAcknowledgePartition, ShareAcknowledgePartitionResponse, ShareAcknowledgeResponseData,
     ShareAcknowledgeTopic, ShareAcknowledgeTopicResponse, ShareAcknowledgeTopicResponseData,
-    ShareAcknowledgementBatch, ShareAcquiredRecords, ShareAssignment, ShareFetchOptions,
-    ShareFetchPartition, ShareFetchPartitionResponse, ShareFetchResponseData, ShareFetchTopic,
-    ShareFetchTopicResponse, ShareGroupAssignment, ShareGroupDescribeResponseData,
-    ShareGroupDescription, ShareGroupHeartbeatOptions, ShareGroupHeartbeatResponseData,
-    ShareGroupMemberDescription, ShareGroupOffsetGroup, ShareGroupOffsetPartition,
-    ShareGroupOffsetRequest, ShareGroupOffsetTopic, ShareGroupTopicPartitions,
-    ShareHeartbeatResponseData, ShareLeader, ShareNodeEndpoint, ShareTopicPartitions,
-    TELEMETRY_COMPRESSION_GZIP, TELEMETRY_COMPRESSION_LZ4, TELEMETRY_COMPRESSION_NONE,
-    TELEMETRY_COMPRESSION_SNAPPY, TELEMETRY_COMPRESSION_ZSTD, TelemetrySubscriptionsResponseData,
-    TlsConfig, TopicPartitionFilter, TopicPartitionsCursor, TopicReassignment, TransactionTopic,
-    TxnOffsetCommitPartitionResult, TxnOffsetCommitResponseData, TxnOffsetCommitTopicPartition,
-    TxnOffsetCommitTopicResult, UnregisterBrokerResponseData, UpdateFeaturesResponseData,
-    UpdateFeaturesResult, UpdateRaftVoterOptions, UpdateRaftVoterResponseData,
-    UserScramCredentialsDescription, api_key,
+    ShareAcknowledgementBatch, ShareAcquiredRecords, ShareAssignment, ShareConsumerSession,
+    ShareFetchOptions, ShareFetchPartition, ShareFetchPartitionResponse, ShareFetchResponseData,
+    ShareFetchSessionConfig, ShareFetchTopic, ShareFetchTopicResponse, ShareGroupAssignment,
+    ShareGroupDescribeResponseData, ShareGroupDescription, ShareGroupHeartbeatOptions,
+    ShareGroupHeartbeatResponseData, ShareGroupMemberDescription, ShareGroupOffsetGroup,
+    ShareGroupOffsetPartition, ShareGroupOffsetRequest, ShareGroupOffsetTopic,
+    ShareGroupTopicPartitions, ShareHeartbeatResponseData, ShareLeader, ShareNodeEndpoint,
+    ShareTopicPartitions, TELEMETRY_COMPRESSION_GZIP, TELEMETRY_COMPRESSION_LZ4,
+    TELEMETRY_COMPRESSION_NONE, TELEMETRY_COMPRESSION_SNAPPY, TELEMETRY_COMPRESSION_ZSTD,
+    TelemetrySession, TelemetrySubscriptionsResponseData, TlsConfig, TopicPartitionFilter,
+    TopicPartitionsCursor, TopicReassignment, TransactionTopic, TxnOffsetCommitPartitionResult,
+    TxnOffsetCommitResponseData, TxnOffsetCommitTopicPartition, TxnOffsetCommitTopicResult,
+    UnregisterBrokerResponseData, UpdateFeaturesResponseData, UpdateFeaturesResult,
+    UpdateRaftVoterOptions, UpdateRaftVoterResponseData, UserScramCredentialsDescription, api_key,
 };
 pub use rustfs_kafka::error;
 pub use rustfs_kafka::kafka_protocol;
@@ -283,5 +286,12 @@ mod public_reexports_tests {
         let fallback_snapshot = ApiVersionCache::fallback_version(api_key::FETCH_SNAPSHOT);
         assert_eq!(fallback_snapshot, ApiVersions::default().fetch_snapshot);
         let _generated_request = kafka_protocol::messages::FetchSnapshotRequest::default();
+
+        let telemetry_session = TelemetrySession::initial();
+        assert_eq!(telemetry_session.subscription_id, 0);
+
+        let share_session = ShareConsumerSession::new("share-group", "member-a")
+            .with_fetch_config(ShareFetchSessionConfig::default());
+        assert_eq!(share_session.heartbeat_options().group_id, "share-group");
     }
 }

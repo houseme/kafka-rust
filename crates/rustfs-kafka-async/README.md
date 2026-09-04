@@ -18,6 +18,10 @@ This crate provides:
 
 The current implementation uses native tokio async I/O for metadata,
 produce/fetch, and commit request paths.
+`AsyncKafkaClient::send_raw_protocol_request` is available for advanced
+typed access to generated `kafka-protocol` request/response pairs.
+Telemetry and share-consumer session helper types are re-exported from the
+sync crate for native async callers that compose those low-level requests.
 
 Security flow supports TLS and SASL authentication in native async mode,
 including `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.

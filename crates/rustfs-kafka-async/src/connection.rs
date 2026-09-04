@@ -9,10 +9,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::{Bytes, BytesMut};
 use hmac::{Hmac, Mac};
 use kafka_protocol::messages::{
-    ApiKey, RequestHeader, ResponseHeader, SaslAuthenticateRequest, SaslAuthenticateResponse,
-    SaslHandshakeRequest, SaslHandshakeResponse,
+    ApiKey, RequestHeader, SaslAuthenticateRequest, SaslAuthenticateResponse, SaslHandshakeRequest,
+    SaslHandshakeResponse,
 };
-use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
+use kafka_protocol::protocol::StrBytes;
 use pbkdf2::pbkdf2_hmac;
 use rand::distr::{Alphanumeric, SampleString};
 use rustfs_kafka::client::{SaslConfig, SecurityConfig, TlsConfig};
@@ -26,6 +26,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 use tracing::debug;
+
+use crate::wire::{
+    decode_kp_response, encode_kp_request, kafka_error_from_protocol_code,
+    non_negative_i32_to_usize,
+};
 
 const API_VERSION_SASL_HANDSHAKE: i16 = 1;
 const API_VERSION_SASL_AUTHENTICATE: i16 = 1;
@@ -249,7 +254,9 @@ async fn perform_sasl_authentication(
         get_kp_response_from_stream(stream, API_VERSION_SASL_HANDSHAKE).await?;
 
     if handshake_response.error_code != 0 {
-        return Err(map_kafka_code_or_unknown(handshake_response.error_code));
+        return Err(kafka_error_from_protocol_code(
+            handshake_response.error_code,
+        ));
     }
 
     if !handshake_response.mechanisms.is_empty()
@@ -313,7 +320,7 @@ async fn perform_sasl_plain_authenticate(
         get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE).await?;
 
     if auth_response.error_code != 0 {
-        return Err(map_kafka_code_or_unknown(auth_response.error_code));
+        return Err(kafka_error_from_protocol_code(auth_response.error_code));
     }
 
     Ok(())
@@ -347,7 +354,7 @@ async fn perform_sasl_scram_authenticate(
     let auth_response_1: SaslAuthenticateResponse =
         get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE).await?;
     if auth_response_1.error_code != 0 {
-        return Err(map_kafka_code_or_unknown(auth_response_1.error_code));
+        return Err(kafka_error_from_protocol_code(auth_response_1.error_code));
     }
 
     let server_first = std::str::from_utf8(&auth_response_1.auth_bytes)
@@ -413,7 +420,7 @@ async fn perform_sasl_scram_authenticate(
     let auth_response_2: SaslAuthenticateResponse =
         get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE).await?;
     if auth_response_2.error_code != 0 {
-        return Err(map_kafka_code_or_unknown(auth_response_2.error_code));
+        return Err(kafka_error_from_protocol_code(auth_response_2.error_code));
     }
 
     let server_final = std::str::from_utf8(&auth_response_2.auth_bytes)
@@ -550,28 +557,9 @@ async fn send_kp_request_on_stream<T>(
     api_version: i16,
 ) -> Result<()>
 where
-    T: Encodable + HeaderVersion,
+    T: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
 {
-    let header_version = T::header_version(api_version);
-
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let total_len = i32::try_from(header_buf.len() + body_buf.len())
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-    let mut out = BytesMut::with_capacity(
-        4 + usize::try_from(total_len).map_err(|_| Error::Protocol(ProtocolError::Codec))?,
-    );
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
+    let out = encode_kp_request(header, body, api_version)?;
     stream_send(stream, &out).await
 }
 
@@ -580,38 +568,16 @@ async fn get_kp_response_from_stream<R>(
     api_version: i16,
 ) -> Result<R>
 where
-    R: Decodable + HeaderVersion,
+    R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
 {
     let size_bytes = stream_read_exact(stream, 4).await?;
     let size = i32::from_be_bytes(
         <[u8; 4]>::try_from(size_bytes.as_ref())
             .map_err(|_| Error::Protocol(ProtocolError::Codec))?,
     );
-    if size < 0 {
-        return Err(Error::Protocol(ProtocolError::Codec));
-    }
 
-    let mut bytes = stream_read_exact(
-        stream,
-        usize::try_from(size).map_err(|_| Error::Protocol(ProtocolError::Codec))?,
-    )
-    .await?;
-
-    let response_header_version = R::header_version(api_version);
-    let _resp_header = ResponseHeader::decode(&mut bytes, response_header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    R::decode(&mut bytes, api_version).map_err(|_| Error::Protocol(ProtocolError::Codec))
-}
-
-fn map_kafka_code_or_unknown(code: i16) -> Error {
-    let kafka_code = match code {
-        33 => KafkaCode::UnsupportedSaslMechanism,
-        34 => KafkaCode::IllegalSaslState,
-        35 => KafkaCode::UnsupportedVersion,
-        _ => KafkaCode::Unknown,
-    };
-    Error::Kafka(kafka_code)
+    let bytes = stream_read_exact(stream, non_negative_i32_to_usize(size)?).await?;
+    decode_kp_response(bytes, api_version)
 }
 
 fn configure_tcp_stream(stream: &TcpStream) -> io::Result<()> {
