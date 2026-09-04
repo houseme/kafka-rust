@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Added `KafkaClient::resolved_api_version` and `AsyncKafkaClient::resolved_api_version`
+  to expose the effective cached broker API version selected for a host and API key.
+
+### Changed
+
+- High-level sync request paths now clamp metadata, fetch, produce, offset, and admin
+  protocol versions to cached broker `ApiVersions` ranges when available.
+- Async typed protocol helpers now cache `ApiVersions` responses and clamp high-level
+  generated request/response codecs through the same broker version resolver while
+  preserving caller-selected versions for raw protocol requests.
+- Added `CreateTopics` and `DeleteTopics` to API version constant, fallback, and resolver
+  coverage.
+
 ## [1.3.0] - 2026-09-04
 
 ### Added

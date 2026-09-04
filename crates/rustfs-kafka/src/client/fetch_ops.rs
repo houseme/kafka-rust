@@ -13,6 +13,7 @@ use super::config::ClientConfig;
 use super::state::ClientState;
 use super::transport;
 use crate::network::Connections;
+use crate::protocol::api_versions::ApiVersionCache;
 
 fn decode_fetch_response(
     conn: &mut crate::network::KafkaConnection,
@@ -51,6 +52,7 @@ pub fn fetch_messages_kp<'a, I, J>(
     conn_pool: &mut Connections,
     state: &mut ClientState,
     config: &ClientConfig,
+    api_versions: &ApiVersionCache,
     correlation: i32,
     input: I,
 ) -> Result<Vec<super::fetch_kp::OwnedFetchResponse>>
@@ -84,6 +86,7 @@ where
         &config.client_id,
         config.fetch_max_wait_time(),
         config.fetch_min_bytes(),
+        api_versions,
         broker_partitions,
     );
 
@@ -129,6 +132,7 @@ fn fetch_messages_inner(
     client_id: &str,
     max_wait_ms: i32,
     min_bytes: i32,
+    api_versions: &ApiVersionCache,
     broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>>,
 ) -> Result<Vec<crate::protocol::fetch::OwnedFetchResponse>> {
     let now = Instant::now();
@@ -137,7 +141,7 @@ fn fetch_messages_inner(
         let conn = conn_pool
             .get_conn(host, now)
             .map_err(|e| e.with_broker_context(host, "Fetch"))?;
-        let (header, request) = crate::protocol::fetch::build_fetch_request(
+        let (mut header, request) = crate::protocol::fetch::build_fetch_request(
             correlation_id,
             client_id,
             -1,
@@ -146,9 +150,15 @@ fn fetch_messages_inner(
             0x7fff_ffff,
             &partitions,
         );
-        transport::kp_send_request(conn, &header, &request, crate::protocol::API_VERSION_FETCH)
+        let api_version = transport::apply_request_api_version(
+            api_versions,
+            host,
+            &mut header,
+            crate::protocol::API_VERSION_FETCH,
+        );
+        transport::kp_send_request(conn, &header, &request, api_version)
             .map_err(|e| e.with_broker_context(host, "Fetch"))?;
-        let kp_resp = decode_fetch_response(conn, crate::protocol::API_VERSION_FETCH)
+        let kp_resp = decode_fetch_response(conn, api_version)
             .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
         res.push(owned);

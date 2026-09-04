@@ -126,11 +126,18 @@ pub fn fetch_offsets_kp<T: AsRef<str>>(
             &config.client_id,
             &partitions,
         );
-        transport::kp_send_request(conn, &header, &request, protocol::API_VERSION_LIST_OFFSETS)
+        let mut header = header;
+        let api_version = transport::apply_request_api_version(
+            &client.api_versions,
+            host,
+            &mut header,
+            protocol::API_VERSION_LIST_OFFSETS,
+        );
+        transport::kp_send_request(conn, &header, &request, api_version)
             .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
         let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ListOffsetsResponse>(
             conn,
-            protocol::API_VERSION_LIST_OFFSETS,
+            api_version,
         )
         .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
         let our_resp = protocol::offset::convert_list_offsets_response(kp_resp, correlation);
@@ -203,7 +210,7 @@ fn fetch_metadata_kp<T: AsRef<str>>(
                     }
                 }
 
-                let (header, request) = protocol::metadata::build_metadata_request(
+                let (mut header, request) = protocol::metadata::build_metadata_request(
                     correlation,
                     &client.config.client_id,
                     if topic_strs.is_empty() {
@@ -212,16 +219,17 @@ fn fetch_metadata_kp<T: AsRef<str>>(
                         Some(&topic_strs)
                     },
                 );
-                match transport::kp_send_request(
-                    conn,
-                    &header,
-                    &request,
+                let api_version = transport::apply_request_api_version(
+                    &client.api_versions,
+                    host,
+                    &mut header,
                     protocol::API_VERSION_METADATA,
-                ) {
+                );
+                match transport::kp_send_request(conn, &header, &request, api_version) {
                     Ok(()) => {
                         match transport::kp_get_response::<kafka_protocol::messages::MetadataResponse>(
                             conn,
-                            protocol::API_VERSION_METADATA,
+                            api_version,
                         ) {
                             Ok(kp_resp) => {
                                 return Ok(protocol::metadata::convert_metadata_response(

@@ -66,12 +66,7 @@ impl KafkaClient {
                 &self.config.client_id,
             ) {
                 Ok(resp) => {
-                    self.api_versions.insert(
-                        host,
-                        protocol::api_versions::BrokerApiVersions::from_api_versions(
-                            &resp.api_keys,
-                        ),
-                    );
+                    self.api_versions.insert_api_versions(host, &resp.api_keys);
                     return Ok(resp);
                 }
                 Err(e) => last_err = Some(e.with_broker_context(&host, "ApiVersions")),

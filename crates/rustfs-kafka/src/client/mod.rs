@@ -276,6 +276,16 @@ impl KafkaClient {
         self.config.offset_storage
     }
 
+    /// Returns the effective API version for `api_key` on `host`.
+    ///
+    /// If the client has cached an `ApiVersions` response for the host, the
+    /// crate's default version is clamped to the broker-advertised range.
+    /// Otherwise this returns the crate's default fallback version.
+    #[must_use]
+    pub fn resolved_api_version(&self, host: &str, api_key: i16) -> i16 {
+        self.api_versions.get_or_fallback(host, api_key)
+    }
+
     #[inline]
     /// Set the initial backoff/delay used by the retry policy.
     pub fn set_retry_backoff_time(&mut self, time: Duration) {
@@ -443,6 +453,14 @@ impl KafkaClient {
         let mut last_err: Option<Error> = None;
 
         for host in hosts {
+            let (mut header, request) = build(correlation_id, &self.config.client_id);
+            let effective_api_version = transport::apply_request_api_version(
+                &self.api_versions,
+                &host,
+                &mut header,
+                api_version,
+            );
+
             let conn = match self.conn_pool.get_conn(&host, now) {
                 Ok(conn) => conn,
                 Err(e) => {
@@ -451,9 +469,8 @@ impl KafkaClient {
                 }
             };
 
-            let (header, request) = build(correlation_id, &self.config.client_id);
-            match transport::kp_send_request(conn, &header, &request, api_version)
-                .and_then(|()| transport::kp_get_response::<Resp>(conn, api_version))
+            match transport::kp_send_request(conn, &header, &request, effective_api_version)
+                .and_then(|()| transport::kp_get_response::<Resp>(conn, effective_api_version))
             {
                 Ok(resp) => return Ok(convert(resp)),
                 Err(e) => last_err = Some(e.with_broker_context(&host, operation_name)),
@@ -569,6 +586,7 @@ impl KafkaClient {
             &mut self.conn_pool,
             &mut self.state,
             &self.config,
+            &self.api_versions,
             correlation,
             input,
         )
@@ -613,6 +631,7 @@ impl KafkaClient {
             &mut self.conn_pool,
             &mut self.state,
             &self.config,
+            &self.api_versions,
             acks,
             ack_timeout,
             messages,
@@ -716,11 +735,14 @@ impl KafkaClient {
         offset_ops::commit_offsets_kp(
             offsets,
             group,
-            correlation_id,
-            &self.config.client_id,
-            &mut self.state,
-            &mut self.conn_pool,
-            &self.config,
+            offset_ops::OffsetRequestContext {
+                correlation_id,
+                client_id: &self.config.client_id,
+                state: &mut self.state,
+                conn_pool: &mut self.conn_pool,
+                config: &self.config,
+                api_versions: &self.api_versions,
+            },
         )
     }
 
@@ -757,11 +779,14 @@ impl KafkaClient {
         offset_ops::fetch_group_offsets_kp(
             partitions,
             group,
-            correlation_id,
-            &self.config.client_id,
-            &mut self.state,
-            &mut self.conn_pool,
-            &self.config,
+            offset_ops::OffsetRequestContext {
+                correlation_id,
+                client_id: &self.config.client_id,
+                state: &mut self.state,
+                conn_pool: &mut self.conn_pool,
+                config: &self.config,
+                api_versions: &self.api_versions,
+            },
         )
     }
 
@@ -788,11 +813,14 @@ impl KafkaClient {
         offset_ops::fetch_group_offsets_kp(
             partition_vec,
             group,
-            correlation_id,
-            &self.config.client_id,
-            &mut self.state,
-            &mut self.conn_pool,
-            &self.config,
+            offset_ops::OffsetRequestContext {
+                correlation_id,
+                client_id: &self.config.client_id,
+                state: &mut self.state,
+                conn_pool: &mut self.conn_pool,
+                config: &self.config,
+                api_versions: &self.api_versions,
+            },
         )
         .map(|mut m| m.remove(topic).unwrap_or_default())
     }
@@ -839,6 +867,7 @@ impl KafkaClientInternals for KafkaClient {
             &mut self.conn_pool,
             &mut self.state,
             &self.config,
+            &self.api_versions,
             acks,
             Duration::from_millis(u64::try_from(ack_timeout).unwrap_or_default()),
             messages,
@@ -857,6 +886,30 @@ mod tests {
             Err(err) => panic!("expected no host reachable, got {err}"),
             Ok(_) => panic!("expected no host reachable, got success"),
         }
+    }
+
+    #[test]
+    fn resolved_api_version_uses_cached_broker_range() {
+        let mut client = KafkaClient::new(vec!["broker:9092".to_owned()]);
+
+        assert_eq!(
+            client.resolved_api_version("broker:9092", protocol::api_versions::api_key::PRODUCE),
+            protocol::API_VERSION_PRODUCE
+        );
+
+        client.api_versions.insert_api_versions(
+            "broker:9092".to_owned(),
+            &[BrokerApiVersion {
+                api_key: protocol::api_versions::api_key::PRODUCE,
+                min_version: 3,
+                max_version: 7,
+            }],
+        );
+
+        assert_eq!(
+            client.resolved_api_version("broker:9092", protocol::api_versions::api_key::PRODUCE),
+            7
+        );
     }
 
     #[test]

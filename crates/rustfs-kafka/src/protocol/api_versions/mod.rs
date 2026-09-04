@@ -13,6 +13,8 @@ pub use resolver::*;
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
+use crate::protocol::create_topics::API_VERSION_CREATE_TOPICS;
+use crate::protocol::delete_topics::API_VERSION_DELETE_TOPICS;
 use crate::protocol::{
     API_VERSION_ADD_OFFSETS_TO_TXN, API_VERSION_ADD_RAFT_VOTER, API_VERSION_ALLOCATE_PRODUCER_IDS,
     API_VERSION_ALTER_CLIENT_QUOTAS, API_VERSION_ALTER_CONFIGS, API_VERSION_ALTER_PARTITION,
@@ -238,6 +240,11 @@ impl ApiVersionCache {
         self.broker_versions.insert(host, versions);
     }
 
+    /// Insert parsed API version ranges for a broker.
+    pub fn insert_api_versions(&mut self, host: String, api_versions: &[BrokerApiVersion]) {
+        self.insert(host, BrokerApiVersions::from_api_versions(api_versions));
+    }
+
     /// Get or fetch API versions for a broker.
     ///
     /// # Errors
@@ -295,6 +302,8 @@ impl ApiVersionCache {
             api_key::FIND_COORDINATOR => API_VERSION_FIND_COORDINATOR,
             api_key::OFFSET_COMMIT => API_VERSION_OFFSET_COMMIT,
             api_key::OFFSET_FETCH => API_VERSION_OFFSET_FETCH,
+            api_key::CREATE_TOPICS => API_VERSION_CREATE_TOPICS,
+            api_key::DELETE_TOPICS => API_VERSION_DELETE_TOPICS,
             api_key::DELETE_RECORDS => API_VERSION_DELETE_RECORDS,
             api_key::OFFSET_FOR_LEADER_EPOCH => API_VERSION_OFFSET_FOR_LEADER_EPOCH,
             api_key::DESCRIBE_GROUPS => API_VERSION_DESCRIBE_GROUPS,
@@ -639,6 +648,8 @@ mod tests {
         assert_eq!(v.describe_groups, API_VERSION_DESCRIBE_GROUPS);
         assert_eq!(v.list_groups, API_VERSION_LIST_GROUPS);
         assert_eq!(v.describe_acls, API_VERSION_DESCRIBE_ACLS);
+        assert_eq!(v.create_topics, API_VERSION_CREATE_TOPICS);
+        assert_eq!(v.delete_topics, API_VERSION_DELETE_TOPICS);
         assert_eq!(v.create_acls, API_VERSION_CREATE_ACLS);
         assert_eq!(v.delete_acls, API_VERSION_DELETE_ACLS);
         assert_eq!(v.describe_configs, API_VERSION_DESCRIBE_CONFIGS);
@@ -793,6 +804,8 @@ mod tests {
         assert_eq!(v.describe_groups, d.describe_groups);
         assert_eq!(v.list_groups, d.list_groups);
         assert_eq!(v.describe_acls, d.describe_acls);
+        assert_eq!(v.create_topics, d.create_topics);
+        assert_eq!(v.delete_topics, d.delete_topics);
         assert_eq!(v.create_acls, d.create_acls);
         assert_eq!(v.delete_acls, d.delete_acls);
         assert_eq!(v.describe_configs, d.describe_configs);
@@ -888,6 +901,8 @@ mod tests {
             (api_key::DESCRIBE_GROUPS, API_VERSION_DESCRIBE_GROUPS),
             (api_key::LIST_GROUPS, API_VERSION_LIST_GROUPS),
             (api_key::DESCRIBE_ACLS, API_VERSION_DESCRIBE_ACLS),
+            (api_key::CREATE_TOPICS, API_VERSION_CREATE_TOPICS),
+            (api_key::DELETE_TOPICS, API_VERSION_DELETE_TOPICS),
             (api_key::CREATE_ACLS, API_VERSION_CREATE_ACLS),
             (api_key::DELETE_ACLS, API_VERSION_DELETE_ACLS),
             (api_key::DESCRIBE_CONFIGS, API_VERSION_DESCRIBE_CONFIGS),

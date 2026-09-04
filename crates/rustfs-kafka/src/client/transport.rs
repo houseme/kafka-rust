@@ -10,6 +10,17 @@ use crate::error::Result;
 
 use crate::network::KafkaConnection;
 
+pub(crate) fn apply_request_api_version(
+    api_versions: &crate::protocol::api_versions::ApiVersionCache,
+    host: &str,
+    header: &mut kafka_protocol::messages::RequestHeader,
+    fallback: i16,
+) -> i16 {
+    let api_version = api_versions.negotiate(host, header.request_api_key, fallback);
+    header.request_api_version = api_version;
+    api_version
+}
+
 pub(crate) fn kp_send_request<T>(
     conn: &mut KafkaConnection,
     header: &kafka_protocol::messages::RequestHeader,

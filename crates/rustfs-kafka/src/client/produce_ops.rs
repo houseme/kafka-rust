@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::compression::Compression;
 use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
+use crate::protocol::api_versions::ApiVersionCache;
 
 use super::config::ClientConfig;
 use super::state::ClientState;
@@ -26,11 +27,23 @@ type BrokerMessage<'a, 'b> = (
 );
 type BrokerMessages<'a, 'b> = HashMap<String, Vec<BrokerMessage<'a, 'b>>>;
 
+struct ProduceRequestContext<'a> {
+    conn_pool: &'a mut Connections,
+    correlation_id: i32,
+    client_id: &'a str,
+    required_acks: i16,
+    ack_timeout_ms: i32,
+    compression: Compression,
+    api_versions: &'a ApiVersionCache,
+    no_acks: bool,
+}
+
 #[tracing::instrument(skip(conn_pool, state, config, messages), fields(acks = ?acks))]
 pub(crate) fn internal_produce_messages_kp<'a, 'b, I, J>(
     conn_pool: &mut Connections,
     state: &mut ClientState,
     config: &ClientConfig,
+    api_versions: &ApiVersionCache,
     acks: RequiredAcks,
     ack_timeout: Duration,
     messages: I,
@@ -74,16 +87,17 @@ where
         ));
     }
 
-    let result = produce_messages_inner(
+    let mut ctx = ProduceRequestContext {
         conn_pool,
-        correlation,
-        &config.client_id,
-        acks as i16,
-        protocol::to_millis_i32(ack_timeout)?,
-        config.compression,
-        broker_msgs,
-        acks as i16 == 0,
-    );
+        correlation_id: correlation,
+        client_id: &config.client_id,
+        required_acks: acks as i16,
+        ack_timeout_ms: protocol::to_millis_i32(ack_timeout)?,
+        compression: config.compression,
+        api_versions,
+        no_acks: acks as i16 == 0,
+    };
+    let result = produce_messages_inner(&mut ctx, broker_msgs);
 
     #[cfg(feature = "metrics")]
     {
@@ -113,72 +127,48 @@ where
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 fn produce_messages_inner(
-    conn_pool: &mut Connections,
-    correlation_id: i32,
-    client_id: &str,
-    required_acks: i16,
-    ack_timeout_ms: i32,
-    compression: Compression,
+    ctx: &mut ProduceRequestContext<'_>,
     broker_msgs: BrokerMessages<'_, '_>,
-    no_acks: bool,
 ) -> Result<Vec<ProduceConfirm>> {
     let now = Instant::now();
-    if no_acks {
-        for (host, msgs) in broker_msgs {
-            let conn = conn_pool
-                .get_conn(&host, now)
-                .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-            let (header, request) = crate::protocol::produce::build_produce_request(
-                correlation_id,
-                client_id,
-                required_acks,
-                ack_timeout_ms,
-                compression,
-                &msgs,
-            )?;
-            transport::kp_send_request(
-                conn,
-                &header,
-                &request,
-                crate::protocol::API_VERSION_PRODUCE,
-            )
+    let mut res: Vec<ProduceConfirm> = Vec::new();
+
+    for (host, msgs) in broker_msgs {
+        let conn = ctx
+            .conn_pool
+            .get_conn(&host, now)
             .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+        let (mut header, request) = crate::protocol::produce::build_produce_request(
+            ctx.correlation_id,
+            ctx.client_id,
+            ctx.required_acks,
+            ctx.ack_timeout_ms,
+            ctx.compression,
+            &msgs,
+        )?;
+        let api_version = transport::apply_request_api_version(
+            ctx.api_versions,
+            &host,
+            &mut header,
+            crate::protocol::API_VERSION_PRODUCE,
+        );
+        transport::kp_send_request(conn, &header, &request, api_version)
+            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+
+        if ctx.no_acks {
+            continue;
         }
-        Ok(vec![])
-    } else {
-        let mut res: Vec<ProduceConfirm> = vec![];
-        for (host, msgs) in broker_msgs {
-            let conn = conn_pool
-                .get_conn(&host, now)
-                .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-            let (header, request) = crate::protocol::produce::build_produce_request(
-                correlation_id,
-                client_id,
-                required_acks,
-                ack_timeout_ms,
-                compression,
-                &msgs,
-            )?;
-            transport::kp_send_request(
-                conn,
-                &header,
-                &request,
-                crate::protocol::API_VERSION_PRODUCE,
-            )
-            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-            let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ProduceResponse>(
-                conn,
-                crate::protocol::API_VERSION_PRODUCE,
-            )
-            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-            let our_resp =
-                crate::protocol::produce::convert_produce_response(kp_resp, correlation_id);
-            for tpo in our_resp.get_response() {
-                res.push(tpo);
-            }
-        }
-        Ok(res)
+
+        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ProduceResponse>(
+            conn,
+            api_version,
+        )
+        .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+        let our_resp =
+            crate::protocol::produce::convert_produce_response(kp_resp, ctx.correlation_id);
+        res.extend(our_resp.get_response());
     }
+
+    Ok(res)
 }

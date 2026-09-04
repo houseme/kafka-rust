@@ -291,6 +291,10 @@ fn configure_tcp_socket(socket: &socket2::Socket) -> std::io::Result<()> {
 }
 
 impl KafkaConnection {
+    pub(crate) fn host(&self) -> &str {
+        &self.host
+    }
+
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
         self.stream.write(msg).map_err(|e| {
             self.state = ConnectionState::Terminated;

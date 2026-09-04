@@ -6,6 +6,8 @@
 
 use super::ApiVersionCache;
 use super::api_keys as api_key;
+use crate::protocol::create_topics::API_VERSION_CREATE_TOPICS;
+use crate::protocol::delete_topics::API_VERSION_DELETE_TOPICS;
 use crate::protocol::{
     API_VERSION_ADD_OFFSETS_TO_TXN, API_VERSION_ADD_RAFT_VOTER, API_VERSION_ALLOCATE_PRODUCER_IDS,
     API_VERSION_ALTER_CLIENT_QUOTAS, API_VERSION_ALTER_CONFIGS, API_VERSION_ALTER_PARTITION,
@@ -91,6 +93,8 @@ fn resolve_admin_api_versions(cache: &ApiVersionCache, host: &str, versions: &mu
     versions.offset_for_leader_epoch =
         version!(OFFSET_FOR_LEADER_EPOCH, API_VERSION_OFFSET_FOR_LEADER_EPOCH);
     versions.describe_acls = version!(DESCRIBE_ACLS, API_VERSION_DESCRIBE_ACLS);
+    versions.create_topics = version!(CREATE_TOPICS, API_VERSION_CREATE_TOPICS);
+    versions.delete_topics = version!(DELETE_TOPICS, API_VERSION_DELETE_TOPICS);
     versions.create_acls = version!(CREATE_ACLS, API_VERSION_CREATE_ACLS);
     versions.delete_acls = version!(DELETE_ACLS, API_VERSION_DELETE_ACLS);
     versions.describe_configs = version!(DESCRIBE_CONFIGS, API_VERSION_DESCRIBE_CONFIGS);
@@ -271,6 +275,8 @@ pub struct ApiVersions {
     pub describe_groups: i16,
     pub list_groups: i16,
     pub describe_acls: i16,
+    pub create_topics: i16,
+    pub delete_topics: i16,
     pub create_acls: i16,
     pub delete_acls: i16,
     pub describe_configs: i16,
@@ -351,6 +357,8 @@ impl Default for ApiVersions {
             describe_groups: API_VERSION_DESCRIBE_GROUPS,
             list_groups: API_VERSION_LIST_GROUPS,
             describe_acls: API_VERSION_DESCRIBE_ACLS,
+            create_topics: API_VERSION_CREATE_TOPICS,
+            delete_topics: API_VERSION_DELETE_TOPICS,
             create_acls: API_VERSION_CREATE_ACLS,
             delete_acls: API_VERSION_DELETE_ACLS,
             describe_configs: API_VERSION_DESCRIBE_CONFIGS,

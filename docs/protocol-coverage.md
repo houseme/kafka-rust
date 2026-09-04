@@ -32,6 +32,9 @@ Source checked:
   Automatic background runtime loops remain intentionally caller-owned.
 - Broker/controller/internal backlog: 0 public adapters; high-level workflows remain intentionally absent for
   quorum, coordinator, broker, controller, raft snapshot, and share-state internals.
+- API version negotiation is now part of the high-level sync runtime paths for metadata, fetch,
+  produce, offsets, and generated admin helpers, and async typed helpers cache `ApiVersions`
+  responses for subsequent request version clamping.
 - Generated request framing is centralized in a single-buffer encoder based on
   `Encodable::compute_size`; sync transport, SASL, admin helpers, and async wire code all use the
   same path.
