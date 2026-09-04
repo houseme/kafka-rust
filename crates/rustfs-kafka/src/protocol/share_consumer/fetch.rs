@@ -204,6 +204,7 @@ pub struct ShareFetchResponseData {
 }
 
 /// Build a `ShareFetch` request.
+#[must_use]
 pub fn build_share_fetch_request(
     correlation_id: i32,
     client_id: &str,

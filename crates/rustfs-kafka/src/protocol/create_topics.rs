@@ -2,13 +2,12 @@
 
 use bytes::BytesMut;
 use kafka_protocol::messages::{
-    CreateTopicsRequest, CreateTopicsResponse, RequestHeader, ResponseHeader,
+    CreateTopicsRequest, CreateTopicsResponse, RequestHeader,
     create_topics_request::{CreatableTopic, CreatableTopicConfig},
 };
-use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
+use kafka_protocol::protocol::{Encodable, HeaderVersion, StrBytes};
 
 use crate::error::{Error, Result};
-use crate::network::KafkaConnection;
 
 pub const API_KEY_CREATE_TOPICS: i16 = 19;
 pub const API_VERSION_CREATE_TOPICS: i16 = 2;
@@ -117,7 +116,12 @@ fn to_creatable_topic(topic: &TopicConfig) -> CreatableTopic {
         )
 }
 
-/// Build a `CreateTopics` request.
+/// Build a framed `CreateTopics` request.
+///
+/// # Errors
+///
+/// Returns an error if the generated request cannot be encoded or if the
+/// encoded frame length does not fit the Kafka wire format.
 pub fn build_create_topics_request(
     correlation_id: i32,
     client_id: &str,
@@ -173,41 +177,12 @@ pub fn convert_create_topics_response(response: CreateTopicsResponse) -> CreateT
     }
 }
 
-/// Send a `CreateTopics` request and parse the response.
-#[allow(dead_code)]
-pub fn fetch_create_topics(
-    conn: &mut KafkaConnection,
-    correlation_id: i32,
-    client_id: &str,
-    topics: &[TopicConfig],
-    timeout_ms: i32,
-) -> Result<CreateTopicsResponseData> {
-    let version = API_VERSION_CREATE_TOPICS;
-
-    let request_bytes = build_create_topics_request(correlation_id, client_id, topics, timeout_ms)?;
-    conn.send(&request_bytes)?;
-
-    let size = {
-        let mut buf = [0u8; 4];
-        conn.read_exact(&mut buf)?;
-        i32::from_be_bytes(buf)
-    };
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = resp_bytes;
-
-    let _resp_header =
-        ResponseHeader::decode(&mut bytes, CreateTopicsResponse::header_version(version))
-            .map_err(|_| Error::codec())?;
-    let response = CreateTopicsResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
-
-    Ok(convert_create_topics_response(response))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::{Buf, Bytes};
     use kafka_protocol::messages::create_topics_response::CreatableTopicResult;
+    use kafka_protocol::protocol::Decodable;
 
     #[test]
     fn test_topic_config_builder() {

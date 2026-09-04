@@ -22,12 +22,7 @@ use rustfs_kafka::error::{ConnectionError, Error, ProtocolError, Result};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-use kafka_protocol::messages::{
-    ApiKey, ApiVersionsRequest, ApiVersionsResponse, ConsumerGroupHeartbeatResponse,
-    CreateTopicsResponse, DeleteTopicsResponse, GetTelemetrySubscriptionsResponse,
-    PushTelemetryResponse, RequestHeader, ShareAcknowledgeResponse, ShareFetchResponse,
-    ShareGroupHeartbeatResponse,
-};
+use kafka_protocol::messages::{ApiKey, ApiVersionsRequest, RequestHeader};
 use kafka_protocol::protocol::StrBytes;
 
 use crate::connection::{AsyncConnection, AsyncConnectionPool};
@@ -155,6 +150,63 @@ impl AsyncKafkaClient {
         self.correlation
     }
 
+    async fn send_built_protocol_request<Req, Resp, Out, Build, Convert>(
+        &mut self,
+        operation: &'static str,
+        api_version: i16,
+        build_request: Build,
+        convert_response: Convert,
+    ) -> Result<Out>
+    where
+        Req: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
+        Resp: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+        Build: FnOnce(i32, &str) -> (RequestHeader, Req),
+        Convert: FnOnce(Resp) -> Out,
+    {
+        let correlation_id = self.next_correlation_id();
+        let client_id = self.client_id.clone();
+        let (header, request) = build_request(correlation_id, &client_id);
+        let response = self
+            .send_prebuilt_protocol_request(operation, api_version, &header, &request)
+            .await?;
+        Ok(convert_response(response))
+    }
+
+    async fn send_prebuilt_protocol_request<Req, Resp>(
+        &mut self,
+        operation: &'static str,
+        api_version: i16,
+        header: &RequestHeader,
+        request: &Req,
+    ) -> Result<Resp>
+    where
+        Req: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
+        Resp: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+    {
+        let hosts = self.request_hosts();
+        let mut last_err: Option<Error> = None;
+
+        for host in hosts {
+            let conn = match self.get_connection(&host).await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    last_err = Some(e.with_broker_context(&host, operation));
+                    continue;
+                }
+            };
+
+            match send_kp_request(conn, header, request, api_version).await {
+                Ok(()) => match get_kp_response::<Resp>(conn, api_version).await {
+                    Ok(resp) => return Ok(resp),
+                    Err(e) => last_err = Some(e.with_broker_context(&host, operation)),
+                },
+                Err(e) => last_err = Some(e.with_broker_context(&host, operation)),
+            }
+        }
+
+        Err(last_err.unwrap_or(Error::Connection(ConnectionError::NoHostReachable)))
+    }
+
     /// Sends a typed low-level `kafka-protocol` request and returns its raw generated response.
     ///
     /// This is intended for advanced users who need async protocol coverage beyond
@@ -177,35 +229,14 @@ impl AsyncKafkaClient {
         Req: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
         Resp: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
     {
-        let hosts = self.request_hosts();
         let correlation_id = self.next_correlation_id();
-        let mut last_err: Option<Error> = None;
-
-        for host in hosts {
-            let client_id = self.client_id.clone();
-            let conn = match self.get_connection(&host).await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    last_err = Some(e.with_broker_context(&host, "RawProtocolRequest"));
-                    continue;
-                }
-            };
-
-            let header = RequestHeader::default()
-                .with_client_id(Some(StrBytes::from_string(client_id)))
-                .with_request_api_key(api_key)
-                .with_request_api_version(api_version)
-                .with_correlation_id(correlation_id);
-            match send_kp_request(conn, &header, request, api_version).await {
-                Ok(()) => match get_kp_response::<Resp>(conn, api_version).await {
-                    Ok(resp) => return Ok(resp),
-                    Err(e) => last_err = Some(e.with_broker_context(&host, "RawProtocolRequest")),
-                },
-                Err(e) => last_err = Some(e.with_broker_context(&host, "RawProtocolRequest")),
-            }
-        }
-
-        Err(last_err.unwrap_or(Error::Connection(ConnectionError::NoHostReachable)))
+        let header = RequestHeader::default()
+            .with_client_id(Some(StrBytes::from_string(self.client_id.clone())))
+            .with_request_api_key(api_key)
+            .with_request_api_version(api_version)
+            .with_correlation_id(correlation_id);
+        self.send_prebuilt_protocol_request("RawProtocolRequest", api_version, &header, request)
+            .await
     }
 
     /// Fetches Kafka API version ranges advertised by a broker.
@@ -218,14 +249,22 @@ impl AsyncKafkaClient {
     ///
     /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
     pub async fn fetch_api_versions(&mut self) -> Result<ApiVersionsResponseData> {
-        let response: ApiVersionsResponse = self
-            .send_raw_protocol_request(
-                ApiKey::ApiVersions as i16,
-                0,
-                &ApiVersionsRequest::default(),
-            )
-            .await?;
-        Ok(convert_api_versions_response(response))
+        self.send_built_protocol_request(
+            "ApiVersions",
+            0,
+            |correlation_id, client_id| {
+                (
+                    RequestHeader::default()
+                        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
+                        .with_request_api_key(ApiKey::ApiVersions as i16)
+                        .with_request_api_version(0)
+                        .with_correlation_id(correlation_id),
+                    ApiVersionsRequest::default(),
+                )
+            },
+            convert_api_versions_response,
+        )
+        .await
     }
 
     /// Creates topics using the generated `kafka-protocol` `CreateTopics` codec.
@@ -240,11 +279,15 @@ impl AsyncKafkaClient {
         timeout: Duration,
     ) -> Result<CreateTopicsResponseData> {
         let timeout_ms = duration_to_millis_i32(timeout)?;
-        let (_header, request) = build_create_topics_protocol_request(0, "", topics, timeout_ms);
-        let response: CreateTopicsResponse = self
-            .send_raw_protocol_request(ApiKey::CreateTopics as i16, 2, &request)
-            .await?;
-        Ok(convert_create_topics_response(response))
+        self.send_built_protocol_request(
+            "CreateTopics",
+            2,
+            |correlation_id, client_id| {
+                build_create_topics_protocol_request(correlation_id, client_id, topics, timeout_ms)
+            },
+            convert_create_topics_response,
+        )
+        .await
     }
 
     /// Deletes topics by name using the generated `kafka-protocol` `DeleteTopics` codec.
@@ -259,12 +302,20 @@ impl AsyncKafkaClient {
         timeout: Duration,
     ) -> Result<DeleteTopicsResponseData> {
         let timeout_ms = duration_to_millis_i32(timeout)?;
-        let (_header, request) =
-            build_delete_topics_protocol_request(0, "", topic_names, timeout_ms);
-        let response: DeleteTopicsResponse = self
-            .send_raw_protocol_request(ApiKey::DeleteTopics as i16, 2, &request)
-            .await?;
-        Ok(convert_delete_topics_response(response))
+        self.send_built_protocol_request(
+            "DeleteTopics",
+            2,
+            |correlation_id, client_id| {
+                build_delete_topics_protocol_request(
+                    correlation_id,
+                    client_id,
+                    topic_names,
+                    timeout_ms,
+                )
+            },
+            convert_delete_topics_response,
+        )
+        .await
     }
 
     /// Fetches broker-side client telemetry subscription settings.
@@ -277,11 +328,15 @@ impl AsyncKafkaClient {
         client_instance_id: uuid::Uuid,
     ) -> Result<TelemetrySubscriptionsResponseData> {
         let options = GetTelemetrySubscriptionsOptions::for_client_instance(client_instance_id);
-        let (_header, request) = build_get_telemetry_subscriptions_request(0, "", options);
-        let response: GetTelemetrySubscriptionsResponse = self
-            .send_raw_protocol_request(ApiKey::GetTelemetrySubscriptions as i16, 0, &request)
-            .await?;
-        Ok(convert_get_telemetry_subscriptions_response(response))
+        self.send_built_protocol_request(
+            "GetTelemetrySubscriptions",
+            0,
+            |correlation_id, client_id| {
+                build_get_telemetry_subscriptions_request(correlation_id, client_id, options)
+            },
+            convert_get_telemetry_subscriptions_response,
+        )
+        .await
     }
 
     /// Pushes an encoded client telemetry payload to a broker.
@@ -293,11 +348,15 @@ impl AsyncKafkaClient {
         &mut self,
         options: &PushTelemetryOptions,
     ) -> Result<PushTelemetryResponseData> {
-        let (_header, request) = build_push_telemetry_request(0, "", options);
-        let response: PushTelemetryResponse = self
-            .send_raw_protocol_request(ApiKey::PushTelemetry as i16, 0, &request)
-            .await?;
-        Ok(convert_push_telemetry_response(response))
+        self.send_built_protocol_request(
+            "PushTelemetry",
+            0,
+            |correlation_id, client_id| {
+                build_push_telemetry_request(correlation_id, client_id, options)
+            },
+            convert_push_telemetry_response,
+        )
+        .await
     }
 
     /// Sends a low-level modern consumer-group heartbeat.
@@ -309,11 +368,15 @@ impl AsyncKafkaClient {
         &mut self,
         options: &ConsumerGroupHeartbeatOptions,
     ) -> Result<ConsumerGroupHeartbeatResponseData> {
-        let (_header, request) = build_consumer_group_heartbeat_request(0, "", options);
-        let response: ConsumerGroupHeartbeatResponse = self
-            .send_raw_protocol_request(ApiKey::ConsumerGroupHeartbeat as i16, 1, &request)
-            .await?;
-        Ok(convert_consumer_group_heartbeat_response(response))
+        self.send_built_protocol_request(
+            "ConsumerGroupHeartbeat",
+            1,
+            |correlation_id, client_id| {
+                build_consumer_group_heartbeat_request(correlation_id, client_id, options)
+            },
+            convert_consumer_group_heartbeat_response,
+        )
+        .await
     }
 
     /// Sends a low-level share-group heartbeat.
@@ -325,11 +388,15 @@ impl AsyncKafkaClient {
         &mut self,
         options: &ShareGroupHeartbeatOptions,
     ) -> Result<ShareGroupHeartbeatResponseData> {
-        let (_header, request) = build_share_group_heartbeat_request(0, "", options);
-        let response: ShareGroupHeartbeatResponse = self
-            .send_raw_protocol_request(ApiKey::ShareGroupHeartbeat as i16, 1, &request)
-            .await?;
-        Ok(convert_share_group_heartbeat_response(response))
+        self.send_built_protocol_request(
+            "ShareGroupHeartbeat",
+            1,
+            |correlation_id, client_id| {
+                build_share_group_heartbeat_request(correlation_id, client_id, options)
+            },
+            convert_share_group_heartbeat_response,
+        )
+        .await
     }
 
     /// Sends a low-level share fetch request.
@@ -341,11 +408,15 @@ impl AsyncKafkaClient {
         &mut self,
         options: &ShareFetchOptions,
     ) -> Result<ShareFetchResponseData> {
-        let (_header, request) = build_share_fetch_request(0, "", options);
-        let response: ShareFetchResponse = self
-            .send_raw_protocol_request(ApiKey::ShareFetch as i16, 1, &request)
-            .await?;
-        Ok(convert_share_fetch_response(response))
+        self.send_built_protocol_request(
+            "ShareFetch",
+            1,
+            |correlation_id, client_id| {
+                build_share_fetch_request(correlation_id, client_id, options)
+            },
+            convert_share_fetch_response,
+        )
+        .await
     }
 
     /// Sends a low-level share acknowledgement request.
@@ -357,11 +428,15 @@ impl AsyncKafkaClient {
         &mut self,
         options: &ShareAcknowledgeOptions,
     ) -> Result<ShareAcknowledgeResponseData> {
-        let (_header, request) = build_share_acknowledge_request(0, "", options);
-        let response: ShareAcknowledgeResponse = self
-            .send_raw_protocol_request(ApiKey::ShareAcknowledge as i16, 1, &request)
-            .await?;
-        Ok(convert_share_acknowledge_response(response))
+        self.send_built_protocol_request(
+            "ShareAcknowledge",
+            1,
+            |correlation_id, client_id| {
+                build_share_acknowledge_request(correlation_id, client_id, options)
+            },
+            convert_share_acknowledge_response,
+        )
+        .await
     }
 
     fn request_hosts(&self) -> Vec<String> {
@@ -417,7 +492,9 @@ fn duration_to_millis_i32(timeout: Duration) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use bytes::Buf;
-    use kafka_protocol::messages::{ApiKey, ApiVersionsRequest, ApiVersionsResponse};
+    use kafka_protocol::messages::{
+        ApiKey, ApiVersionsRequest, ApiVersionsResponse, CreateTopicsRequest,
+    };
     use kafka_protocol::protocol::{Decodable, HeaderVersion};
     use rustfs_kafka::error::{ConnectionError, Error};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -603,6 +680,71 @@ mod tests {
         assert_eq!(response.error_code, 0);
         assert_eq!(response.api_keys.len(), 1);
         assert_eq!(response.api_keys[0].api_key, ApiKey::ApiVersions as i16);
+    }
+
+    #[tokio::test]
+    async fn typed_create_topics_uses_real_header_context() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut size_buf = [0u8; 4];
+            socket.read_exact(&mut size_buf).await.unwrap();
+            let size = i32::from_be_bytes(size_buf);
+            let mut frame = vec![0; usize::try_from(size).unwrap()];
+            socket.read_exact(&mut frame).await.unwrap();
+
+            let mut bytes = bytes::Bytes::from(frame);
+            let header =
+                RequestHeader::decode(&mut bytes, CreateTopicsRequest::header_version(2)).unwrap();
+            assert_eq!(header.request_api_key, ApiKey::CreateTopics as i16);
+            assert_eq!(header.request_api_version, 2);
+            assert_eq!(header.correlation_id, 1);
+            assert_eq!(
+                header.client_id.as_ref().map(ToString::to_string),
+                Some("async-typed-test".to_owned())
+            );
+
+            assert_eq!(bytes.get_i32(), 1);
+            let topic_name_len = usize::try_from(bytes.get_i16()).unwrap();
+            assert_eq!(&bytes.copy_to_bytes(topic_name_len)[..], b"topic-a");
+            assert_eq!(bytes.get_i32(), 1);
+            assert_eq!(bytes.get_i16(), 1);
+            assert_eq!(bytes.get_i32(), 0);
+            assert_eq!(bytes.get_i32(), 0);
+            assert_eq!(bytes.get_i32(), 10_000);
+            assert_eq!(bytes.get_u8(), 0);
+            assert!(!bytes.has_remaining());
+
+            let mut response_frame = Vec::new();
+            response_frame.extend_from_slice(&1i32.to_be_bytes());
+            response_frame.extend_from_slice(&0i32.to_be_bytes());
+            response_frame.extend_from_slice(&1i32.to_be_bytes());
+            response_frame.extend_from_slice(&7i16.to_be_bytes());
+            response_frame.extend_from_slice(b"topic-a");
+            response_frame.extend_from_slice(&0i16.to_be_bytes());
+            response_frame.extend_from_slice(&(-1i16).to_be_bytes());
+
+            let total_len = i32::try_from(response_frame.len()).unwrap();
+            socket.write_all(&total_len.to_be_bytes()).await.unwrap();
+            socket.write_all(&response_frame).await.unwrap();
+        });
+
+        let mut client =
+            AsyncKafkaClient::with_client_id(vec![addr.to_string()], "async-typed-test".to_owned())
+                .await
+                .unwrap();
+
+        let response = client
+            .create_topics(&[TopicConfig::new("topic-a")], Duration::from_secs(10))
+            .await
+            .unwrap();
+
+        server.await.unwrap();
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].name, "topic-a");
+        assert_eq!(response.results[0].error_code, 0);
     }
 
     fn assert_no_host<T>(result: Result<T>) {

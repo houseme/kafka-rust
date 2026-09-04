@@ -239,6 +239,7 @@ pub struct PushTelemetryResponseData {
 }
 
 /// Build a `GetTelemetrySubscriptions` request.
+#[must_use]
 pub fn build_get_telemetry_subscriptions_request(
     correlation_id: i32,
     client_id: &str,
@@ -257,6 +258,7 @@ pub fn build_get_telemetry_subscriptions_request(
 }
 
 /// Build a `PushTelemetry` request.
+#[must_use]
 pub fn build_push_telemetry_request(
     correlation_id: i32,
     client_id: &str,

@@ -151,6 +151,7 @@ pub type ConsumerGroupHeartbeatResponseData = ShareHeartbeatResponseData;
 pub type ShareGroupHeartbeatResponseData = ShareHeartbeatResponseData;
 
 /// Build a `ConsumerGroupHeartbeat` request.
+#[must_use]
 pub fn build_consumer_group_heartbeat_request(
     correlation_id: i32,
     client_id: &str,
@@ -183,6 +184,7 @@ pub fn build_consumer_group_heartbeat_request(
 }
 
 /// Build a `ShareGroupHeartbeat` request.
+#[must_use]
 pub fn build_share_group_heartbeat_request(
     correlation_id: i32,
     client_id: &str,

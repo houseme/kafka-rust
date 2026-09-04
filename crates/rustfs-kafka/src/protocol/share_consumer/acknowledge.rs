@@ -153,6 +153,7 @@ pub struct ShareAcknowledgeResponseData {
 }
 
 /// Build a `ShareAcknowledge` request.
+#[must_use]
 pub fn build_share_acknowledge_request(
     correlation_id: i32,
     client_id: &str,
