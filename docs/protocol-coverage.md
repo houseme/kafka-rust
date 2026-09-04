@@ -15,14 +15,18 @@ Source checked:
 ## Coverage Summary
 
 - Total `kafka-protocol` API keys: 87.
-- Public or high-level runtime coverage: 62 APIs.
+- Public or high-level runtime coverage: 62 APIs; async convenience coverage now includes
+  ApiVersions, CreateTopics, DeleteTopics, Telemetry, ConsumerGroupHeartbeat, ShareGroupHeartbeat,
+  ShareFetch, and ShareAcknowledge on top of raw generated requests.
 - Internal runtime coverage without direct public API: 10 APIs.
 - Raw generated protocol coverage: all remaining generated request/response APIs can be sent through
   `KafkaClient::send_raw_protocol_request` or `AsyncKafkaClient::send_raw_protocol_request` with
   explicit `api_key` and `api_version`.
-- Client-facing backlog: 0 APIs.
+- Client-facing backlog: 0 APIs. `CreateTopics` and `DeleteTopics` now use generated
+  `kafka-protocol` request/response codecs instead of handwritten body parsers.
 - Advanced runtime backlog: no missing public protocol adapters; share-consumer and telemetry session helpers are
-  available, while automatic background runtime loops remain pending.
+  available, including converting acquired `ShareFetch` ranges into `ShareAcknowledge` options.
+  Automatic background runtime loops remain intentionally caller-owned.
 - Broker/controller/internal backlog: 0 public adapters; high-level workflows remain intentionally absent for
   quorum, coordinator, broker, controller, raft snapshot, and share-state internals.
 
@@ -45,8 +49,8 @@ Source checked:
 | 16 | ListGroups | Public admin implemented | Done. |
 | 17 | SaslHandshake | Internal auth runtime implemented | Keep internal auth flow. |
 | 18 | ApiVersions | Public admin/runtime implemented | Done. |
-| 19 | CreateTopics | Public admin implemented | Candidate: migrate manual codec to generated `kafka-protocol` request/response. |
-| 20 | DeleteTopics | Public admin implemented | Candidate: migrate manual codec to generated `kafka-protocol` request/response. |
+| 19 | CreateTopics | Public admin implemented with generated codec | Done. |
+| 20 | DeleteTopics | Public admin implemented with generated codec | Done. |
 | 21 | DeleteRecords | Public admin implemented | Done. |
 | 22 | InitProducerId | Internal transactional producer runtime implemented | Keep internal; extend only through transaction producer API. |
 | 23 | OffsetForLeaderEpoch | Public diagnostic implemented | Done. |
@@ -120,10 +124,11 @@ Source checked:
 
 ## Recommended Implementation Batches
 
-All visible client-facing protocol adapters are now implemented. Remaining generated protocol messages
-are reachable through the typed raw request API. Remaining high-level work is runtime-level:
+All visible client-facing protocol adapters are now implemented, and topic create/delete administration
+now uses generated request/response codecs. Remaining generated protocol messages are reachable through
+the typed raw request API. Remaining high-level work is runtime-level:
 
-1. Share consumer runtime: `ShareConsumerSession` composes stateful request options; the remaining work is the full fetch loop and acknowledgement scheduler.
-2. Telemetry runtime: `TelemetrySession` tracks broker subscriptions; the remaining work is the automatic scheduler/export pipeline.
+1. Share consumer runtime: `ShareConsumerSession` composes stateful request options and ack options from acquired fetch ranges; a full background fetch loop remains outside the current stable API.
+2. Telemetry runtime: `TelemetrySession` tracks broker subscriptions; the automatic scheduler/export pipeline remains outside the current stable API.
 3. Keep broker, controller, coordinator, and raft-log internals out of stable high-level APIs unless a dedicated
    controller client is introduced.

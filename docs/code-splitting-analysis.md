@@ -14,13 +14,13 @@
 
 | 项目 | 状态 | 结果 |
 |------|------|------|
-| P1 `client/mod.rs` | 已实施 | `client/mod.rs` 从 2,932 行降至 1,118 行；新增 `client/admin_ops.rs` 承接 admin/generated protocol 方法，`client/reexports.rs` 承接公共 re-export，`client/types.rs` 承接公共 DTO。 |
+| P1 `client/mod.rs` | 已实施 | `client/mod.rs` 从 2,932 行降至 1,090 行；新增 `client/admin_ops.rs` 承接 admin/generated protocol 方法，`client/reexports.rs` 承接公共 re-export，`client/types.rs` 承接公共 DTO。 |
 | Async wire helpers | 已实施 | 新增 `rustfs-kafka-async/src/wire.rs`，复用 producer/consumer/raw protocol/SASL 认证的 Kafka frame 编解码与错误码映射。 |
 | Async consumer observability | 已实施 | 新增 `rustfs-kafka-async/src/consumer_observability.rs`，从 `consumer.rs` 抽离错误统计快照、分类和 metrics 记录逻辑。 |
-| P0 `protocol/admin/types.rs` | 待实施 | 仍是最大类型集合；需要更大范围的公开类型迁移和 re-export 兼容层，建议单独批次处理。 |
-| P2 `protocol/api_versions.rs` | 部分实施 | 已新增 `protocol/api_keys.rs` 并通过 `api_versions::api_key` 保持兼容 re-export；版本解析逻辑仍可继续单独抽离。 |
-| P3 `protocol/share_consumer.rs` | 部分实施 | 已新增 `protocol/share_consumer/session.rs` 承接 `ShareConsumerSession` 和 `ShareFetchSessionConfig`；后续仍可将 heartbeat/fetch/acknowledge 子领域拆成子模块。 |
-| P4 `network/connection.rs` | 待实施 | SASL 抽离仍建议保留为后续单独批次。 |
+| P0 `protocol/admin/types.rs` | 已实施 | 类型已迁移到领域子模块，并通过 `admin/mod.rs` 保持 re-export 兼容。 |
+| P2 `protocol/api_versions.rs` | 已实施 | 已拆为 `api_keys.rs`、`api_versions/mod.rs` 和 `api_versions/resolver.rs`，并通过 `api_versions::api_key` 保持兼容 re-export。 |
+| P3 `protocol/share_consumer.rs` | 已实施 | 已拆为 `share_consumer/mod.rs`、`heartbeat.rs`、`fetch.rs`、`acknowledge.rs` 和 `session.rs`。 |
+| P4 `network/connection.rs` | 已实施 | SASL 认证逻辑已抽离到 `network/sasl.rs`。 |
 
 ## 拆分前文件大小分布
 
@@ -32,24 +32,24 @@
 | 500-1,000 | 8 | `connection.rs`, `error.rs`, `group.rs`, `consumer/mod.rs`, `state.rs`, `transaction.rs`, `batch.rs`, `token.rs` |
 | <500 | ~25 | 其余模块 |
 
-## 本轮后主要文件大小
+## 当前主要文件大小
 
 | 文件 | 行数 | 状态 |
 |------|------|------|
-| `protocol/admin/types.rs` | 3,307 | 待拆分，建议单独批次处理 |
-| `client/admin_ops.rs` | 1,454 | 已从 `client/mod.rs` 拆出 admin/generated protocol 方法 |
-| `protocol/api_versions.rs` | 1,466 | 已拆出 `api_keys.rs`，版本解析仍可继续拆分 |
-| `protocol/share_consumer.rs` | 1,325 | 已拆出 session helper，heartbeat/fetch/ack 仍可继续拆分 |
-| `client/mod.rs` | 1,118 | 已拆出 admin ops、re-export 和公共 DTO |
-| `rustfs-kafka-async/src/consumer.rs` | 1,119 | 已拆出 observability 和共享 wire helpers |
+| `protocol/admin/cluster.rs` | 1,561 | 当前最大文件；包含 KRaft/cluster admin 类型、builder、converter 和测试，领域内聚。 |
+| `client/admin_ops.rs` | 1,454 | 已从 `client/mod.rs` 拆出 admin/generated protocol 方法。 |
+| `protocol/admin/topic.rs` | 1,304 | topic admin 领域聚合；后续如继续增长，可再按 create/delete/partition 拆分。 |
+| `rustfs-kafka-async/src/consumer.rs` | 1,135 | 已拆出 observability 和共享 wire helpers。 |
+| `client/mod.rs` | 1,090 | 已拆出 admin ops、re-export 和公共 DTO。 |
+| `protocol/api_versions/mod.rs` | 1,098 | 已拆出 `api_keys.rs` 和 `resolver.rs`。 |
 
 ---
 
-## 推荐拆分的文件
+## 已完成的拆分项
 
-### P0: `protocol/admin/types.rs` — 3,307 行
+### P0: `protocol/admin/types.rs` — 已完成
 
-**问题**: 包含 217 个公共类型，跨越 10+ 个领域但无内聚性。是当前最大文件。
+**原问题**: 包含 217 个公共类型，跨越 10+ 个领域但无内聚性。曾是最大文件。
 
 **内部领域分布**:
 
@@ -66,7 +66,7 @@
 | Quota | ~210 | `ClientQuotaEntityFilter/Spec`, `ClientQuotaAlteration/Op`, `ClientQuotaEntry/Value`, `DescribeClientQuotasOptions`, `AlterClientQuotasOptions/Entry`, `DescribeClientQuotasResponseData`, `AlterClientQuotas*Result/ResponseData`, `CLIENT_QUOTA_MATCH_*` |
 | AlterConfigs(legacy)/LogDir | ~195 | `AlterConfigsEntry`, `AlterConfigsResource`, `AlterConfigsOptions`, `AlterConfigsResourceResult`, `AlterConfigsResponseData`, `AlterReplicaLogDir`, `AlterReplicaLogDirTopic`, `AlterReplicaLogDir*Result`, `AlterReplicaLogDirsResponseData` |
 
-**拆分方案**: 将类型定义移入对应的 `admin/*.rs` 子模块:
+**已实施方案**: 类型定义已移入对应的 `admin/*.rs` 子模块:
 
 ```
 admin/types.rs (保留通用类型, ~700行)
@@ -82,13 +82,13 @@ admin/types.rs (保留通用类型, ~700行)
 └── admin/log_dir.rs    ← AlterConfigs/LogDir 类型 (~195行移入)
 ```
 
-**预期效果**: `types.rs` 从 3,307 行降至 ~700 行，各子模块自包含类型定义。
+**效果**: `types.rs` 已删除，各子模块自包含类型定义，并通过 `admin/mod.rs` 保持 re-export 兼容。
 
 ---
 
-### P1: `client/mod.rs` — 2,932 行
+### P1: `client/mod.rs` — 已完成
 
-**问题**: admin 方法虽已用 `try_admin_request` 泛型辅助压缩，但仍占文件近半。
+**原问题**: admin 方法虽已用 `try_admin_request` 泛型辅助压缩，但仍占文件近半。
 
 **内部结构**:
 
@@ -104,7 +104,7 @@ admin/types.rs (保留通用类型, ~700行)
 | `KafkaClientInternals` impl | ~25 | trait 实现 |
 | 测试 | ~240 | |
 
-**拆分方案**: 提取 admin 方法到 `client/admin_ops.rs`:
+**已实施方案**: 提取 admin 方法到 `client/admin_ops.rs`:
 
 ```
 client/mod.rs (~1,400行)
@@ -115,13 +115,13 @@ client/mod.rs (~1,400行)
 └── client/metadata_ops.rs (已有)
 ```
 
-**预期效果**: `mod.rs` 从 2,932 行降至 ~1,500 行，与已有的 `fetch_ops.rs`/`produce_ops.rs`/`offset_ops.rs` 模式一致。
+**效果**: `mod.rs` 已降至约 1,100 行，与已有的 `fetch_ops.rs`/`produce_ops.rs`/`offset_ops.rs` 模式一致。
 
 ---
 
-### P2: `protocol/api_versions.rs` — 1,545 行
+### P2: `protocol/api_versions.rs` — 已完成
 
-**问题**: 测试占 48%（~750行），`api_key` 常量与业务逻辑混杂。
+**原问题**: 测试占 48%（~750行），`api_key` 常量与业务逻辑混杂。
 
 **内部结构**:
 
@@ -135,7 +135,7 @@ client/mod.rs (~1,400行)
 | 版本解析 | ~210 | `resolve_all_api_versions` + 6 个 `resolve_*` 辅助函数 |
 | **测试** | **~750** | |
 
-**拆分方案**:
+**已实施方案**:
 
 ```
 protocol/api_versions.rs (~800行, 保留业务逻辑)
@@ -143,13 +143,13 @@ protocol/api_versions.rs (~800行, 保留业务逻辑)
 └── protocol/api_version_resolver.rs ← ApiVersions + resolve_* (~310行移出)
 ```
 
-**预期效果**: 核心文件降至 ~800 行，常量和解析逻辑独立。
+**效果**: 核心门面保留在 `api_versions/mod.rs`，常量和解析逻辑独立。
 
 ---
 
-### P3: `protocol/share_consumer.rs` — 1,321 行
+### P3: `protocol/share_consumer.rs` — 已完成
 
-**问题**: 混合了两个不同领域（heartbeat vs fetch/acknowledge），且混合了 DTO 与 builder/converter。
+**原问题**: 混合了两个不同领域（heartbeat vs fetch/acknowledge），且混合了 DTO 与 builder/converter。
 
 **内部结构**:
 
@@ -165,7 +165,7 @@ protocol/api_versions.rs (~800行, 保留业务逻辑)
 | 响应转换 | ~310 | `convert_*_response` 函数 |
 | 测试 | ~160 | |
 
-**拆分方案**:
+**已实施方案**:
 
 ```
 protocol/share_consumer/mod.rs (~390行, 通用类型+常量)
@@ -176,9 +176,9 @@ protocol/share_consumer/mod.rs (~390行, 通用类型+常量)
 
 ---
 
-### P4: `network/connection.rs` — 830 行
+### P4: `network/connection.rs` — 已完成
 
-**问题**: SASL 认证代码（~340行）完全自包含且受 `cfg(feature = "security")` 门控。
+**原问题**: SASL 认证代码（~340行）完全自包含且受 `cfg(feature = "security")` 门控。
 
 **内部结构**:
 
@@ -191,14 +191,14 @@ protocol/share_consumer/mod.rs (~390行, 通用类型+常量)
 | 请求/响应辅助 | ~60 | `send_kp_request_on_stream`, `get_kp_response_from_stream` |
 | 连接方法 | ~115 | `send`, `read_exact`, `from_stream`, `new` |
 
-**拆分方案**:
+**已实施方案**:
 
 ```
 network/connection.rs (~490行)
 └── network/sasl.rs  ← SASL 认证逻辑 (~340行移出, cfg(feature = "security"))
 ```
 
-**预期效果**: `connection.rs` 降至 ~490 行，SASL 逻辑独立且可单独 feature-gate。
+**效果**: `connection.rs` 已降至约 400 行，SASL 逻辑独立且可单独 feature-gate。
 
 ---
 
@@ -222,11 +222,11 @@ network/connection.rs (~490行)
 | 优先级 | 文件 | 分析时行数 | 当前行数 | 状态 |
 |--------|------|----------|----------|------|
 | **P0** | `protocol/admin/types.rs` | 3,307 | **已删除** | ✅ 类型分散到11个领域子模块 |
-| **P1** | `client/mod.rs` | 2,932 | **1,118** | ✅ admin方法提取到 `admin_ops.rs` (1,454行) |
+| **P1** | `client/mod.rs` | 2,932 | **1,090** | ✅ admin方法提取到 `admin_ops.rs` (1,454行) |
 | **P2** | `protocol/api_versions.rs` | 1,545 | **1,098** (mod.rs) | ✅ 拆为 `api_keys.rs` + `resolver.rs` + `mod.rs` |
 | **P3** | `protocol/share_consumer.rs` | 1,321 | **已删除** | ✅ 拆为 `heartbeat.rs` + `fetch.rs` + `acknowledge.rs` + `mod.rs` |
-| **P4** | `network/connection.rs` | 830 | **~408** | ✅ SASL提取到 `network/sasl.rs` (395行) |
+| **P4** | `network/connection.rs` | 830 | **407** | ✅ SASL提取到 `network/sasl.rs` (403行) |
 
 **不推荐拆分**: `error.rs`, `protocol/group.rs`, `consumer/mod.rs`, `client/state.rs`, `producer/transaction.rs`, `producer/batch.rs`, `protocol/telemetry.rs` — 这些文件内聚性好，大小合理。
 
-> 当前最大文件为 `admin/cluster.rs` (1,561行)，无超过2,000行的文件。247个测试全部通过。
+> 当前最大文件为 `admin/cluster.rs` (1,561行)，无超过2,000行的文件。同步 crate 的 255 个 lib 测试全部通过。
