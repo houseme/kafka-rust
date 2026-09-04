@@ -11,7 +11,6 @@ mod share_group;
 mod token;
 mod topic;
 mod transaction;
-mod types;
 
 pub use acl::*;
 pub use cluster::*;
@@ -24,7 +23,6 @@ pub use share_group::*;
 pub use token::*;
 pub use topic::*;
 pub use transaction::*;
-pub use types::*;
 
 use kafka_protocol::messages::{ApiKey, GroupId, RequestHeader};
 use kafka_protocol::protocol::StrBytes;

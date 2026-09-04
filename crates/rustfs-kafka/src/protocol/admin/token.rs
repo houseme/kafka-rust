@@ -18,7 +18,310 @@ use super::super::{
     API_VERSION_EXPIRE_DELEGATION_TOKEN, API_VERSION_RENEW_DELEGATION_TOKEN,
 };
 use super::request_header;
-use super::types::*;
+use super::*;
+
+/// Kafka SCRAM-SHA-256 mechanism code.
+pub const SCRAM_MECHANISM_SHA_256: i8 = 1;
+/// Kafka SCRAM-SHA-512 mechanism code.
+pub const SCRAM_MECHANISM_SHA_512: i8 = 2;
+
+/// One delegation token returned by `DescribeDelegationToken`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegationTokenDescription {
+    /// Owner principal.
+    pub owner: KafkaPrincipal,
+    /// Requester principal when returned by Kafka v3+.
+    pub requester: Option<KafkaPrincipal>,
+    /// Token issue timestamp in milliseconds since Unix epoch.
+    pub issue_timestamp: i64,
+    /// Token expiry timestamp in milliseconds since Unix epoch.
+    pub expiry_timestamp: i64,
+    /// Token maximum timestamp in milliseconds since Unix epoch.
+    pub max_timestamp: i64,
+    /// Token ID.
+    pub token_id: String,
+    /// Broker-provided token HMAC. Treat this value as sensitive credential material.
+    pub hmac: Bytes,
+    /// Principals allowed to renew this token.
+    pub renewers: Vec<KafkaPrincipal>,
+}
+
+/// Parsed response from a `DescribeDelegationToken` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeDelegationTokenResponseData {
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Delegation tokens returned by the broker.
+    pub tokens: Vec<DelegationTokenDescription>,
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+}
+
+/// Options for creating a Kafka delegation token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateDelegationTokenOptions {
+    /// Optional owner principal; Kafka defaults this to the request principal when absent.
+    pub owner: Option<KafkaPrincipal>,
+    /// Principals allowed to renew the token.
+    pub renewers: Vec<KafkaPrincipal>,
+    /// Maximum token lifetime in milliseconds, or `-1` to use the broker default.
+    pub max_lifetime_ms: i64,
+}
+
+impl Default for CreateDelegationTokenOptions {
+    fn default() -> Self {
+        Self {
+            owner: None,
+            renewers: Vec::new(),
+            max_lifetime_ms: -1,
+        }
+    }
+}
+
+impl CreateDelegationTokenOptions {
+    /// Create options using Kafka's broker-side defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the token owner principal.
+    #[must_use]
+    pub fn with_owner(mut self, owner: KafkaPrincipal) -> Self {
+        self.owner = Some(owner);
+        self
+    }
+
+    /// Add one token renewer principal.
+    #[must_use]
+    pub fn with_renewer(mut self, renewer: KafkaPrincipal) -> Self {
+        self.renewers.push(renewer);
+        self
+    }
+
+    /// Replace the token renewer principals.
+    #[must_use]
+    pub fn with_renewers<I>(mut self, renewers: I) -> Self
+    where
+        I: IntoIterator<Item = KafkaPrincipal>,
+    {
+        self.renewers = renewers.into_iter().collect();
+        self
+    }
+
+    /// Set the maximum token lifetime in milliseconds.
+    #[must_use]
+    pub fn with_max_lifetime_ms(mut self, max_lifetime_ms: i64) -> Self {
+        self.max_lifetime_ms = max_lifetime_ms;
+        self
+    }
+}
+
+/// Parsed response from a `CreateDelegationToken` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateDelegationTokenResponseData {
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Owner principal for the token.
+    pub owner: KafkaPrincipal,
+    /// Requester principal returned by Kafka v3+.
+    pub requester: Option<KafkaPrincipal>,
+    /// Token issue timestamp in milliseconds since Unix epoch.
+    pub issue_timestamp: i64,
+    /// Token expiry timestamp in milliseconds since Unix epoch.
+    pub expiry_timestamp: i64,
+    /// Token maximum timestamp in milliseconds since Unix epoch.
+    pub max_timestamp: i64,
+    /// Token ID.
+    pub token_id: String,
+    /// Broker-provided token HMAC. Treat this value as sensitive credential material.
+    pub hmac: Bytes,
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+}
+
+/// Parsed response from a `RenewDelegationToken` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenewDelegationTokenResponseData {
+    /// Broker error code.
+    pub error_code: i16,
+    /// Token expiry timestamp in milliseconds since Unix epoch.
+    pub expiry_timestamp_ms: i64,
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+}
+
+/// Parsed response from an `ExpireDelegationToken` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpireDelegationTokenResponseData {
+    /// Broker error code.
+    pub error_code: i16,
+    /// Token expiry timestamp in milliseconds since Unix epoch.
+    pub expiry_timestamp_ms: i64,
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+}
+
+/// One SCRAM mechanism configured for a user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScramCredentialInfo {
+    /// Raw Kafka SCRAM mechanism code.
+    pub mechanism: i8,
+    /// Iteration count used for this SCRAM credential.
+    pub iterations: i32,
+}
+
+/// SCRAM credential description for one user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserScramCredentialsDescription {
+    /// User name.
+    pub user: String,
+    /// Per-user broker error code.
+    pub error_code: i16,
+    /// Optional per-user broker error message.
+    pub error_message: Option<String>,
+    /// SCRAM credentials configured for this user.
+    pub credential_infos: Vec<ScramCredentialInfo>,
+}
+
+/// Parsed response from a `DescribeUserScramCredentials` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeUserScramCredentialsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional top-level broker error message.
+    pub error_message: Option<String>,
+    /// User credential descriptions returned by the broker.
+    pub results: Vec<UserScramCredentialsDescription>,
+}
+
+/// SCRAM credential deletion operation for one user/mechanism.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScramCredentialDeletion {
+    /// User name.
+    pub name: String,
+    /// Raw Kafka SCRAM mechanism code.
+    pub mechanism: i8,
+}
+
+impl ScramCredentialDeletion {
+    /// Create a SCRAM credential deletion.
+    #[must_use]
+    pub fn new(name: impl Into<String>, mechanism: i8) -> Self {
+        Self {
+            name: name.into(),
+            mechanism,
+        }
+    }
+}
+
+/// SCRAM credential upsertion operation for one user/mechanism.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScramCredentialUpsertion {
+    /// User name.
+    pub name: String,
+    /// Raw Kafka SCRAM mechanism code.
+    pub mechanism: i8,
+    /// SCRAM iteration count.
+    pub iterations: i32,
+    /// Client-generated salt bytes.
+    pub salt: Bytes,
+    /// Precomputed salted password bytes for the selected SCRAM mechanism.
+    pub salted_password: Bytes,
+}
+
+impl ScramCredentialUpsertion {
+    /// Create a SCRAM credential upsertion with precomputed salted password material.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        mechanism: i8,
+        iterations: i32,
+        salt: impl Into<Bytes>,
+        salted_password: impl Into<Bytes>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            mechanism,
+            iterations,
+            salt: salt.into(),
+            salted_password: salted_password.into(),
+        }
+    }
+}
+
+/// Options for an `AlterUserScramCredentials` request.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AlterUserScramCredentialsOptions {
+    /// SCRAM credentials to delete.
+    pub deletions: Vec<ScramCredentialDeletion>,
+    /// SCRAM credentials to upsert.
+    pub upsertions: Vec<ScramCredentialUpsertion>,
+}
+
+impl AlterUserScramCredentialsOptions {
+    /// Create empty SCRAM credential mutation options.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add one SCRAM credential deletion.
+    #[must_use]
+    pub fn with_deletion(mut self, deletion: ScramCredentialDeletion) -> Self {
+        self.deletions.push(deletion);
+        self
+    }
+
+    /// Replace SCRAM credential deletions.
+    #[must_use]
+    pub fn with_deletions<I>(mut self, deletions: I) -> Self
+    where
+        I: IntoIterator<Item = ScramCredentialDeletion>,
+    {
+        self.deletions = deletions.into_iter().collect();
+        self
+    }
+
+    /// Add one SCRAM credential upsertion.
+    #[must_use]
+    pub fn with_upsertion(mut self, upsertion: ScramCredentialUpsertion) -> Self {
+        self.upsertions.push(upsertion);
+        self
+    }
+
+    /// Replace SCRAM credential upsertions.
+    #[must_use]
+    pub fn with_upsertions<I>(mut self, upsertions: I) -> Self
+    where
+        I: IntoIterator<Item = ScramCredentialUpsertion>,
+    {
+        self.upsertions = upsertions.into_iter().collect();
+        self
+    }
+}
+
+/// Per-user result returned by `AlterUserScramCredentials`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterUserScramCredentialResult {
+    /// User name.
+    pub user: String,
+    /// Per-user broker error code.
+    pub error_code: i16,
+    /// Optional per-user broker error message.
+    pub error_message: Option<String>,
+}
+
+/// Parsed response from an `AlterUserScramCredentials` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterUserScramCredentialsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-user mutation results returned by the broker.
+    pub results: Vec<AlterUserScramCredentialResult>,
+}
 
 pub fn build_describe_delegation_token_request(
     correlation_id: i32,

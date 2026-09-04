@@ -9,7 +9,273 @@ use kafka_protocol::protocol::StrBytes;
 
 use super::super::{API_VERSION_ALTER_CLIENT_QUOTAS, API_VERSION_DESCRIBE_CLIENT_QUOTAS};
 use super::request_header;
-use super::types::*;
+
+/// Match an exact client quota entity name.
+pub const CLIENT_QUOTA_MATCH_EXACT: i8 = 0;
+/// Match the default client quota entity.
+pub const CLIENT_QUOTA_MATCH_DEFAULT: i8 = 1;
+/// Match any specified client quota entity name.
+pub const CLIENT_QUOTA_MATCH_ANY_SPECIFIED: i8 = 2;
+
+/// One entity component used to filter `DescribeClientQuotas`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientQuotaEntityFilter {
+    /// Kafka quota entity type, for example `user`, `client-id`, or `ip`.
+    pub entity_type: String,
+    /// Raw Kafka match type.
+    pub match_type: i8,
+    /// Name to match when `match_type` is exact.
+    pub match_value: Option<String>,
+}
+
+impl ClientQuotaEntityFilter {
+    /// Match an exact quota entity name.
+    #[must_use]
+    pub fn exact(entity_type: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            entity_type: entity_type.into(),
+            match_type: CLIENT_QUOTA_MATCH_EXACT,
+            match_value: Some(value.into()),
+        }
+    }
+
+    /// Match the default quota entity.
+    #[must_use]
+    pub fn default_entity(entity_type: impl Into<String>) -> Self {
+        Self {
+            entity_type: entity_type.into(),
+            match_type: CLIENT_QUOTA_MATCH_DEFAULT,
+            match_value: None,
+        }
+    }
+
+    /// Match any specified quota entity name.
+    #[must_use]
+    pub fn any_specified(entity_type: impl Into<String>) -> Self {
+        Self {
+            entity_type: entity_type.into(),
+            match_type: CLIENT_QUOTA_MATCH_ANY_SPECIFIED,
+            match_value: None,
+        }
+    }
+}
+
+/// Filters for a `DescribeClientQuotas` request.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DescribeClientQuotasOptions {
+    /// Entity filter components. Empty means all quota entities visible to the broker.
+    pub components: Vec<ClientQuotaEntityFilter>,
+    /// Whether Kafka should exclude entities with unspecified entity types.
+    pub strict: bool,
+}
+
+impl DescribeClientQuotasOptions {
+    /// Create options that describe all visible client quota entities.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Require strict entity matching.
+    #[must_use]
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// Add one entity filter component.
+    #[must_use]
+    pub fn with_component(mut self, component: ClientQuotaEntityFilter) -> Self {
+        self.components.push(component);
+        self
+    }
+
+    /// Replace the entity filter components.
+    #[must_use]
+    pub fn with_components<I>(mut self, components: I) -> Self
+    where
+        I: IntoIterator<Item = ClientQuotaEntityFilter>,
+    {
+        self.components = components.into_iter().collect();
+        self
+    }
+}
+
+/// One entity component used to alter client quotas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientQuotaEntitySpec {
+    /// Kafka quota entity type, for example `user`, `client-id`, or `ip`.
+    pub entity_type: String,
+    /// Entity name, or `None` for Kafka's default entity.
+    pub entity_name: Option<String>,
+}
+
+impl ClientQuotaEntitySpec {
+    /// Create a quota entity with a concrete entity name.
+    #[must_use]
+    pub fn named(entity_type: impl Into<String>, entity_name: impl Into<String>) -> Self {
+        Self {
+            entity_type: entity_type.into(),
+            entity_name: Some(entity_name.into()),
+        }
+    }
+
+    /// Create a quota entity that targets Kafka's default entity for this type.
+    #[must_use]
+    pub fn default_entity(entity_type: impl Into<String>) -> Self {
+        Self {
+            entity_type: entity_type.into(),
+            entity_name: None,
+        }
+    }
+}
+
+/// One quota operation for `AlterClientQuotas`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientQuotaAlterationOp {
+    /// Quota configuration key.
+    pub key: String,
+    /// Value to set; ignored by Kafka when `remove` is true.
+    pub value: f64,
+    /// Whether the quota key should be removed.
+    pub remove: bool,
+}
+
+impl ClientQuotaAlterationOp {
+    /// Set a quota value.
+    #[must_use]
+    pub fn set(key: impl Into<String>, value: f64) -> Self {
+        Self {
+            key: key.into(),
+            value,
+            remove: false,
+        }
+    }
+
+    /// Remove a quota value.
+    #[must_use]
+    pub fn remove(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: 0.0,
+            remove: true,
+        }
+    }
+}
+
+/// One quota entity alteration entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientQuotaAlteration {
+    /// Entity components that identify this quota entry.
+    pub entity: Vec<ClientQuotaEntitySpec>,
+    /// Quota operations to apply to this entity.
+    pub ops: Vec<ClientQuotaAlterationOp>,
+}
+
+impl ClientQuotaAlteration {
+    /// Create a quota alteration for an entity.
+    #[must_use]
+    pub fn new<I, J>(entity: I, ops: J) -> Self
+    where
+        I: IntoIterator<Item = ClientQuotaEntitySpec>,
+        J: IntoIterator<Item = ClientQuotaAlterationOp>,
+    {
+        Self {
+            entity: entity.into_iter().collect(),
+            ops: ops.into_iter().collect(),
+        }
+    }
+}
+
+/// Options for an `AlterClientQuotas` request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlterClientQuotasOptions {
+    /// Quota entries to alter.
+    pub entries: Vec<ClientQuotaAlteration>,
+    /// Validate the request without applying it.
+    pub validate_only: bool,
+}
+
+impl AlterClientQuotasOptions {
+    /// Create options with the supplied quota alterations.
+    #[must_use]
+    pub fn new<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = ClientQuotaAlteration>,
+    {
+        Self {
+            entries: entries.into_iter().collect(),
+            validate_only: false,
+        }
+    }
+
+    /// Validate the request without applying it.
+    #[must_use]
+    pub fn with_validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+}
+
+/// One entity component returned by `DescribeClientQuotas`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientQuotaEntity {
+    /// Kafka quota entity type.
+    pub entity_type: String,
+    /// Entity name, or `None` for Kafka's default entity.
+    pub entity_name: Option<String>,
+}
+
+/// One quota key/value returned by `DescribeClientQuotas`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientQuotaValue {
+    /// Quota configuration key.
+    pub key: String,
+    /// Quota configuration value.
+    pub value: f64,
+}
+
+/// One quota entity entry returned by `DescribeClientQuotas`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientQuotaEntry {
+    /// Entity components that identify this quota entry.
+    pub entity: Vec<ClientQuotaEntity>,
+    /// Quota values configured for the entity.
+    pub values: Vec<ClientQuotaValue>,
+}
+
+/// Parsed response from a `DescribeClientQuotas` request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DescribeClientQuotasResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional top-level broker error message.
+    pub error_message: Option<String>,
+    /// Quota entries returned by the broker.
+    pub entries: Option<Vec<ClientQuotaEntry>>,
+}
+
+/// One quota entity result returned by `AlterClientQuotas`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterClientQuotaEntryResult {
+    /// Per-entry broker error code.
+    pub error_code: i16,
+    /// Optional per-entry broker error message.
+    pub error_message: Option<String>,
+    /// Entity components that identify this quota entry.
+    pub entity: Vec<ClientQuotaEntity>,
+}
+
+/// Parsed response from an `AlterClientQuotas` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterClientQuotasResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-entity quota alteration results returned by the broker.
+    pub entries: Vec<AlterClientQuotaEntryResult>,
+}
 
 pub fn build_describe_client_quotas_request(
     correlation_id: i32,

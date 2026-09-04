@@ -12,8 +12,273 @@ use super::super::{
     API_VERSION_ALTER_SHARE_GROUP_OFFSETS, API_VERSION_DELETE_SHARE_GROUP_OFFSETS,
     API_VERSION_DESCRIBE_SHARE_GROUP_OFFSETS,
 };
-use super::types::*;
-use super::{group_id, request_header};
+use super::*;
+
+/// Topic partitions in a share group assignment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupTopicPartitions {
+    /// Topic UUID as a string.
+    pub topic_id: String,
+    /// Topic name.
+    pub topic_name: String,
+    /// Assigned partition indexes.
+    pub partitions: Vec<i32>,
+}
+
+/// Assignment returned by `ShareGroupDescribe`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupAssignment {
+    /// Topic partitions in the assignment.
+    pub topic_partitions: Vec<ShareGroupTopicPartitions>,
+}
+
+/// Member state returned by `ShareGroupDescribe`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupMemberDescription {
+    /// Member ID assigned by the share group coordinator.
+    pub member_id: String,
+    /// Rack ID reported by the member, when configured.
+    pub rack_id: Option<String>,
+    /// Current member epoch.
+    pub member_epoch: i32,
+    /// Client ID reported by the member.
+    pub client_id: String,
+    /// Client host reported by the broker.
+    pub client_host: String,
+    /// Subscribed topic names.
+    pub subscribed_topic_names: Vec<String>,
+    /// Current assignment.
+    pub assignment: ShareGroupAssignment,
+}
+
+/// Share group state returned by `ShareGroupDescribe`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupDescription {
+    /// Per-group broker error code.
+    pub error_code: i16,
+    /// Optional per-group broker error message.
+    pub error_message: Option<String>,
+    /// Group ID.
+    pub group_id: String,
+    /// Current group state.
+    pub group_state: String,
+    /// Current group epoch.
+    pub group_epoch: i32,
+    /// Current assignment epoch.
+    pub assignment_epoch: i32,
+    /// Selected assignor name.
+    pub assignor_name: String,
+    /// Members in the group.
+    pub members: Vec<ShareGroupMemberDescription>,
+    /// Authorized operations bitfield, or Kafka's sentinel when not requested.
+    pub authorized_operations: i32,
+}
+
+/// Parsed response from a `ShareGroupDescribe` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupDescribeResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Described share groups returned by the broker.
+    pub groups: Vec<ShareGroupDescription>,
+}
+
+/// One group included in a `DescribeShareGroupOffsets` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupOffsetRequest {
+    /// Share group ID.
+    pub group_id: String,
+    /// Topic partitions to query, or `None` to describe all share-partition offsets for the group.
+    pub topics: Option<Vec<TopicPartitionFilter>>,
+}
+
+impl ShareGroupOffsetRequest {
+    /// Describe all share-partition offsets for a group.
+    #[must_use]
+    pub fn all_partitions(group_id: impl Into<String>) -> Self {
+        Self {
+            group_id: group_id.into(),
+            topics: None,
+        }
+    }
+
+    /// Describe selected share-partition offsets for a group.
+    #[must_use]
+    pub fn with_topics<I>(group_id: impl Into<String>, topics: I) -> Self
+    where
+        I: IntoIterator<Item = TopicPartitionFilter>,
+    {
+        Self {
+            group_id: group_id.into(),
+            topics: Some(topics.into_iter().collect()),
+        }
+    }
+}
+
+/// Share group offset state for one partition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupOffsetPartition {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Share-partition start offset.
+    pub start_offset: i64,
+    /// Partition leader epoch.
+    pub leader_epoch: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Optional per-partition broker error message.
+    pub error_message: Option<String>,
+}
+
+/// Share group offset state for one topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupOffsetTopic {
+    /// Topic name.
+    pub topic_name: String,
+    /// Topic UUID as a string.
+    pub topic_id: String,
+    /// Partition offset states.
+    pub partitions: Vec<ShareGroupOffsetPartition>,
+}
+
+/// Share group offset state for one group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareGroupOffsetGroup {
+    /// Share group ID.
+    pub group_id: String,
+    /// Topic offset states returned by the broker.
+    pub topics: Vec<ShareGroupOffsetTopic>,
+    /// Per-group broker error code.
+    pub error_code: i16,
+    /// Optional per-group broker error message.
+    pub error_message: Option<String>,
+}
+
+/// Parsed response from a `DescribeShareGroupOffsets` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeShareGroupOffsetsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-group share offset states returned by the broker.
+    pub groups: Vec<ShareGroupOffsetGroup>,
+}
+
+/// A partition offset to alter for a share group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterShareGroupOffsetPartition {
+    /// Partition index.
+    pub partition_index: i32,
+    /// The new offset value.
+    pub offset: i64,
+}
+
+impl AlterShareGroupOffsetPartition {
+    /// Create a partition offset spec.
+    #[must_use]
+    pub fn new(partition_index: i32, offset: i64) -> Self {
+        Self {
+            partition_index,
+            offset,
+        }
+    }
+}
+
+/// A topic with partition offsets for `AlterShareGroupOffsets`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterShareGroupOffsetTopic {
+    /// Topic name.
+    pub topic_name: String,
+    /// Partition offsets to alter.
+    pub partitions: Vec<AlterShareGroupOffsetPartition>,
+}
+
+impl AlterShareGroupOffsetTopic {
+    /// Create a topic with partition offsets.
+    #[must_use]
+    pub fn new<I>(topic_name: impl Into<String>, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = AlterShareGroupOffsetPartition>,
+    {
+        Self {
+            topic_name: topic_name.into(),
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// A partition result in `AlterShareGroupOffsets` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterShareGroupOffsetPartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// A topic result in `AlterShareGroupOffsets` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterShareGroupOffsetTopicResult {
+    /// Topic name.
+    pub topic_name: String,
+    /// Per-partition results.
+    pub partitions: Vec<AlterShareGroupOffsetPartitionResult>,
+}
+
+/// Parsed response from an `AlterShareGroupOffsets` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterShareGroupOffsetsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level error code.
+    pub error_code: i16,
+    /// Optional top-level error message.
+    pub error_message: Option<String>,
+    /// Per-topic results.
+    pub responses: Vec<AlterShareGroupOffsetTopicResult>,
+}
+
+/// A topic whose share-group offsets are deleted by `DeleteShareGroupOffsets`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteShareGroupOffsetTopic {
+    /// Topic name.
+    pub topic_name: String,
+}
+
+impl DeleteShareGroupOffsetTopic {
+    /// Create a topic whose share-group offsets should be deleted.
+    #[must_use]
+    pub fn new(topic_name: impl Into<String>) -> Self {
+        Self {
+            topic_name: topic_name.into(),
+        }
+    }
+}
+
+/// A topic result in `DeleteShareGroupOffsets` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteShareGroupOffsetTopicResult {
+    /// Topic name.
+    pub topic_name: String,
+    /// Per-topic broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Parsed response from a `DeleteShareGroupOffsets` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteShareGroupOffsetsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level error code.
+    pub error_code: i16,
+    /// Optional top-level error message.
+    pub error_message: Option<String>,
+    /// Per-topic results.
+    pub responses: Vec<DeleteShareGroupOffsetTopicResult>,
+}
 
 pub fn build_describe_share_group_offsets_request(
     correlation_id: i32,

@@ -16,8 +16,550 @@ use super::super::{
     API_VERSION_DESCRIBE_QUORUM, API_VERSION_ELECT_LEADERS, API_VERSION_REMOVE_RAFT_VOTER,
     API_VERSION_UNREGISTER_BROKER, API_VERSION_UPDATE_FEATURES, API_VERSION_UPDATE_RAFT_VOTER,
 };
-use super::types::*;
+use super::*;
 use super::{optional_str_bytes, request_header, to_add_raft_listener};
+use uuid::Uuid;
+
+/// Endpoint type for broker endpoints in `DescribeCluster`.
+pub const DESCRIBE_CLUSTER_ENDPOINT_BROKERS: i8 = 1;
+
+/// Endpoint for one `KRaft` quorum node returned by `DescribeQuorum`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumListener {
+    /// Listener name.
+    pub name: String,
+    /// Listener host.
+    pub host: String,
+    /// Listener port.
+    pub port: u16,
+}
+
+/// One `KRaft` quorum node returned by `DescribeQuorum`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumNode {
+    /// Broker or controller node ID.
+    pub node_id: i32,
+    /// Listeners returned for this node.
+    pub listeners: Vec<QuorumListener>,
+}
+
+/// Replica state returned by `DescribeQuorum`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumReplicaState {
+    /// Broker or controller replica ID.
+    pub replica_id: i32,
+    /// Replica directory UUID as a string, or Kafka's nil UUID sentinel.
+    pub replica_directory_id: String,
+    /// Last known log end offset.
+    pub log_end_offset: i64,
+    /// Last fetch timestamp in milliseconds, or Kafka's `-1` sentinel.
+    pub last_fetch_timestamp: i64,
+    /// Last caught-up timestamp in milliseconds, or Kafka's `-1` sentinel.
+    pub last_caught_up_timestamp: i64,
+}
+
+/// Per-partition `KRaft` quorum state returned by `DescribeQuorum`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumPartition {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Optional per-partition broker error message.
+    pub error_message: Option<String>,
+    /// Current leader ID, or Kafka's `-1` sentinel if unknown.
+    pub leader_id: i32,
+    /// Latest known leader epoch.
+    pub leader_epoch: i32,
+    /// High watermark for the quorum partition.
+    pub high_watermark: i64,
+    /// Current voters in the quorum.
+    pub current_voters: Vec<QuorumReplicaState>,
+    /// Observers in the quorum.
+    pub observers: Vec<QuorumReplicaState>,
+}
+
+/// Per-topic `KRaft` quorum state returned by `DescribeQuorum`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumTopic {
+    /// Topic name.
+    pub name: String,
+    /// Partition quorum states.
+    pub partitions: Vec<QuorumPartition>,
+}
+
+/// Parsed response from a `DescribeQuorum` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeQuorumResponseData {
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional top-level broker error message.
+    pub error_message: Option<String>,
+    /// Quorum state grouped by topic.
+    pub topics: Vec<QuorumTopic>,
+    /// Quorum nodes returned by Kafka v2+.
+    pub nodes: Vec<QuorumNode>,
+}
+
+/// A broker returned by `DescribeCluster`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterBroker {
+    /// Broker ID.
+    pub broker_id: i32,
+    /// Broker host name.
+    pub host: String,
+    /// Broker port.
+    pub port: i32,
+    /// Optional broker rack.
+    pub rack: Option<String>,
+    /// Whether the broker is fenced.
+    pub is_fenced: bool,
+}
+
+/// Parsed response from a `DescribeCluster` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeClusterResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+    /// Endpoint type described by the broker.
+    pub endpoint_type: i8,
+    /// Kafka cluster ID.
+    pub cluster_id: String,
+    /// Current controller broker ID.
+    pub controller_id: i32,
+    /// Brokers returned by the cluster.
+    pub brokers: Vec<ClusterBroker>,
+    /// Authorized operations bitfield, or Kafka's sentinel when not requested.
+    pub cluster_authorized_operations: i32,
+}
+
+/// Upgrade type for `UpdateFeatures`: upgrade only (default).
+pub const FEATURE_UPGRADE_TYPE_UPGRADE: i8 = 1;
+/// Upgrade type for `UpdateFeatures`: safe downgrade only (lossless).
+pub const FEATURE_UPGRADE_TYPE_SAFE_DOWNGRADE: i8 = 2;
+/// Upgrade type for `UpdateFeatures`: unsafe downgrade (lossy).
+pub const FEATURE_UPGRADE_TYPE_UNSAFE_DOWNGRADE: i8 = 3;
+
+/// A feature to update via `UpdateFeatures`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureUpdate {
+    /// The feature name to update.
+    pub feature: String,
+    /// The new maximum version level.
+    pub max_version_level: i16,
+    /// The upgrade type (1=upgrade, 2=safe downgrade, 3=unsafe downgrade).
+    pub upgrade_type: i8,
+}
+
+impl FeatureUpdate {
+    /// Create a feature upgrade.
+    #[must_use]
+    pub fn upgrade(feature: impl Into<String>, max_version_level: i16) -> Self {
+        Self {
+            feature: feature.into(),
+            max_version_level,
+            upgrade_type: FEATURE_UPGRADE_TYPE_UPGRADE,
+        }
+    }
+
+    /// Create a safe (lossless) downgrade.
+    #[must_use]
+    pub fn safe_downgrade(feature: impl Into<String>, max_version_level: i16) -> Self {
+        Self {
+            feature: feature.into(),
+            max_version_level,
+            upgrade_type: FEATURE_UPGRADE_TYPE_SAFE_DOWNGRADE,
+        }
+    }
+
+    /// Create an unsafe (lossy) downgrade.
+    #[must_use]
+    pub fn unsafe_downgrade(feature: impl Into<String>, max_version_level: i16) -> Self {
+        Self {
+            feature: feature.into(),
+            max_version_level,
+            upgrade_type: FEATURE_UPGRADE_TYPE_UNSAFE_DOWNGRADE,
+        }
+    }
+}
+
+/// Per-feature result from `UpdateFeatures`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateFeaturesResult {
+    /// The feature name.
+    pub feature: String,
+    /// Per-feature broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Parsed response from an `UpdateFeatures` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateFeaturesResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level error code.
+    pub error_code: i16,
+    /// Optional top-level error message.
+    pub error_message: Option<String>,
+    /// Per-feature update results.
+    pub results: Vec<UpdateFeaturesResult>,
+}
+
+/// Parsed response from an `UnregisterBroker` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnregisterBrokerResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// A network listener used when adding or updating a `KRaft` voter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaftVoterListener {
+    /// Listener name, such as `CONTROLLER`.
+    pub name: String,
+    /// Listener host name.
+    pub host: String,
+    /// Listener port.
+    pub port: u16,
+}
+
+impl RaftVoterListener {
+    /// Create a `KRaft` voter listener.
+    #[must_use]
+    pub fn new(name: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
+        Self {
+            name: name.into(),
+            host: host.into(),
+            port,
+        }
+    }
+}
+
+/// Options for an `AddRaftVoter` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddRaftVoterOptions {
+    /// Optional cluster ID expected by the controller quorum.
+    pub cluster_id: Option<String>,
+    /// Broker-side timeout in milliseconds.
+    pub timeout_ms: i32,
+    /// Replica ID of the voter to add.
+    pub voter_id: i32,
+    /// Directory ID of the voter to add.
+    pub voter_directory_id: Uuid,
+    /// Controller listeners for the voter.
+    pub listeners: Vec<RaftVoterListener>,
+}
+
+impl AddRaftVoterOptions {
+    /// Create options for adding a `KRaft` voter.
+    #[must_use]
+    pub fn new<I>(voter_id: i32, voter_directory_id: Uuid, listeners: I) -> Self
+    where
+        I: IntoIterator<Item = RaftVoterListener>,
+    {
+        Self {
+            cluster_id: None,
+            timeout_ms: 60_000,
+            voter_id,
+            voter_directory_id,
+            listeners: listeners.into_iter().collect(),
+        }
+    }
+
+    /// Set the expected cluster ID.
+    #[must_use]
+    pub fn with_cluster_id(mut self, cluster_id: impl Into<String>) -> Self {
+        self.cluster_id = Some(cluster_id.into());
+        self
+    }
+
+    /// Clear the expected cluster ID.
+    #[must_use]
+    pub fn without_cluster_id(mut self) -> Self {
+        self.cluster_id = None;
+        self
+    }
+
+    /// Set the broker-side timeout in milliseconds.
+    #[must_use]
+    pub fn with_timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+}
+
+/// Options for a `RemoveRaftVoter` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveRaftVoterOptions {
+    /// Optional cluster ID expected by the controller quorum.
+    pub cluster_id: Option<String>,
+    /// Replica ID of the voter to remove.
+    pub voter_id: i32,
+    /// Directory ID of the voter to remove.
+    pub voter_directory_id: Uuid,
+}
+
+impl RemoveRaftVoterOptions {
+    /// Create options for removing a `KRaft` voter.
+    #[must_use]
+    pub fn new(voter_id: i32, voter_directory_id: Uuid) -> Self {
+        Self {
+            cluster_id: None,
+            voter_id,
+            voter_directory_id,
+        }
+    }
+
+    /// Set the expected cluster ID.
+    #[must_use]
+    pub fn with_cluster_id(mut self, cluster_id: impl Into<String>) -> Self {
+        self.cluster_id = Some(cluster_id.into());
+        self
+    }
+
+    /// Clear the expected cluster ID.
+    #[must_use]
+    pub fn without_cluster_id(mut self) -> Self {
+        self.cluster_id = None;
+        self
+    }
+}
+
+/// Supported `KRaft` protocol version range for `UpdateRaftVoter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaftVersionFeature {
+    /// Minimum supported `KRaft` protocol version.
+    pub min_supported_version: i16,
+    /// Maximum supported `KRaft` protocol version.
+    pub max_supported_version: i16,
+}
+
+impl RaftVersionFeature {
+    /// Create a supported `KRaft` protocol version range.
+    #[must_use]
+    pub fn new(min_supported_version: i16, max_supported_version: i16) -> Self {
+        Self {
+            min_supported_version,
+            max_supported_version,
+        }
+    }
+}
+
+/// Options for an `UpdateRaftVoter` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRaftVoterOptions {
+    /// Optional cluster ID expected by the controller quorum.
+    pub cluster_id: Option<String>,
+    /// Current leader epoch, or `-1` when unknown.
+    pub current_leader_epoch: i32,
+    /// Replica ID of the voter to update.
+    pub voter_id: i32,
+    /// Directory ID of the voter to update.
+    pub voter_directory_id: Uuid,
+    /// Controller listeners for the voter.
+    pub listeners: Vec<RaftVoterListener>,
+    /// Supported `KRaft` protocol version range.
+    pub raft_version_feature: RaftVersionFeature,
+}
+
+impl UpdateRaftVoterOptions {
+    /// Create options for updating a `KRaft` voter.
+    #[must_use]
+    pub fn new<I>(
+        voter_id: i32,
+        voter_directory_id: Uuid,
+        listeners: I,
+        raft_version_feature: RaftVersionFeature,
+    ) -> Self
+    where
+        I: IntoIterator<Item = RaftVoterListener>,
+    {
+        Self {
+            cluster_id: None,
+            current_leader_epoch: -1,
+            voter_id,
+            voter_directory_id,
+            listeners: listeners.into_iter().collect(),
+            raft_version_feature,
+        }
+    }
+
+    /// Set the expected cluster ID.
+    #[must_use]
+    pub fn with_cluster_id(mut self, cluster_id: impl Into<String>) -> Self {
+        self.cluster_id = Some(cluster_id.into());
+        self
+    }
+
+    /// Clear the expected cluster ID.
+    #[must_use]
+    pub fn without_cluster_id(mut self) -> Self {
+        self.cluster_id = None;
+        self
+    }
+
+    /// Set the current leader epoch.
+    #[must_use]
+    pub fn with_current_leader_epoch(mut self, current_leader_epoch: i32) -> Self {
+        self.current_leader_epoch = current_leader_epoch;
+        self
+    }
+}
+
+/// Parsed response from `AddRaftVoter` or `RemoveRaftVoter`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaftVoterResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Current leader details returned by `UpdateRaftVoter`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RaftVoterCurrentLeader {
+    /// Replica ID of the current leader, or `-1` when unknown.
+    pub leader_id: i32,
+    /// Latest known leader epoch.
+    pub leader_epoch: i32,
+    /// Leader host name.
+    pub host: String,
+    /// Leader port.
+    pub port: i32,
+}
+
+/// Parsed response from an `UpdateRaftVoter` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRaftVoterResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Broker error code.
+    pub error_code: i16,
+    /// Current leader details when Kafka returned the optional tagged field.
+    pub current_leader: Option<RaftVoterCurrentLeader>,
+}
+
+/// One topic assignment for `AssignReplicasToDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaDirectoryTopicAssignment {
+    /// Topic ID to assign.
+    pub topic_id: Uuid,
+    /// Partition indexes to assign to the directory.
+    pub partitions: Vec<i32>,
+}
+
+impl ReplicaDirectoryTopicAssignment {
+    /// Create a topic assignment.
+    #[must_use]
+    pub fn new<I>(topic_id: Uuid, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = i32>,
+    {
+        Self {
+            topic_id,
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// One directory assignment for `AssignReplicasToDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaDirectoryAssignment {
+    /// Directory ID.
+    pub directory_id: Uuid,
+    /// Topic assignments for this directory.
+    pub topics: Vec<ReplicaDirectoryTopicAssignment>,
+}
+
+impl ReplicaDirectoryAssignment {
+    /// Create a directory assignment.
+    #[must_use]
+    pub fn new<I>(directory_id: Uuid, topics: I) -> Self
+    where
+        I: IntoIterator<Item = ReplicaDirectoryTopicAssignment>,
+    {
+        Self {
+            directory_id,
+            topics: topics.into_iter().collect(),
+        }
+    }
+}
+
+/// Options for an `AssignReplicasToDirs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignReplicasToDirsOptions {
+    /// ID of the requesting broker.
+    pub broker_id: i32,
+    /// Epoch of the requesting broker.
+    pub broker_epoch: i64,
+    /// Directory assignments to apply.
+    pub directories: Vec<ReplicaDirectoryAssignment>,
+}
+
+impl AssignReplicasToDirsOptions {
+    /// Create options for assigning replicas to log directories.
+    #[must_use]
+    pub fn new<I>(broker_id: i32, broker_epoch: i64, directories: I) -> Self
+    where
+        I: IntoIterator<Item = ReplicaDirectoryAssignment>,
+    {
+        Self {
+            broker_id,
+            broker_epoch,
+            directories: directories.into_iter().collect(),
+        }
+    }
+}
+
+/// Per-partition result from `AssignReplicasToDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaDirectoryPartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Partition-level broker error code.
+    pub error_code: i16,
+}
+
+/// Per-topic result from `AssignReplicasToDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaDirectoryTopicResult {
+    /// Topic ID.
+    pub topic_id: Uuid,
+    /// Per-partition results.
+    pub partitions: Vec<ReplicaDirectoryPartitionResult>,
+}
+
+/// Per-directory result from `AssignReplicasToDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaDirectoryAssignmentResult {
+    /// Directory ID.
+    pub directory_id: Uuid,
+    /// Per-topic results.
+    pub topics: Vec<ReplicaDirectoryTopicResult>,
+}
+
+/// Parsed response from an `AssignReplicasToDirs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignReplicasToDirsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Per-directory assignment results.
+    pub directories: Vec<ReplicaDirectoryAssignmentResult>,
+}
 
 pub fn build_describe_cluster_request(
     correlation_id: i32,

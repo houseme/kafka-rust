@@ -14,8 +14,546 @@ use super::super::{
     API_VERSION_DESCRIBE_TOPIC_PARTITIONS, API_VERSION_OFFSET_DELETE,
     API_VERSION_OFFSET_FOR_LEADER_EPOCH,
 };
-use super::types::*;
 use super::{group_id, request_header};
+
+/// Preferred replica leader election.
+pub const ELECTION_TYPE_PREFERRED: i8 = 0;
+/// Unclean leader election.
+pub const ELECTION_TYPE_UNCLEAN: i8 = 1;
+
+/// A topic plus a partition list used by read-only diagnostic APIs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicPartitionFilter {
+    /// Topic name.
+    pub topic: String,
+    /// Partition indexes to inspect.
+    pub partitions: Vec<i32>,
+}
+
+impl TopicPartitionFilter {
+    /// Create a topic/partition filter.
+    #[must_use]
+    pub fn new<I>(topic: impl Into<String>, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = i32>,
+    {
+        Self {
+            topic: topic.into(),
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// Partition count expansion for one topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePartitionsTopicSpec {
+    /// Topic name.
+    pub topic: String,
+    /// Desired total partition count after expansion.
+    pub count: i32,
+    /// Optional explicit replica assignments for the newly created partitions.
+    pub assignments: Option<Vec<Vec<i32>>>,
+}
+
+impl CreatePartitionsTopicSpec {
+    /// Create a partition expansion spec without explicit broker assignments.
+    #[must_use]
+    pub fn new(topic: impl Into<String>, count: i32) -> Self {
+        Self {
+            topic: topic.into(),
+            count,
+            assignments: None,
+        }
+    }
+
+    /// Attach explicit broker assignments for the new partitions.
+    #[must_use]
+    pub fn with_assignments<I, J>(mut self, assignments: I) -> Self
+    where
+        I: IntoIterator<Item = J>,
+        J: IntoIterator<Item = i32>,
+    {
+        self.assignments = Some(
+            assignments
+                .into_iter()
+                .map(|assignment| assignment.into_iter().collect())
+                .collect(),
+        );
+        self
+    }
+}
+
+/// Options for a `CreatePartitions` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePartitionsOptions {
+    /// Topic partition expansions to request.
+    pub topics: Vec<CreatePartitionsTopicSpec>,
+    /// Timeout in milliseconds.
+    pub timeout_ms: i32,
+    /// Validate the request without applying it.
+    pub validate_only: bool,
+}
+
+impl CreatePartitionsOptions {
+    /// Create options with the supplied topic partition expansions.
+    #[must_use]
+    pub fn new<I>(topics: I) -> Self
+    where
+        I: IntoIterator<Item = CreatePartitionsTopicSpec>,
+    {
+        Self {
+            topics: topics.into_iter().collect(),
+            timeout_ms: 60_000,
+            validate_only: false,
+        }
+    }
+
+    /// Set the broker-side timeout in milliseconds.
+    #[must_use]
+    pub fn with_timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Validate the request without applying it.
+    #[must_use]
+    pub fn with_validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+}
+
+/// Result of one topic in a `CreatePartitions` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePartitionsTopicResult {
+    /// Topic name.
+    pub name: String,
+    /// Per-topic broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Parsed response from a `CreatePartitions` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePartitionsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-topic partition creation results returned by the broker.
+    pub results: Vec<CreatePartitionsTopicResult>,
+}
+
+/// A partition and high-watermark offset used by `DeleteRecords`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteRecordsPartitionSpec {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Delete records before this offset.
+    pub offset: i64,
+}
+
+impl DeleteRecordsPartitionSpec {
+    /// Create a delete-records partition spec.
+    #[must_use]
+    pub fn new(partition_index: i32, offset: i64) -> Self {
+        Self {
+            partition_index,
+            offset,
+        }
+    }
+}
+
+/// Per-topic delete-records request spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteRecordsTopicSpec {
+    /// Topic name.
+    pub topic: String,
+    /// Partition offsets to truncate to.
+    pub partitions: Vec<DeleteRecordsPartitionSpec>,
+}
+
+impl DeleteRecordsTopicSpec {
+    /// Create a delete-records topic spec.
+    #[must_use]
+    pub fn new<I>(topic: impl Into<String>, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = DeleteRecordsPartitionSpec>,
+    {
+        Self {
+            topic: topic.into(),
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// Per-partition result returned by `DeleteRecords`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteRecordsPartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Partition low watermark after deletion.
+    pub low_watermark: i64,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+}
+
+/// Per-topic result returned by `DeleteRecords`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteRecordsTopicResult {
+    /// Topic name.
+    pub name: String,
+    /// Partition-level deletion results.
+    pub partitions: Vec<DeleteRecordsPartitionResult>,
+}
+
+/// Parsed response from a `DeleteRecords` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteRecordsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Topic-level deletion results returned by the broker.
+    pub topics: Vec<DeleteRecordsTopicResult>,
+}
+
+/// Options for an `ElectLeaders` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElectLeadersOptions {
+    /// Raw Kafka election type.
+    pub election_type: i8,
+    /// Topic partitions to elect leaders for, or `None` for all eligible partitions.
+    pub topic_partitions: Option<Vec<TopicPartitionFilter>>,
+    /// Timeout in milliseconds.
+    pub timeout_ms: i32,
+}
+
+impl ElectLeadersOptions {
+    /// Create options for the supplied partitions.
+    #[must_use]
+    pub fn new<I>(election_type: i8, topic_partitions: I) -> Self
+    where
+        I: IntoIterator<Item = TopicPartitionFilter>,
+    {
+        Self {
+            election_type,
+            topic_partitions: Some(topic_partitions.into_iter().collect()),
+            timeout_ms: 60_000,
+        }
+    }
+
+    /// Create options that ask the broker to elect leaders for all eligible partitions.
+    #[must_use]
+    pub fn all_partitions(election_type: i8) -> Self {
+        Self {
+            election_type,
+            topic_partitions: None,
+            timeout_ms: 60_000,
+        }
+    }
+
+    /// Set the broker-side timeout in milliseconds.
+    #[must_use]
+    pub fn with_timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+}
+
+/// Per-partition leader election result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElectLeadersPartitionResult {
+    /// Partition index.
+    pub partition_id: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Per-topic leader election result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElectLeadersTopicResult {
+    /// Topic name.
+    pub topic: String,
+    /// Partition-level election results.
+    pub partition_results: Vec<ElectLeadersPartitionResult>,
+}
+
+/// Parsed response from an `ElectLeaders` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElectLeadersResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Topic-level election results returned by the broker.
+    pub replica_election_results: Vec<ElectLeadersTopicResult>,
+}
+
+/// Partition request for `OffsetForLeaderEpoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaderEpochPartitionRequest {
+    /// Partition index.
+    pub partition: i32,
+    /// Current leader epoch known by the caller, or Kafka's `-1` sentinel.
+    pub current_leader_epoch: i32,
+    /// Leader epoch whose end offset should be looked up.
+    pub leader_epoch: i32,
+}
+
+impl LeaderEpochPartitionRequest {
+    /// Create a leader-epoch offset lookup partition request.
+    #[must_use]
+    pub fn new(partition: i32, current_leader_epoch: i32, leader_epoch: i32) -> Self {
+        Self {
+            partition,
+            current_leader_epoch,
+            leader_epoch,
+        }
+    }
+}
+
+/// Per-topic request for `OffsetForLeaderEpoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaderEpochTopicRequest {
+    /// Topic name.
+    pub topic: String,
+    /// Partition epoch lookups for this topic.
+    pub partitions: Vec<LeaderEpochPartitionRequest>,
+}
+
+impl LeaderEpochTopicRequest {
+    /// Create a leader-epoch offset lookup topic request.
+    #[must_use]
+    pub fn new<I>(topic: impl Into<String>, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = LeaderEpochPartitionRequest>,
+    {
+        Self {
+            topic: topic.into(),
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// Per-partition offset returned by `OffsetForLeaderEpoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaderEpochPartitionOffset {
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Partition index.
+    pub partition: i32,
+    /// Leader epoch of the returned end offset.
+    pub leader_epoch: i32,
+    /// End offset for the requested leader epoch.
+    pub end_offset: i64,
+}
+
+/// Per-topic result returned by `OffsetForLeaderEpoch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaderEpochTopicOffsets {
+    /// Topic name.
+    pub topic: String,
+    /// Partition offsets for this topic.
+    pub partitions: Vec<LeaderEpochPartitionOffset>,
+}
+
+/// Parsed response from an `OffsetForLeaderEpoch` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffsetForLeaderEpochResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Topic-level leader-epoch offsets returned by the broker.
+    pub topics: Vec<LeaderEpochTopicOffsets>,
+}
+
+/// Per-partition result returned by `OffsetDelete`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffsetDeletePartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+}
+
+/// Per-topic result returned by `OffsetDelete`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffsetDeleteTopicResult {
+    /// Topic name.
+    pub name: String,
+    /// Partition-level offset deletion results.
+    pub partitions: Vec<OffsetDeletePartitionResult>,
+}
+
+/// Parsed response from an `OffsetDelete` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffsetDeleteResponseData {
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Topic-level offset deletion results returned by the broker.
+    pub topics: Vec<OffsetDeleteTopicResult>,
+}
+
+/// Cursor used to page through `DescribeTopicPartitions` results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicPartitionsCursor {
+    /// Topic name where the next page should start.
+    pub topic_name: String,
+    /// Partition index where the next page should start.
+    pub partition_index: i32,
+}
+
+impl TopicPartitionsCursor {
+    /// Create a topic-partitions pagination cursor.
+    #[must_use]
+    pub fn new(topic_name: impl Into<String>, partition_index: i32) -> Self {
+        Self {
+            topic_name: topic_name.into(),
+            partition_index,
+        }
+    }
+}
+
+/// Options for a `DescribeTopicPartitions` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeTopicPartitionsOptions {
+    /// Topic names to describe. Empty lets the broker return all visible topics.
+    pub topics: Vec<String>,
+    /// Maximum number of partitions to include in one response page.
+    pub response_partition_limit: i32,
+    /// Optional cursor returned by a previous page.
+    pub cursor: Option<TopicPartitionsCursor>,
+}
+
+impl DescribeTopicPartitionsOptions {
+    /// Create options with a response partition limit and no topic filter.
+    #[must_use]
+    pub fn new(response_partition_limit: i32) -> Self {
+        Self {
+            topics: Vec::new(),
+            response_partition_limit,
+            cursor: None,
+        }
+    }
+
+    /// Restrict the request to selected topic names.
+    #[must_use]
+    pub fn with_topics<I, S>(mut self, topics: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.topics = topics.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Continue from a broker-supplied pagination cursor.
+    #[must_use]
+    pub fn with_cursor(mut self, cursor: TopicPartitionsCursor) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+}
+
+/// Partition metadata returned by `DescribeTopicPartitions`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedTopicPartition {
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Partition index.
+    pub partition_index: i32,
+    /// Current leader broker ID, or Kafka's sentinel when unknown.
+    pub leader_id: i32,
+    /// Current leader epoch.
+    pub leader_epoch: i32,
+    /// Replicas hosting this partition.
+    pub replica_nodes: Vec<i32>,
+    /// Replicas currently in sync with the leader.
+    pub isr_nodes: Vec<i32>,
+    /// Eligible leader replicas when returned by the broker.
+    pub eligible_leader_replicas: Option<Vec<i32>>,
+    /// Last known eligible leader replicas when returned by the broker.
+    pub last_known_elr: Option<Vec<i32>>,
+    /// Replicas currently offline.
+    pub offline_replicas: Vec<i32>,
+}
+
+/// Topic metadata returned by `DescribeTopicPartitions`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedTopicPartitionsTopic {
+    /// Per-topic broker error code.
+    pub error_code: i16,
+    /// Topic name, omitted by Kafka for some error responses.
+    pub name: Option<String>,
+    /// Topic UUID as a string.
+    pub topic_id: String,
+    /// Whether Kafka marks the topic as internal.
+    pub is_internal: bool,
+    /// Partition metadata returned for this topic.
+    pub partitions: Vec<DescribedTopicPartition>,
+    /// Authorized operations bitfield, or Kafka's sentinel when not requested.
+    pub topic_authorized_operations: i32,
+}
+
+/// Parsed response from a `DescribeTopicPartitions` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeTopicPartitionsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Topic partition metadata returned by the broker.
+    pub topics: Vec<DescribedTopicPartitionsTopic>,
+    /// Cursor for the next page, or `None` when the response is complete.
+    pub next_cursor: Option<TopicPartitionsCursor>,
+}
+
+/// State for one active producer returned by `DescribeProducers`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveProducer {
+    /// Producer ID.
+    pub producer_id: i64,
+    /// Producer epoch.
+    pub producer_epoch: i32,
+    /// Last sequence number sent by the producer.
+    pub last_sequence: i32,
+    /// Last timestamp sent by the producer.
+    pub last_timestamp: i64,
+    /// Current epoch of the producer group coordinator.
+    pub coordinator_epoch: i32,
+    /// Current transaction start offset, or Kafka's sentinel when absent.
+    pub current_txn_start_offset: i64,
+}
+
+/// Producer state for one partition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducerPartition {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Optional per-partition broker error message.
+    pub error_message: Option<String>,
+    /// Active producers returned for the partition.
+    pub active_producers: Vec<ActiveProducer>,
+}
+
+/// Producer state for one topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducerTopic {
+    /// Topic name.
+    pub name: String,
+    /// Partition producer states.
+    pub partitions: Vec<ProducerPartition>,
+}
+
+/// Parsed response from a `DescribeProducers` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeProducersResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Topics returned by the broker.
+    pub topics: Vec<ProducerTopic>,
+}
 
 pub fn build_delete_records_request(
     correlation_id: i32,

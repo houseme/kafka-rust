@@ -13,7 +13,427 @@ use super::super::{
     API_VERSION_LIST_CONFIG_RESOURCES,
 };
 use super::request_header;
-use super::types::*;
+
+/// Topic config resource type for `DescribeConfigs`.
+pub const CONFIG_RESOURCE_TYPE_TOPIC: i8 = 2;
+/// Broker config resource type for `DescribeConfigs`.
+pub const CONFIG_RESOURCE_TYPE_BROKER: i8 = 4;
+/// Broker logger config resource type for `DescribeConfigs`.
+pub const CONFIG_RESOURCE_TYPE_BROKER_LOGGER: i8 = 8;
+
+/// Set a config key to a value in `IncrementalAlterConfigs`.
+pub const CONFIG_OPERATION_SET: i8 = 0;
+/// Delete a config key in `IncrementalAlterConfigs`.
+pub const CONFIG_OPERATION_DELETE: i8 = 1;
+/// Append a value to a list config in `IncrementalAlterConfigs`.
+pub const CONFIG_OPERATION_APPEND: i8 = 2;
+/// Subtract a value from a list config in `IncrementalAlterConfigs`.
+pub const CONFIG_OPERATION_SUBTRACT: i8 = 3;
+
+/// A resource whose configs should be described.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigResource {
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name, such as a topic name or broker ID.
+    pub resource_name: String,
+    /// Configuration keys to fetch, or `None` to fetch all keys.
+    pub configuration_keys: Option<Vec<String>>,
+}
+
+impl ConfigResource {
+    /// Create a config resource with a raw Kafka resource type.
+    #[must_use]
+    pub fn new(resource_type: i8, resource_name: impl Into<String>) -> Self {
+        Self {
+            resource_type,
+            resource_name: resource_name.into(),
+            configuration_keys: None,
+        }
+    }
+
+    /// Create a topic config resource.
+    #[must_use]
+    pub fn topic(name: impl Into<String>) -> Self {
+        Self::new(CONFIG_RESOURCE_TYPE_TOPIC, name)
+    }
+
+    /// Create a broker config resource.
+    #[must_use]
+    pub fn broker(id: impl Into<String>) -> Self {
+        Self::new(CONFIG_RESOURCE_TYPE_BROKER, id)
+    }
+
+    /// Create a broker logger config resource.
+    #[must_use]
+    pub fn broker_logger(id: impl Into<String>) -> Self {
+        Self::new(CONFIG_RESOURCE_TYPE_BROKER_LOGGER, id)
+    }
+
+    /// Restrict the request to the supplied configuration keys.
+    #[must_use]
+    pub fn with_configuration_keys<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.configuration_keys = Some(keys.into_iter().map(Into::into).collect());
+        self
+    }
+}
+
+/// One config operation for `IncrementalAlterConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalAlterConfig {
+    /// Configuration key name.
+    pub name: String,
+    /// Raw Kafka config operation code.
+    pub operation: i8,
+    /// Value used by set/append/subtract operations, or `None` for delete.
+    pub value: Option<String>,
+}
+
+impl IncrementalAlterConfig {
+    /// Create a config operation with a raw Kafka operation code.
+    #[must_use]
+    pub fn new(name: impl Into<String>, operation: i8, value: Option<String>) -> Self {
+        Self {
+            name: name.into(),
+            operation,
+            value,
+        }
+    }
+
+    /// Set a config key to a value.
+    #[must_use]
+    pub fn set(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new(name, CONFIG_OPERATION_SET, Some(value.into()))
+    }
+
+    /// Delete a config key.
+    #[must_use]
+    pub fn delete(name: impl Into<String>) -> Self {
+        Self::new(name, CONFIG_OPERATION_DELETE, None)
+    }
+
+    /// Append a value to a list config key.
+    #[must_use]
+    pub fn append(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new(name, CONFIG_OPERATION_APPEND, Some(value.into()))
+    }
+
+    /// Subtract a value from a list config key.
+    #[must_use]
+    pub fn subtract(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new(name, CONFIG_OPERATION_SUBTRACT, Some(value.into()))
+    }
+}
+
+/// One resource updated by `IncrementalAlterConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalAlterConfigsResource {
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name, such as a topic name or broker ID.
+    pub resource_name: String,
+    /// Config operations for this resource.
+    pub configs: Vec<IncrementalAlterConfig>,
+}
+
+impl IncrementalAlterConfigsResource {
+    /// Create a config mutation resource with a raw Kafka resource type.
+    #[must_use]
+    pub fn new<I>(resource_type: i8, resource_name: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = IncrementalAlterConfig>,
+    {
+        Self {
+            resource_type,
+            resource_name: resource_name.into(),
+            configs: configs.into_iter().collect(),
+        }
+    }
+
+    /// Create a topic config mutation resource.
+    #[must_use]
+    pub fn topic<I>(name: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = IncrementalAlterConfig>,
+    {
+        Self::new(CONFIG_RESOURCE_TYPE_TOPIC, name, configs)
+    }
+
+    /// Create a broker config mutation resource.
+    #[must_use]
+    pub fn broker<I>(id: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = IncrementalAlterConfig>,
+    {
+        Self::new(CONFIG_RESOURCE_TYPE_BROKER, id, configs)
+    }
+
+    /// Create a broker logger config mutation resource.
+    #[must_use]
+    pub fn broker_logger<I>(id: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = IncrementalAlterConfig>,
+    {
+        Self::new(CONFIG_RESOURCE_TYPE_BROKER_LOGGER, id, configs)
+    }
+}
+
+/// Options for an `IncrementalAlterConfigs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalAlterConfigsOptions {
+    /// Resources to mutate.
+    pub resources: Vec<IncrementalAlterConfigsResource>,
+    /// Validate the request without applying it.
+    pub validate_only: bool,
+}
+
+impl IncrementalAlterConfigsOptions {
+    /// Create options with the supplied resources.
+    #[must_use]
+    pub fn new<I>(resources: I) -> Self
+    where
+        I: IntoIterator<Item = IncrementalAlterConfigsResource>,
+    {
+        Self {
+            resources: resources.into_iter().collect(),
+            validate_only: false,
+        }
+    }
+
+    /// Validate the request without applying it.
+    #[must_use]
+    pub fn with_validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+}
+
+/// Per-resource result returned by `IncrementalAlterConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalAlterConfigsResourceResult {
+    /// Per-resource broker error code.
+    pub error_code: i16,
+    /// Optional per-resource broker error message.
+    pub error_message: Option<String>,
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name.
+    pub resource_name: String,
+}
+
+/// Parsed response from an `IncrementalAlterConfigs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalAlterConfigsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-resource config mutation results.
+    pub responses: Vec<IncrementalAlterConfigsResourceResult>,
+}
+
+/// One configurable resource returned by `ListConfigResources`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedConfigResource {
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name.
+    pub resource_name: String,
+}
+
+/// Parsed response from a `ListConfigResources` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListConfigResourcesResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Config resources returned by the broker.
+    pub resources: Vec<ListedConfigResource>,
+}
+
+/// A config synonym returned by `DescribeConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigSynonym {
+    /// Synonym name.
+    pub name: String,
+    /// Synonym value, omitted by Kafka for sensitive values.
+    pub value: Option<String>,
+    /// Raw Kafka config source code for the synonym.
+    pub source: i8,
+}
+
+/// A config entry returned by `DescribeConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigEntry {
+    /// Config key name.
+    pub name: String,
+    /// Config value, omitted by Kafka for sensitive values.
+    pub value: Option<String>,
+    /// Whether the config is read-only.
+    pub read_only: bool,
+    /// Raw Kafka config source code.
+    pub config_source: i8,
+    /// Whether the config is sensitive.
+    pub is_sensitive: bool,
+    /// Config synonyms returned by the broker.
+    pub synonyms: Vec<ConfigSynonym>,
+    /// Raw Kafka config type code.
+    pub config_type: i8,
+    /// Optional broker-provided config documentation.
+    pub documentation: Option<String>,
+}
+
+/// Configs returned for one resource by `DescribeConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeConfigsResult {
+    /// Per-resource broker error code.
+    pub error_code: i16,
+    /// Optional per-resource broker error message.
+    pub error_message: Option<String>,
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name.
+    pub resource_name: String,
+    /// Config entries returned for this resource.
+    pub configs: Vec<ConfigEntry>,
+}
+
+/// Parsed response from a `DescribeConfigs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeConfigsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-resource config results.
+    pub results: Vec<DescribeConfigsResult>,
+}
+
+/// A config key-value pair for the legacy `AlterConfigs` API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterConfigsEntry {
+    /// Configuration key name.
+    pub name: String,
+    /// Configuration value, or `None` to reset to default.
+    pub value: Option<String>,
+}
+
+impl AlterConfigsEntry {
+    /// Create a config entry with a value.
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: Some(value.into()),
+        }
+    }
+
+    /// Create a config entry that resets to default.
+    #[must_use]
+    pub fn reset(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: None,
+        }
+    }
+}
+
+/// One resource for the legacy `AlterConfigs` API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterConfigsResource {
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name, such as a topic name or broker ID.
+    pub resource_name: String,
+    /// Config entries to apply.
+    pub configs: Vec<AlterConfigsEntry>,
+}
+
+impl AlterConfigsResource {
+    /// Create a config resource with a raw Kafka resource type.
+    #[must_use]
+    pub fn new<I>(resource_type: i8, resource_name: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = AlterConfigsEntry>,
+    {
+        Self {
+            resource_type,
+            resource_name: resource_name.into(),
+            configs: configs.into_iter().collect(),
+        }
+    }
+
+    /// Create a topic config resource.
+    #[must_use]
+    pub fn topic<I>(name: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = AlterConfigsEntry>,
+    {
+        Self::new(CONFIG_RESOURCE_TYPE_TOPIC, name, configs)
+    }
+
+    /// Create a broker config resource.
+    #[must_use]
+    pub fn broker<I>(id: impl Into<String>, configs: I) -> Self
+    where
+        I: IntoIterator<Item = AlterConfigsEntry>,
+    {
+        Self::new(CONFIG_RESOURCE_TYPE_BROKER, id, configs)
+    }
+}
+
+/// Options for a legacy `AlterConfigs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterConfigsOptions {
+    /// Resources to update.
+    pub resources: Vec<AlterConfigsResource>,
+    /// Validate the request without applying it.
+    pub validate_only: bool,
+}
+
+impl AlterConfigsOptions {
+    /// Create options with the supplied resources.
+    #[must_use]
+    pub fn new<I>(resources: I) -> Self
+    where
+        I: IntoIterator<Item = AlterConfigsResource>,
+    {
+        Self {
+            resources: resources.into_iter().collect(),
+            validate_only: false,
+        }
+    }
+
+    /// Validate the request without applying it.
+    #[must_use]
+    pub fn with_validate_only(mut self, validate_only: bool) -> Self {
+        self.validate_only = validate_only;
+        self
+    }
+}
+
+/// Per-resource result returned by the legacy `AlterConfigs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterConfigsResourceResult {
+    /// Per-resource broker error code.
+    pub error_code: i16,
+    /// Optional per-resource broker error message.
+    pub error_message: Option<String>,
+    /// Kafka config resource type.
+    pub resource_type: i8,
+    /// Resource name.
+    pub resource_name: String,
+}
+
+/// Parsed response from a legacy `AlterConfigs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterConfigsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-resource config mutation results.
+    pub responses: Vec<AlterConfigsResourceResult>,
+}
 
 pub fn build_describe_configs_request(
     correlation_id: i32,
@@ -265,6 +685,7 @@ pub fn convert_list_config_resources_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::*;
     use kafka_protocol::messages::ApiKey;
     use kafka_protocol::messages::alter_configs_response::AlterConfigsResourceResponse as KpAlterConfigsResourceResponse;
     use kafka_protocol::messages::describe_configs_response::{

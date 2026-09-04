@@ -9,7 +9,325 @@ use kafka_protocol::protocol::StrBytes;
 
 use super::super::{API_VERSION_CREATE_ACLS, API_VERSION_DELETE_ACLS, API_VERSION_DESCRIBE_ACLS};
 use super::request_header;
-use super::types::*;
+
+/// Match any ACL resource type.
+pub const ACL_RESOURCE_TYPE_ANY: i8 = 1;
+/// Topic ACL resource type.
+pub const ACL_RESOURCE_TYPE_TOPIC: i8 = 2;
+/// Consumer group ACL resource type.
+pub const ACL_RESOURCE_TYPE_GROUP: i8 = 3;
+/// Cluster ACL resource type.
+pub const ACL_RESOURCE_TYPE_CLUSTER: i8 = 4;
+/// Transactional ID ACL resource type.
+pub const ACL_RESOURCE_TYPE_TRANSACTIONAL_ID: i8 = 5;
+/// Delegation token ACL resource type.
+pub const ACL_RESOURCE_TYPE_DELEGATION_TOKEN: i8 = 6;
+/// User ACL resource type.
+pub const ACL_RESOURCE_TYPE_USER: i8 = 7;
+
+/// Match any ACL resource pattern type.
+pub const ACL_PATTERN_TYPE_ANY: i8 = 1;
+/// Match literal or prefixed ACL resource patterns.
+pub const ACL_PATTERN_TYPE_MATCH: i8 = 2;
+/// Literal ACL resource pattern type.
+pub const ACL_PATTERN_TYPE_LITERAL: i8 = 3;
+/// Prefixed ACL resource pattern type.
+pub const ACL_PATTERN_TYPE_PREFIXED: i8 = 4;
+
+/// Match any ACL operation.
+pub const ACL_OPERATION_ANY: i8 = 1;
+/// All ACL operations.
+pub const ACL_OPERATION_ALL: i8 = 2;
+/// Read ACL operation.
+pub const ACL_OPERATION_READ: i8 = 3;
+/// Write ACL operation.
+pub const ACL_OPERATION_WRITE: i8 = 4;
+/// Create ACL operation.
+pub const ACL_OPERATION_CREATE: i8 = 5;
+/// Delete ACL operation.
+pub const ACL_OPERATION_DELETE: i8 = 6;
+/// Alter ACL operation.
+pub const ACL_OPERATION_ALTER: i8 = 7;
+/// Describe ACL operation.
+pub const ACL_OPERATION_DESCRIBE: i8 = 8;
+/// Cluster action ACL operation.
+pub const ACL_OPERATION_CLUSTER_ACTION: i8 = 9;
+/// Describe configs ACL operation.
+pub const ACL_OPERATION_DESCRIBE_CONFIGS: i8 = 10;
+/// Alter configs ACL operation.
+pub const ACL_OPERATION_ALTER_CONFIGS: i8 = 11;
+/// Idempotent write ACL operation.
+pub const ACL_OPERATION_IDEMPOTENT_WRITE: i8 = 12;
+/// Create tokens ACL operation.
+pub const ACL_OPERATION_CREATE_TOKENS: i8 = 13;
+/// Describe tokens ACL operation.
+pub const ACL_OPERATION_DESCRIBE_TOKENS: i8 = 14;
+
+/// Match any ACL permission type.
+pub const ACL_PERMISSION_TYPE_ANY: i8 = 1;
+/// Deny ACL permission type.
+pub const ACL_PERMISSION_TYPE_DENY: i8 = 2;
+/// Allow ACL permission type.
+pub const ACL_PERMISSION_TYPE_ALLOW: i8 = 3;
+
+/// A Kafka principal identified by type and name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KafkaPrincipal {
+    /// Principal type, such as `User`.
+    pub principal_type: String,
+    /// Principal name.
+    pub principal_name: String,
+}
+
+impl KafkaPrincipal {
+    /// Create a principal with explicit Kafka type and name.
+    #[must_use]
+    pub fn new(principal_type: impl Into<String>, principal_name: impl Into<String>) -> Self {
+        Self {
+            principal_type: principal_type.into(),
+            principal_name: principal_name.into(),
+        }
+    }
+
+    /// Create a Kafka user principal.
+    #[must_use]
+    pub fn user(name: impl Into<String>) -> Self {
+        Self::new("User", name)
+    }
+}
+
+/// Filters for a `DescribeAcls` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeAclsFilter {
+    /// Raw Kafka ACL resource type filter.
+    pub resource_type_filter: i8,
+    /// Optional resource name filter.
+    pub resource_name_filter: Option<String>,
+    /// Raw Kafka ACL pattern type filter.
+    pub pattern_type_filter: i8,
+    /// Optional principal filter.
+    pub principal_filter: Option<String>,
+    /// Optional host filter.
+    pub host_filter: Option<String>,
+    /// Raw Kafka ACL operation filter.
+    pub operation: i8,
+    /// Raw Kafka ACL permission type filter.
+    pub permission_type: i8,
+}
+
+impl Default for DescribeAclsFilter {
+    fn default() -> Self {
+        Self {
+            resource_type_filter: ACL_RESOURCE_TYPE_ANY,
+            resource_name_filter: None,
+            pattern_type_filter: ACL_PATTERN_TYPE_ANY,
+            principal_filter: None,
+            host_filter: None,
+            operation: ACL_OPERATION_ANY,
+            permission_type: ACL_PERMISSION_TYPE_ANY,
+        }
+    }
+}
+
+impl DescribeAclsFilter {
+    /// Create a filter that matches all ACLs visible to the broker.
+    #[must_use]
+    pub fn any() -> Self {
+        Self::default()
+    }
+
+    /// Restrict by Kafka resource type.
+    #[must_use]
+    pub fn with_resource_type(mut self, resource_type: i8) -> Self {
+        self.resource_type_filter = resource_type;
+        self
+    }
+
+    /// Restrict by resource name.
+    #[must_use]
+    pub fn with_resource_name(mut self, resource_name: impl Into<String>) -> Self {
+        self.resource_name_filter = Some(resource_name.into());
+        self
+    }
+
+    /// Restrict by Kafka resource pattern type.
+    #[must_use]
+    pub fn with_pattern_type(mut self, pattern_type: i8) -> Self {
+        self.pattern_type_filter = pattern_type;
+        self
+    }
+
+    /// Restrict by principal string, such as `User:alice`.
+    #[must_use]
+    pub fn with_principal(mut self, principal: impl Into<String>) -> Self {
+        self.principal_filter = Some(principal.into());
+        self
+    }
+
+    /// Restrict by host.
+    #[must_use]
+    pub fn with_host(mut self, host: impl Into<String>) -> Self {
+        self.host_filter = Some(host.into());
+        self
+    }
+
+    /// Restrict by Kafka ACL operation.
+    #[must_use]
+    pub fn with_operation(mut self, operation: i8) -> Self {
+        self.operation = operation;
+        self
+    }
+
+    /// Restrict by Kafka ACL permission type.
+    #[must_use]
+    pub fn with_permission_type(mut self, permission_type: i8) -> Self {
+        self.permission_type = permission_type;
+        self
+    }
+}
+
+/// One ACL binding to create with `CreateAcls`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclBinding {
+    /// Raw Kafka ACL resource type.
+    pub resource_type: i8,
+    /// Resource name for the ACL.
+    pub resource_name: String,
+    /// Raw Kafka ACL resource pattern type.
+    pub resource_pattern_type: i8,
+    /// ACL principal string, such as `User:alice`.
+    pub principal: String,
+    /// Host to which the ACL applies.
+    pub host: String,
+    /// Raw Kafka ACL operation code.
+    pub operation: i8,
+    /// Raw Kafka ACL permission type code.
+    pub permission_type: i8,
+}
+
+impl AclBinding {
+    /// Create an ACL binding with all Kafka ACL fields supplied explicitly.
+    #[must_use]
+    pub fn new(
+        resource_type: i8,
+        resource_name: impl Into<String>,
+        resource_pattern_type: i8,
+        principal: impl Into<String>,
+        host: impl Into<String>,
+        operation: i8,
+        permission_type: i8,
+    ) -> Self {
+        Self {
+            resource_type,
+            resource_name: resource_name.into(),
+            resource_pattern_type,
+            principal: principal.into(),
+            host: host.into(),
+            operation,
+            permission_type,
+        }
+    }
+}
+
+/// One ACL entry returned by `DescribeAcls`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclDescription {
+    /// ACL principal string, such as `User:alice`.
+    pub principal: String,
+    /// Host to which the ACL applies.
+    pub host: String,
+    /// Raw Kafka ACL operation code.
+    pub operation: i8,
+    /// Raw Kafka ACL permission type code.
+    pub permission_type: i8,
+}
+
+/// ACLs grouped by resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AclResource {
+    /// Raw Kafka ACL resource type code.
+    pub resource_type: i8,
+    /// Resource name.
+    pub resource_name: String,
+    /// Raw Kafka ACL pattern type code.
+    pub pattern_type: i8,
+    /// ACL entries on the resource.
+    pub acls: Vec<AclDescription>,
+}
+
+/// Parsed response from a `DescribeAcls` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeAclsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional top-level broker error message.
+    pub error_message: Option<String>,
+    /// ACL resources returned by the broker.
+    pub resources: Vec<AclResource>,
+}
+
+/// Result of one ACL creation returned by `CreateAcls`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateAclResult {
+    /// Broker error code for this ACL creation.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Parsed response from a `CreateAcls` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateAclsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-ACL creation results returned by the broker.
+    pub results: Vec<CreateAclResult>,
+}
+
+/// One ACL matched and deleted by a `DeleteAcls` filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedAcl {
+    /// Per-ACL deletion error code.
+    pub error_code: i16,
+    /// Optional per-ACL deletion error message.
+    pub error_message: Option<String>,
+    /// Raw Kafka ACL resource type.
+    pub resource_type: i8,
+    /// Resource name.
+    pub resource_name: String,
+    /// Raw Kafka ACL resource pattern type.
+    pub pattern_type: i8,
+    /// ACL principal string, such as `User:alice`.
+    pub principal: String,
+    /// Host to which the ACL applied.
+    pub host: String,
+    /// Raw Kafka ACL operation code.
+    pub operation: i8,
+    /// Raw Kafka ACL permission type code.
+    pub permission_type: i8,
+}
+
+/// Result for one `DeleteAcls` filter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteAclsFilterResult {
+    /// Per-filter broker error code.
+    pub error_code: i16,
+    /// Optional per-filter broker error message.
+    pub error_message: Option<String>,
+    /// ACLs that matched the filter and were deleted or attempted.
+    pub matching_acls: Vec<DeletedAcl>,
+}
+
+/// Parsed response from a `DeleteAcls` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteAclsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-filter delete results returned by the broker.
+    pub filter_results: Vec<DeleteAclsFilterResult>,
+}
 
 pub fn build_describe_acls_request(
     correlation_id: i32,

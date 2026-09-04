@@ -12,8 +12,205 @@ use super::super::{
     API_VERSION_ADD_OFFSETS_TO_TXN, API_VERSION_DESCRIBE_TRANSACTIONS,
     API_VERSION_LIST_TRANSACTIONS, API_VERSION_TXN_OFFSET_COMMIT,
 };
-use super::types::*;
 use super::{group_id, request_header, transactional_id};
+
+/// Filters for a `ListTransactions` request.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ListTransactionsOptions {
+    /// Transaction states to include, or empty to include all states.
+    pub state_filters: Vec<String>,
+    /// Producer IDs to include, or empty to include all producer IDs.
+    pub producer_id_filters: Vec<i64>,
+    /// Minimum running duration in milliseconds, or `None` to include all durations.
+    pub duration_filter_ms: Option<i64>,
+    /// Optional transactional ID regular expression pattern.
+    pub transactional_id_pattern: Option<String>,
+}
+
+impl ListTransactionsOptions {
+    /// Create default options that list all transactions visible to the broker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Restrict the request to the supplied transaction states.
+    #[must_use]
+    pub fn with_state_filters<I, S>(mut self, states: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.state_filters = states.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Restrict the request to the supplied producer IDs.
+    #[must_use]
+    pub fn with_producer_id_filters<I>(mut self, producer_ids: I) -> Self
+    where
+        I: IntoIterator<Item = i64>,
+    {
+        self.producer_id_filters = producer_ids.into_iter().collect();
+        self
+    }
+
+    /// Restrict the request to transactions running longer than the supplied duration.
+    #[must_use]
+    pub fn with_duration_filter_ms(mut self, duration_ms: i64) -> Self {
+        self.duration_filter_ms = Some(duration_ms);
+        self
+    }
+
+    /// Restrict the request to transactional IDs matching the supplied pattern.
+    #[must_use]
+    pub fn with_transactional_id_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.transactional_id_pattern = Some(pattern.into());
+        self
+    }
+}
+
+/// Summary state for one transaction returned by `ListTransactions`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedTransaction {
+    /// Transactional ID.
+    pub transactional_id: String,
+    /// Producer ID currently associated with the transaction.
+    pub producer_id: i64,
+    /// Current transaction state.
+    pub transaction_state: String,
+}
+
+/// Parsed response from a `ListTransactions` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListTransactionsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Requested state filters unknown to the transaction coordinator.
+    pub unknown_state_filters: Vec<String>,
+    /// Transaction summaries returned by the broker.
+    pub transaction_states: Vec<ListedTransaction>,
+}
+
+/// Topic partitions included in a described transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionTopic {
+    /// Topic name.
+    pub topic: String,
+    /// Partition IDs included in the transaction.
+    pub partitions: Vec<i32>,
+}
+
+/// Detailed state for one transaction returned by `DescribeTransactions`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedTransaction {
+    /// Per-transaction broker error code.
+    pub error_code: i16,
+    /// Transactional ID.
+    pub transactional_id: String,
+    /// Current transaction state.
+    pub transaction_state: String,
+    /// Transaction timeout in milliseconds.
+    pub transaction_timeout_ms: i32,
+    /// Transaction start time in milliseconds since Unix epoch.
+    pub transaction_start_time_ms: i64,
+    /// Producer ID currently associated with the transaction.
+    pub producer_id: i64,
+    /// Producer epoch currently associated with the transaction.
+    pub producer_epoch: i16,
+    /// Topic partitions included in the current transaction.
+    pub topics: Vec<TransactionTopic>,
+}
+
+/// Parsed response from a `DescribeTransactions` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeTransactionsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Detailed transaction states returned by the broker.
+    pub transaction_states: Vec<DescribedTransaction>,
+}
+
+/// Parsed response from an `AddOffsetsToTxn` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddOffsetsToTxnResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Broker error code.
+    pub error_code: i16,
+}
+
+/// Per-partition result in a `TxnOffsetCommit` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnOffsetCommitPartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+}
+
+/// Per-topic result in a `TxnOffsetCommit` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnOffsetCommitTopicResult {
+    /// Topic name.
+    pub topic: String,
+    /// Per-partition commit results.
+    pub partitions: Vec<TxnOffsetCommitPartitionResult>,
+}
+
+/// Parsed response from a `TxnOffsetCommit` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnOffsetCommitResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-topic offset commit results.
+    pub topics: Vec<TxnOffsetCommitTopicResult>,
+}
+
+/// A topic/partition/offset tuple for `TxnOffsetCommit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxnOffsetCommitTopicPartition {
+    /// Topic name.
+    pub topic: String,
+    /// Partition index.
+    pub partition: i32,
+    /// Offset to commit.
+    pub offset: i64,
+    /// Optional leader epoch.
+    pub leader_epoch: Option<i32>,
+    /// Optional metadata string.
+    pub metadata: Option<String>,
+}
+
+impl TxnOffsetCommitTopicPartition {
+    /// Create a transactional offset commit entry.
+    #[must_use]
+    pub fn new(topic: impl Into<String>, partition: i32, offset: i64) -> Self {
+        Self {
+            topic: topic.into(),
+            partition,
+            offset,
+            leader_epoch: None,
+            metadata: None,
+        }
+    }
+
+    /// Set the committed leader epoch.
+    #[must_use]
+    pub fn with_leader_epoch(mut self, leader_epoch: i32) -> Self {
+        self.leader_epoch = Some(leader_epoch);
+        self
+    }
+
+    /// Set committed offset metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: impl Into<String>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
+    }
+}
 
 pub fn build_list_transactions_request(
     correlation_id: i32,

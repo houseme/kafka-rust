@@ -9,7 +9,125 @@ use kafka_protocol::protocol::StrBytes;
 
 use super::super::{API_VERSION_ALTER_REPLICA_LOG_DIRS, API_VERSION_DESCRIBE_LOG_DIRS};
 use super::request_header;
-use super::types::*;
+use super::*;
+
+/// Partition storage details returned by `DescribeLogDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogDirPartition {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Size of log segments in bytes.
+    pub partition_size: i64,
+    /// Log end offset lag relative to the partition watermark or replica log.
+    pub offset_lag: i64,
+    /// Whether this is a future log created by replica movement.
+    pub is_future_key: bool,
+}
+
+/// Per-topic storage details inside one log directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogDirTopic {
+    /// Topic name.
+    pub name: String,
+    /// Partitions present in the log directory.
+    pub partitions: Vec<LogDirPartition>,
+}
+
+/// One log directory returned by `DescribeLogDirs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogDirDescription {
+    /// Per-log-directory broker error code.
+    pub error_code: i16,
+    /// Absolute broker log directory path.
+    pub log_dir: String,
+    /// Topics present in the log directory.
+    pub topics: Vec<LogDirTopic>,
+    /// Total bytes on the backing volume, or Kafka's `-1` sentinel before v4.
+    pub total_bytes: i64,
+    /// Usable bytes on the backing volume, or Kafka's `-1` sentinel before v4.
+    pub usable_bytes: i64,
+}
+
+/// Parsed response from a `DescribeLogDirs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeLogDirsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Log directories returned by the broker.
+    pub results: Vec<LogDirDescription>,
+}
+
+/// A log directory path with topic partitions to move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterReplicaLogDirTopic {
+    /// Topic name.
+    pub topic: String,
+    /// Partition indexes to move.
+    pub partitions: Vec<i32>,
+}
+
+impl AlterReplicaLogDirTopic {
+    /// Create a topic partition spec for log dir alteration.
+    #[must_use]
+    pub fn new<I>(topic: impl Into<String>, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = i32>,
+    {
+        Self {
+            topic: topic.into(),
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// A log directory with topic partitions to move there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterReplicaLogDir {
+    /// Absolute directory path.
+    pub path: String,
+    /// Topics with partitions to move to this directory.
+    pub topics: Vec<AlterReplicaLogDirTopic>,
+}
+
+impl AlterReplicaLogDir {
+    /// Create a log directory spec.
+    #[must_use]
+    pub fn new(path: impl Into<String>, topics: Vec<AlterReplicaLogDirTopic>) -> Self {
+        Self {
+            path: path.into(),
+            topics,
+        }
+    }
+}
+
+/// Per-partition result in an `AlterReplicaLogDirs` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterReplicaLogDirPartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+}
+
+/// Per-topic result in an `AlterReplicaLogDirs` response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterReplicaLogDirTopicResult {
+    /// Topic name.
+    pub topic_name: String,
+    /// Per-partition results.
+    pub partitions: Vec<AlterReplicaLogDirPartitionResult>,
+}
+
+/// Parsed response from an `AlterReplicaLogDirs` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterReplicaLogDirsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-topic results.
+    pub results: Vec<AlterReplicaLogDirTopicResult>,
+}
 
 pub fn build_alter_replica_log_dirs_request(
     correlation_id: i32,

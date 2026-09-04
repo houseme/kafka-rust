@@ -1,6 +1,7 @@
 #![allow(clippy::wildcard_imports)]
 //! Consumer group administration helpers.
 
+use bytes::Bytes;
 use kafka_protocol::messages::{
     ApiKey, ConsumerGroupDescribeRequest, ConsumerGroupDescribeResponse, DeleteGroupsRequest,
     DeleteGroupsResponse, DescribeGroupsRequest, DescribeGroupsResponse, ListGroupsRequest,
@@ -11,8 +12,173 @@ use super::super::{
     API_VERSION_CONSUMER_GROUP_DESCRIBE, API_VERSION_DELETE_GROUPS, API_VERSION_DESCRIBE_GROUPS,
     API_VERSION_LIST_GROUPS, API_VERSION_SHARE_GROUP_DESCRIBE,
 };
-use super::types::*;
-use super::{group_id, request_header, str_bytes_vec};
+use super::*;
+
+/// A group returned by `ListGroups`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedGroup {
+    /// Group ID.
+    pub group_id: String,
+    /// Group protocol type, for example `consumer`.
+    pub protocol_type: String,
+    /// Group state name when returned by the broker.
+    pub group_state: String,
+    /// Group type name when returned by the broker.
+    pub group_type: String,
+}
+
+/// Parsed response from a `ListGroups` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListGroupsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Groups returned by the broker.
+    pub groups: Vec<ListedGroup>,
+}
+
+/// Result of one group deletion returned by `DeleteGroups`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedGroup {
+    /// Group ID.
+    pub group_id: String,
+    /// Broker error code for this group deletion.
+    pub error_code: i16,
+}
+
+/// Parsed response from a `DeleteGroups` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteGroupsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Per-group deletion results returned by the broker.
+    pub results: Vec<DeletedGroup>,
+}
+
+/// A member returned by `DescribeGroups`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedGroupMember {
+    /// Member ID assigned by the group coordinator.
+    pub member_id: String,
+    /// Static membership instance ID, when configured.
+    pub group_instance_id: Option<String>,
+    /// Client ID reported by the member.
+    pub client_id: String,
+    /// Client host reported by the broker.
+    pub client_host: String,
+    /// Opaque protocol metadata for the member.
+    pub member_metadata: Bytes,
+    /// Opaque assignment payload for the member.
+    pub member_assignment: Bytes,
+}
+
+/// A group returned by `DescribeGroups`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribedGroup {
+    /// Per-group broker error code.
+    pub error_code: i16,
+    /// Optional per-group broker error message.
+    pub error_message: Option<String>,
+    /// Group ID.
+    pub group_id: String,
+    /// Group state name.
+    pub group_state: String,
+    /// Group protocol type.
+    pub protocol_type: String,
+    /// Active protocol name/data selected by the group.
+    pub protocol_data: String,
+    /// Members in the group.
+    pub members: Vec<DescribedGroupMember>,
+    /// Authorized operations bitfield, or Kafka's sentinel when not requested.
+    pub authorized_operations: i32,
+}
+
+/// Parsed response from a `DescribeGroups` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DescribeGroupsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Described groups returned by the broker.
+    pub groups: Vec<DescribedGroup>,
+}
+
+/// Topic partitions in a modern consumer group assignment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerGroupTopicPartitions {
+    /// Topic UUID as a string.
+    pub topic_id: String,
+    /// Topic name.
+    pub topic_name: String,
+    /// Assigned partition indexes.
+    pub partitions: Vec<i32>,
+}
+
+/// Assignment returned by `ConsumerGroupDescribe`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerGroupAssignment {
+    /// Topic partitions in the assignment.
+    pub topic_partitions: Vec<ConsumerGroupTopicPartitions>,
+}
+
+/// Member state returned by `ConsumerGroupDescribe`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerGroupMemberDescription {
+    /// Member ID assigned by the group coordinator.
+    pub member_id: String,
+    /// Static membership instance ID, when configured.
+    pub instance_id: Option<String>,
+    /// Rack ID reported by the member, when configured.
+    pub rack_id: Option<String>,
+    /// Current member epoch.
+    pub member_epoch: i32,
+    /// Client ID reported by the member.
+    pub client_id: String,
+    /// Client host reported by the broker.
+    pub client_host: String,
+    /// Subscribed topic names.
+    pub subscribed_topic_names: Vec<String>,
+    /// Subscribed topic regex, when provided.
+    pub subscribed_topic_regex: Option<String>,
+    /// Current assignment.
+    pub assignment: ConsumerGroupAssignment,
+    /// Target assignment during rebalancing.
+    pub target_assignment: ConsumerGroupAssignment,
+    /// Kafka member type code, or `-1` for unknown on older response versions.
+    pub member_type: i8,
+}
+
+/// Consumer group state returned by `ConsumerGroupDescribe`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerGroupDescription {
+    /// Per-group broker error code.
+    pub error_code: i16,
+    /// Optional per-group broker error message.
+    pub error_message: Option<String>,
+    /// Group ID.
+    pub group_id: String,
+    /// Current group state.
+    pub group_state: String,
+    /// Current group epoch.
+    pub group_epoch: i32,
+    /// Current assignment epoch.
+    pub assignment_epoch: i32,
+    /// Selected assignor name.
+    pub assignor_name: String,
+    /// Members in the group.
+    pub members: Vec<ConsumerGroupMemberDescription>,
+    /// Authorized operations bitfield, or Kafka's sentinel when not requested.
+    pub authorized_operations: i32,
+}
+
+/// Parsed response from a `ConsumerGroupDescribe` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsumerGroupDescribeResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Described consumer groups returned by the broker.
+    pub groups: Vec<ConsumerGroupDescription>,
+}
 
 pub fn build_list_groups_request(
     correlation_id: i32,

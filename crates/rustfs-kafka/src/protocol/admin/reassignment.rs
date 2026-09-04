@@ -11,7 +11,172 @@ use super::super::{
     API_VERSION_ALTER_PARTITION_REASSIGNMENTS, API_VERSION_LIST_PARTITION_REASSIGNMENTS,
 };
 use super::request_header;
-use super::types::*;
+use super::*;
+
+/// A partition reassignment entry for `AlterPartitionReassignments`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionReassignmentSpec {
+    /// Partition index.
+    pub partition_index: i32,
+    /// New replica broker IDs, or `None` to cancel an active reassignment.
+    pub replicas: Option<Vec<i32>>,
+}
+
+impl PartitionReassignmentSpec {
+    /// Create a partition reassignment.
+    #[must_use]
+    pub fn new<I>(partition_index: i32, replicas: I) -> Self
+    where
+        I: IntoIterator<Item = i32>,
+    {
+        Self {
+            partition_index,
+            replicas: Some(replicas.into_iter().collect()),
+        }
+    }
+
+    /// Create a partition reassignment cancellation.
+    #[must_use]
+    pub fn cancel(partition_index: i32) -> Self {
+        Self {
+            partition_index,
+            replicas: None,
+        }
+    }
+}
+
+/// Per-topic reassignment spec for `AlterPartitionReassignments`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionReassignmentTopicSpec {
+    /// Topic name.
+    pub topic: String,
+    /// Partition reassignments for this topic.
+    pub partitions: Vec<PartitionReassignmentSpec>,
+}
+
+impl PartitionReassignmentTopicSpec {
+    /// Create a topic reassignment spec.
+    #[must_use]
+    pub fn new<I>(topic: impl Into<String>, partitions: I) -> Self
+    where
+        I: IntoIterator<Item = PartitionReassignmentSpec>,
+    {
+        Self {
+            topic: topic.into(),
+            partitions: partitions.into_iter().collect(),
+        }
+    }
+}
+
+/// Options for an `AlterPartitionReassignments` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterPartitionReassignmentsOptions {
+    /// Timeout in milliseconds.
+    pub timeout_ms: i32,
+    /// Whether replication-factor changes are allowed.
+    pub allow_replication_factor_change: bool,
+    /// Topic reassignments to alter.
+    pub topics: Vec<PartitionReassignmentTopicSpec>,
+}
+
+impl AlterPartitionReassignmentsOptions {
+    /// Create options with the supplied topic reassignments.
+    #[must_use]
+    pub fn new<I>(topics: I) -> Self
+    where
+        I: IntoIterator<Item = PartitionReassignmentTopicSpec>,
+    {
+        Self {
+            timeout_ms: 60_000,
+            allow_replication_factor_change: true,
+            topics: topics.into_iter().collect(),
+        }
+    }
+
+    /// Set the broker-side timeout in milliseconds.
+    #[must_use]
+    pub fn with_timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Control whether replication-factor changes are allowed.
+    #[must_use]
+    pub fn with_allow_replication_factor_change(mut self, allow: bool) -> Self {
+        self.allow_replication_factor_change = allow;
+        self
+    }
+}
+
+/// Per-partition result returned by `AlterPartitionReassignments`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterPartitionReassignmentsPartitionResult {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Per-partition broker error code.
+    pub error_code: i16,
+    /// Optional broker-provided error message.
+    pub error_message: Option<String>,
+}
+
+/// Per-topic result returned by `AlterPartitionReassignments`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterPartitionReassignmentsTopicResult {
+    /// Topic name.
+    pub name: String,
+    /// Partition-level reassignment results.
+    pub partitions: Vec<AlterPartitionReassignmentsPartitionResult>,
+}
+
+/// Parsed response from an `AlterPartitionReassignments` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterPartitionReassignmentsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Whether replication-factor changes were allowed.
+    pub allow_replication_factor_change: bool,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional top-level broker error message.
+    pub error_message: Option<String>,
+    /// Topic-level reassignment results returned by the broker.
+    pub responses: Vec<AlterPartitionReassignmentsTopicResult>,
+}
+
+/// Ongoing partition reassignment details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionReassignment {
+    /// Partition index.
+    pub partition_index: i32,
+    /// Current replica set.
+    pub replicas: Vec<i32>,
+    /// Replicas currently being added.
+    pub adding_replicas: Vec<i32>,
+    /// Replicas currently being removed.
+    pub removing_replicas: Vec<i32>,
+}
+
+/// Ongoing reassignments for one topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicReassignment {
+    /// Topic name.
+    pub name: String,
+    /// Ongoing partition reassignments.
+    pub partitions: Vec<PartitionReassignment>,
+}
+
+/// Parsed response from a `ListPartitionReassignments` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListPartitionReassignmentsResponseData {
+    /// Quota throttle time in milliseconds.
+    pub throttle_time_ms: i32,
+    /// Top-level broker error code.
+    pub error_code: i16,
+    /// Optional top-level broker error message.
+    pub error_message: Option<String>,
+    /// Ongoing reassignments returned by the broker.
+    pub topics: Vec<TopicReassignment>,
+}
 
 pub fn build_list_partition_reassignments_request(
     correlation_id: i32,
