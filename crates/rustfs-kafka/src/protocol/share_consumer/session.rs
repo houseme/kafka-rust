@@ -1,8 +1,9 @@
 //! Client-side share-consumer session helpers.
 
 use super::{
-    HeartbeatAssignment, ShareAcknowledgeOptions, ShareAcknowledgeTopic, ShareFetchOptions,
-    ShareFetchPartition, ShareFetchTopic, ShareGroupHeartbeatOptions,
+    HeartbeatAssignment, ShareAcknowledgeOptions, ShareAcknowledgePartition, ShareAcknowledgeTopic,
+    ShareAcknowledgementBatch, ShareFetchOptions, ShareFetchPartition, ShareFetchPartitionResponse,
+    ShareFetchResponseData, ShareFetchTopic, ShareFetchTopicResponse, ShareGroupHeartbeatOptions,
     ShareGroupHeartbeatResponseData,
 };
 
@@ -202,6 +203,71 @@ impl ShareConsumerSession {
         options.share_session_epoch = self.share_session_epoch;
         options
     }
+
+    /// Build acknowledgement options for all successful acquired ranges in a
+    /// `ShareFetch` response.
+    ///
+    /// The caller chooses the acknowledgement type because accepting,
+    /// releasing, or rejecting records is application-specific.
+    #[must_use]
+    pub fn acknowledge_fetch_response(
+        &self,
+        response: &ShareFetchResponseData,
+        acknowledge_type: i8,
+    ) -> ShareAcknowledgeOptions {
+        if response.error_code != 0 {
+            return self.acknowledge_options(Vec::<ShareAcknowledgeTopic>::new());
+        }
+
+        let topics = response
+            .responses
+            .iter()
+            .filter_map(|topic| acknowledge_topic_from_fetch(topic, acknowledge_type))
+            .collect::<Vec<_>>();
+        self.acknowledge_options(topics)
+    }
+}
+
+fn acknowledge_topic_from_fetch(
+    topic: &ShareFetchTopicResponse,
+    acknowledge_type: i8,
+) -> Option<ShareAcknowledgeTopic> {
+    let partitions = topic
+        .partitions
+        .iter()
+        .filter_map(|partition| acknowledge_partition_from_fetch(partition, acknowledge_type))
+        .collect::<Vec<_>>();
+
+    (!partitions.is_empty()).then(|| ShareAcknowledgeTopic::new(topic.topic_id, partitions))
+}
+
+fn acknowledge_partition_from_fetch(
+    partition: &ShareFetchPartitionResponse,
+    acknowledge_type: i8,
+) -> Option<ShareAcknowledgePartition> {
+    if partition.error_code != 0 || partition.acknowledge_error_code != 0 {
+        return None;
+    }
+
+    let batches = partition
+        .acquired_records
+        .iter()
+        .filter_map(|records| {
+            let count = records
+                .last_offset
+                .checked_sub(records.first_offset)?
+                .checked_add(1)?;
+            let count = usize::try_from(count).ok()?;
+            Some(ShareAcknowledgementBatch::new(
+                records.first_offset,
+                records.last_offset,
+                std::iter::repeat_n(acknowledge_type, count),
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    (!batches.is_empty())
+        .then(|| ShareAcknowledgePartition::new(partition.partition_index, batches))
 }
 
 #[cfg(test)]
@@ -211,7 +277,8 @@ mod tests {
     use super::*;
     use crate::protocol::share_consumer::{
         HeartbeatTopicPartitions, SHARE_ACK_TYPE_ACCEPT, ShareAcknowledgePartition,
-        ShareAcknowledgementBatch,
+        ShareAcknowledgementBatch, ShareAcquiredRecords, ShareFetchPartitionResponse,
+        ShareFetchResponseData, ShareFetchTopicResponse, ShareLeader,
     };
 
     #[test]
@@ -338,5 +405,104 @@ mod tests {
             options.topics[0].partitions[0].acknowledgement_batches[0].acknowledge_types,
             vec![SHARE_ACK_TYPE_ACCEPT, SHARE_ACK_TYPE_ACCEPT]
         );
+    }
+
+    #[test]
+    fn share_consumer_session_acknowledges_successful_fetch_ranges() {
+        let topic_id = Uuid::from_u128(11);
+        let mut session = ShareConsumerSession::new("share-group", "member-a");
+        session.set_share_session_epoch(3);
+        let response = ShareFetchResponseData {
+            throttle_time_ms: 0,
+            error_code: 0,
+            error_message: None,
+            acquisition_lock_timeout_ms: 1_000,
+            responses: vec![ShareFetchTopicResponse {
+                topic_id,
+                partitions: vec![
+                    ShareFetchPartitionResponse {
+                        partition_index: 0,
+                        error_code: 0,
+                        error_message: None,
+                        acknowledge_error_code: 0,
+                        acknowledge_error_message: None,
+                        current_leader: ShareLeader {
+                            leader_id: 1,
+                            leader_epoch: 2,
+                        },
+                        records: None,
+                        acquired_records: vec![
+                            ShareAcquiredRecords {
+                                first_offset: 10,
+                                last_offset: 12,
+                                delivery_count: 1,
+                            },
+                            ShareAcquiredRecords {
+                                first_offset: 20,
+                                last_offset: 20,
+                                delivery_count: 2,
+                            },
+                        ],
+                    },
+                    ShareFetchPartitionResponse {
+                        partition_index: 1,
+                        error_code: 3,
+                        error_message: Some("missing".to_owned()),
+                        acknowledge_error_code: 0,
+                        acknowledge_error_message: None,
+                        current_leader: ShareLeader {
+                            leader_id: 1,
+                            leader_epoch: 2,
+                        },
+                        records: None,
+                        acquired_records: vec![ShareAcquiredRecords {
+                            first_offset: 99,
+                            last_offset: 99,
+                            delivery_count: 1,
+                        }],
+                    },
+                ],
+            }],
+            node_endpoints: Vec::new(),
+        };
+
+        let options = session.acknowledge_fetch_response(&response, SHARE_ACK_TYPE_ACCEPT);
+
+        assert_eq!(options.group_id.as_deref(), Some("share-group"));
+        assert_eq!(options.member_id.as_deref(), Some("member-a"));
+        assert_eq!(options.share_session_epoch, 3);
+        assert_eq!(options.topics.len(), 1);
+        assert_eq!(options.topics[0].topic_id, topic_id);
+        assert_eq!(options.topics[0].partitions.len(), 1);
+        assert_eq!(options.topics[0].partitions[0].partition_index, 0);
+        assert_eq!(
+            options.topics[0].partitions[0].acknowledgement_batches[0].acknowledge_types,
+            vec![
+                SHARE_ACK_TYPE_ACCEPT,
+                SHARE_ACK_TYPE_ACCEPT,
+                SHARE_ACK_TYPE_ACCEPT
+            ]
+        );
+        assert_eq!(
+            options.topics[0].partitions[0].acknowledgement_batches[1].acknowledge_types,
+            vec![SHARE_ACK_TYPE_ACCEPT]
+        );
+    }
+
+    #[test]
+    fn share_consumer_session_does_not_ack_failed_fetch_response() {
+        let session = ShareConsumerSession::new("share-group", "member-a");
+        let response = ShareFetchResponseData {
+            throttle_time_ms: 0,
+            error_code: 15,
+            error_message: Some("coordinator unavailable".to_owned()),
+            acquisition_lock_timeout_ms: 0,
+            responses: Vec::new(),
+            node_endpoints: Vec::new(),
+        };
+
+        let options = session.acknowledge_fetch_response(&response, SHARE_ACK_TYPE_ACCEPT);
+
+        assert!(options.topics.is_empty());
     }
 }
