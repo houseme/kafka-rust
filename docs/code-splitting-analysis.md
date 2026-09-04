@@ -217,14 +217,16 @@ network/connection.rs (~490行)
 
 ---
 
-## 实施优先级总结
+## 实施状态（2026-09-03 已全部完成）
 
-| 优先级 | 文件 | 当前行数 | 目标行数 | 收益 |
+| 优先级 | 文件 | 分析时行数 | 当前行数 | 状态 |
 |--------|------|----------|----------|------|
-| **P0** | `protocol/admin/types.rs` | 3,307 | ~700 | 消除最大单体文件，类型就近定义 |
-| **P1** | `client/mod.rs` | 2,932 | ~1,500 | 与已有 `*_ops.rs` 模式一致 |
-| **P2** | `protocol/api_versions.rs` | 1,545 | ~800 | 常量独立，测试可选外移 |
-| **P3** | `protocol/share_consumer.rs` | 1,321 | ~400/子模块 | 领域分离 |
-| **P4** | `network/connection.rs` | 830 | ~490 | SASL 逻辑独立，feature-gate 清晰 |
+| **P0** | `protocol/admin/types.rs` | 3,307 | **已删除** | ✅ 类型分散到11个领域子模块 |
+| **P1** | `client/mod.rs` | 2,932 | **1,118** | ✅ admin方法提取到 `admin_ops.rs` (1,454行) |
+| **P2** | `protocol/api_versions.rs` | 1,545 | **1,098** (mod.rs) | ✅ 拆为 `api_keys.rs` + `resolver.rs` + `mod.rs` |
+| **P3** | `protocol/share_consumer.rs` | 1,321 | **已删除** | ✅ 拆为 `heartbeat.rs` + `fetch.rs` + `acknowledge.rs` + `mod.rs` |
+| **P4** | `network/connection.rs` | 830 | **~408** | ✅ SASL提取到 `network/sasl.rs` (395行) |
 
 **不推荐拆分**: `error.rs`, `protocol/group.rs`, `consumer/mod.rs`, `client/state.rs`, `producer/transaction.rs`, `producer/batch.rs`, `protocol/telemetry.rs` — 这些文件内聚性好，大小合理。
+
+> 当前最大文件为 `admin/cluster.rs` (1,561行)，无超过2,000行的文件。247个测试全部通过。

@@ -6,6 +6,8 @@
 
 mod connection;
 mod pool;
+#[cfg(feature = "security")]
+mod sasl;
 
 pub(crate) use self::connection::KafkaConnection;
 pub use self::pool::Connections;
