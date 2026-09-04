@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-04
+
 ### Added
 
 - Added read-only Kafka management APIs on `KafkaClient` using `kafka-protocol` generated messages:
@@ -97,6 +99,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   - `ctor`: `0.10.1` -> `1.0.6`
 - Updated CI benchmark workflow artifact upload action:
   - `actions/upload-artifact`: `v4` -> `v6`
+- Centralized generated Kafka request framing on a single `compute_size`-based buffer path shared by
+  sync transport, SASL, admin helpers, and async wire helpers.
+- Optimized async SCRAM salted-password derivation with `pbkdf2_hmac_array`.
+- Declared read-only workflow token permissions and updated checkout actions:
+  - `actions/checkout`: `v6` -> `v7`
 
 ### Fixed
 
