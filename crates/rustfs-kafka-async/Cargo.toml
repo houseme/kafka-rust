@@ -19,7 +19,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-rustfs-kafka = { workspace = true }
+rustfs-kafka = { workspace = true, features = ["security"] }
 bytes.workspace = true
 kafka-protocol.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "rt", "macros", "fs"] }
@@ -39,6 +39,11 @@ tokio = { workspace = true, features = ["full"] }
 uuid.workspace = true
 
 [features]
-default = ["metrics"]
+default = ["metrics", "compression"]
 metrics = ["dep:metrics", "rustfs-kafka/metrics"]
+gzip = ["rustfs-kafka/gzip", "kafka-protocol/gzip"]
+snappy = ["rustfs-kafka/snappy", "kafka-protocol/snappy"]
+lz4 = ["rustfs-kafka/lz4", "kafka-protocol/lz4"]
+zstd = ["rustfs-kafka/zstd", "kafka-protocol/zstd"]
+compression = ["gzip", "snappy", "lz4", "zstd"]
 integration_tests = []

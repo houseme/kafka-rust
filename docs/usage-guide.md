@@ -138,6 +138,14 @@ options from local member/assignment state.
 rustfs-kafka = { version = "1.2.0", default-features = false }
 ```
 
+- Default builds enable gzip, snappy, lz4, and zstd record batch codecs through
+  `compression`.
+- Smaller builds can opt into individual codecs:
+
+```toml
+rustfs-kafka = { version = "1.2.0", default-features = false, features = ["security", "gzip"] }
+```
+
 ## 5. Integration Testing
 
 The repository includes Docker-based integration tests:
@@ -152,7 +160,7 @@ Examples:
 ```bash
 ./run-all-tests 4.2.0
 SECURES=secure ./run-all-tests 3.9.2
-COMPRESSIONS=NONE:SNAPPY:GZIP ./run-all-tests 3.9.2:4.1.2:4.2.0
+COMPRESSIONS=NONE:SNAPPY:GZIP:LZ4:ZSTD ./run-all-tests 3.9.2:4.1.2:4.2.0
 ```
 
 Async secure SASL acceptance checks:

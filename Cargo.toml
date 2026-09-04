@@ -27,7 +27,7 @@ needless_collect = "warn"
 redundant_clone = "warn"
 
 [workspace.dependencies]
-rustfs-kafka = { path = "crates/rustfs-kafka", version = "1.2.0" }
+rustfs-kafka = { path = "crates/rustfs-kafka", version = "1.2.0", default-features = false }
 rustfs-kafka-async = { path = "crates/rustfs-kafka-async", version = "1.2.0" }
 # Core dependencies
 socket2 = "0.6.5"

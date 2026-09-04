@@ -190,12 +190,24 @@ fn decode_partition_records(
     }
 
     let raw_records = records_bytes.clone();
-    let Ok(record_set) = RecordBatchDecoder::decode(&mut records_bytes) else {
-        let messages = decode_records_safe(raw_records).map_err(Arc::new)?;
-        return Ok(OwnedData {
-            highwatermark_offset: high_watermark,
-            messages,
-        });
+    let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
+        Ok(record_set) => record_set,
+        Err(decode_error) => {
+            let message = decode_error.to_string();
+            let decode_error = map_record_decode_error(&message);
+            if matches!(
+                decode_error,
+                crate::error::Error::Protocol(crate::error::ProtocolError::UnsupportedCompression)
+            ) {
+                return Err(Arc::new(decode_error));
+            }
+
+            let messages = decode_records_safe(raw_records).map_err(Arc::new)?;
+            return Ok(OwnedData {
+                highwatermark_offset: high_watermark,
+                messages,
+            });
+        }
     };
 
     let mut messages = Vec::new();
@@ -236,7 +248,10 @@ pub(crate) fn decode_records_safe(
                     .collect();
                 Ok(messages)
             }
-            Err(_) => Err(crate::error::Error::codec()),
+            Err(e) => {
+                let message = e.to_string();
+                Err(map_record_decode_error(&message))
+            }
         }
     }));
     match result {
@@ -245,8 +260,26 @@ pub(crate) fn decode_records_safe(
     }
 }
 
+fn map_record_decode_error(message: &str) -> crate::error::Error {
+    if is_disabled_compression_feature_error(message) {
+        crate::error::Error::unsupported_compression()
+    } else {
+        crate::error::Error::codec()
+    }
+}
+
+fn is_disabled_compression_feature_error(message: &str) -> bool {
+    message.contains("Support for") && message.contains("not enabled as a cargo feature")
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "compression")]
+    use kafka_protocol::records::{
+        Compression as KpCompression, Record, RecordBatchEncoder, RecordEncodeOptions,
+        TimestampType,
+    };
+
     use super::*;
 
     #[test]
@@ -391,5 +424,64 @@ mod tests {
         assert_eq!(resp.correlation_id, 42);
         assert_eq!(resp.topics.len(), 1);
         assert_eq!(resp.topics[0].topic, "orders");
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn convert_fetch_response_decodes_compressed_record_batches() {
+        for compression in [
+            KpCompression::Gzip,
+            KpCompression::Snappy,
+            KpCompression::Lz4,
+            KpCompression::Zstd,
+        ] {
+            let response = FetchResponse::default().with_responses(vec![
+                kafka_protocol::messages::fetch_response::FetchableTopicResponse::default()
+                    .with_topic(TopicName::from(StrBytes::from_string("topic-a".to_owned())))
+                    .with_partitions(vec![
+                        KpPartitionData::default()
+                            .with_partition_index(0)
+                            .with_error_code(0)
+                            .with_high_watermark(1)
+                            .with_records(Some(encoded_records(compression))),
+                    ]),
+            ]);
+
+            let converted = convert_fetch_response(response, 7);
+            let data = converted.topics[0].partitions[0]
+                .data()
+                .unwrap_or_else(|err| panic!("{compression:?} should decode: {err}"));
+
+            assert_eq!(data.messages.len(), 1);
+            assert_eq!(&*data.messages[0].key, b"key");
+            assert_eq!(&*data.messages[0].value, b"value");
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    fn encoded_records(compression: KpCompression) -> Bytes {
+        let record = Record {
+            transactional: false,
+            control: false,
+            delete_horizon: false,
+            partition_leader_epoch: -1,
+            producer_id: -1,
+            producer_epoch: -1,
+            timestamp_type: TimestampType::Creation,
+            offset: 0,
+            sequence: -1,
+            timestamp: 0,
+            key: Some(Bytes::from_static(b"key")),
+            value: Some(Bytes::from_static(b"value")),
+            headers: indexmap::IndexMap::default(),
+        };
+        let mut buf = bytes::BytesMut::new();
+        let options = RecordEncodeOptions {
+            version: 2,
+            compression,
+        };
+        RecordBatchEncoder::encode(&mut buf, &[record], &options)
+            .unwrap_or_else(|err| panic!("{compression:?} should encode: {err}"));
+        buf.freeze()
     }
 }

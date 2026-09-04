@@ -4,7 +4,7 @@ use kafka_protocol::records::{Record, RecordBatchEncoder, RecordEncodeOptions, T
 
 use super::{API_VERSION_PRODUCE, HeaderResponse, to_kp_compression};
 use crate::compression::Compression;
-use crate::error::KafkaCode;
+use crate::error::{Error, KafkaCode, Result};
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
 
 /// A message to produce: (topic, partition, key, value, headers).
@@ -24,7 +24,7 @@ pub fn build_produce_request(
     timeout_ms: i32,
     compression: Compression,
     messages: &[ProduceMessageRef<'_>],
-) -> (RequestHeader, ProduceRequest) {
+) -> Result<(RequestHeader, ProduceRequest)> {
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
         .with_request_api_key(ApiKey::Produce as i16)
@@ -65,10 +65,11 @@ pub fn build_produce_request(
             .push(record);
     }
 
-    let topic_data: Vec<kafka_protocol::messages::produce_request::TopicProduceData> = topic_map
-        .into_iter()
-        .map(|(topic_name, partitions)| {
-            let partition_data: Vec<
+    let topic_data: Vec<kafka_protocol::messages::produce_request::TopicProduceData> =
+        topic_map
+            .into_iter()
+            .map(|(topic_name, partitions)| {
+                let partition_data: Vec<
                 kafka_protocol::messages::produce_request::PartitionProduceData,
             > = partitions
                 .into_iter()
@@ -78,22 +79,26 @@ pub fn build_produce_request(
                         version: 2,
                         compression: to_kp_compression(compression),
                     };
-                    RecordBatchEncoder::encode(&mut buf, &records, &options)
-                        .expect("failed to encode record batch");
+                    RecordBatchEncoder::encode(&mut buf, &records, &options).map_err(|err| {
+                        let message = err.to_string();
+                        map_record_encode_error(&message)
+                    })?;
 
-                    kafka_protocol::messages::produce_request::PartitionProduceData::default()
+                    Ok(kafka_protocol::messages::produce_request::PartitionProduceData::default()
                         .with_index(partition_idx)
-                        .with_records(Some(buf.freeze()))
+                        .with_records(Some(buf.freeze())))
                 })
-                .collect();
+                .collect::<Result<_>>()?;
 
-            kafka_protocol::messages::produce_request::TopicProduceData::default()
-                .with_name(TopicName::from(StrBytes::from_string(
-                    topic_name.to_owned(),
-                )))
-                .with_partition_data(partition_data)
-        })
-        .collect();
+                Ok(
+                    kafka_protocol::messages::produce_request::TopicProduceData::default()
+                        .with_name(TopicName::from(StrBytes::from_string(
+                            topic_name.to_owned(),
+                        )))
+                        .with_partition_data(partition_data),
+                )
+            })
+            .collect::<Result<_>>()?;
 
     let request = ProduceRequest::default()
         .with_transactional_id(None)
@@ -101,7 +106,7 @@ pub fn build_produce_request(
         .with_timeout_ms(timeout_ms)
         .with_topic_data(topic_data);
 
-    (header, request)
+    Ok((header, request))
 }
 
 pub fn convert_produce_response(
@@ -194,6 +199,56 @@ impl PartitionProduceResponse {
                 None => Ok(self.offset),
                 Some(code) => Err(code),
             },
+        }
+    }
+}
+
+fn map_record_encode_error(message: &str) -> Error {
+    if is_disabled_compression_feature_error(message) {
+        Error::unsupported_compression()
+    } else {
+        Error::codec()
+    }
+}
+
+fn is_disabled_compression_feature_error(message: &str) -> bool {
+    message.contains("Support for") && message.contains("not enabled as a cargo feature")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(not(feature = "gzip"))]
+    use crate::error::ProtocolError;
+
+    fn one_message() -> [ProduceMessageRef<'static>; 1] {
+        [("topic-a", 0, None, Some(&b"value"[..]), &[])]
+    }
+
+    #[cfg(not(feature = "gzip"))]
+    #[test]
+    fn build_produce_request_returns_error_when_codec_feature_is_disabled() {
+        let err =
+            build_produce_request(1, "client-a", 1, 30_000, Compression::GZIP, &one_message())
+                .expect_err("disabled gzip support should return an error");
+
+        assert!(matches!(
+            err,
+            Error::Protocol(ProtocolError::UnsupportedCompression)
+        ));
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn build_produce_request_supports_enabled_compression_codecs() {
+        for compression in [
+            Compression::GZIP,
+            Compression::SNAPPY,
+            Compression::LZ4,
+            Compression::ZSTD,
+        ] {
+            build_produce_request(1, "client-a", 1, 30_000, compression, &one_message())
+                .unwrap_or_else(|err| panic!("{compression:?} should encode successfully: {err}"));
         }
     }
 }

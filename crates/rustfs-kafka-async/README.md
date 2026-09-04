@@ -33,6 +33,10 @@ including `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 rustfs-kafka-async = "1.2.0"
 ```
 
+Default builds include gzip, snappy, lz4, and zstd record batch codecs. With
+`default-features = false`, enable individual codec features such as `gzip` or
+`zstd` when those formats are required.
+
 ## Quick Example
 
 ```rust,no_run

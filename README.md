@@ -52,13 +52,18 @@ rustfs-kafka-async = "1.2.0"
 |----------------------|---------|--------------------------------------|
 | `security`           | Yes     | rustls + aws-lc-rs TLS backend       |
 | `security-ring`      | No      | rustls + ring TLS backend            |
+| `compression`        | Yes     | gzip, snappy, lz4, and zstd codecs   |
+| `gzip`               | Yes     | gzip record batch codec              |
+| `snappy`             | Yes     | snappy record batch codec            |
+| `lz4`                | Yes     | lz4 record batch codec               |
+| `zstd`               | Yes     | zstd record batch codec              |
 | `metrics`            | No      | metrics integration                  |
 | `producer_timestamp` | No      | producer timestamp support           |
 | `nightly`            | No      | nightly-only optimizations           |
 | `integration_tests`  | No      | integration test compilation helpers |
 
-Note: compression codec support is provided by `kafka-protocol`; enable the needed codec features on that dependency
-when required.
+Default builds include Kafka record batch compression support. For smaller builds, disable default features and enable
+only the codecs you need, for example `features = ["security", "gzip"]`.
 
 ## Documentation
 
