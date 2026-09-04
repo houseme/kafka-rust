@@ -13,7 +13,7 @@ use kafka_protocol::messages::{
     SaslHandshakeResponse,
 };
 use kafka_protocol::protocol::StrBytes;
-use pbkdf2::pbkdf2_hmac;
+use pbkdf2::pbkdf2_hmac_array;
 use rand::distr::{Alphanumeric, SampleString};
 use rustfs_kafka::client::{SaslConfig, SecurityConfig, TlsConfig};
 use rustfs_kafka::error::{ConnectionError, Error, KafkaCode, ProtocolError, Result};
@@ -477,8 +477,7 @@ fn compute_scram_sha256(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     type HmacSha256 = Hmac<Sha256>;
 
-    let mut salted_password = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations, &mut salted_password);
+    let salted_password = pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), salt, iterations);
     let client_key = hmac_bytes::<HmacSha256>(&salted_password, b"Client Key")?;
     let stored_key = Sha256::digest(&client_key).to_vec();
     let client_signature = hmac_bytes::<HmacSha256>(&stored_key, auth_message.as_bytes())?;
@@ -496,8 +495,7 @@ fn compute_scram_sha512(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     type HmacSha512 = Hmac<Sha512>;
 
-    let mut salted_password = [0u8; 64];
-    pbkdf2_hmac::<Sha512>(password.as_bytes(), salt, iterations, &mut salted_password);
+    let salted_password = pbkdf2_hmac_array::<Sha512, 64>(password.as_bytes(), salt, iterations);
     let client_key = hmac_bytes::<HmacSha512>(&salted_password, b"Client Key")?;
     let stored_key = Sha512::digest(&client_key).to_vec();
     let client_signature = hmac_bytes::<HmacSha512>(&stored_key, auth_message.as_bytes())?;
