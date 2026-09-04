@@ -21,7 +21,10 @@ Source checked:
 - Internal runtime coverage without direct public API: 10 APIs.
 - Raw generated protocol coverage: all remaining generated request/response APIs can be sent through
   `KafkaClient::send_raw_protocol_request` or `AsyncKafkaClient::send_raw_protocol_request` with
-  explicit `api_key` and `api_version`.
+  explicit `api_key` and `api_version`. The stronger
+  `kafka_protocol::protocol::Request` association is not exposed as a public facade under the
+  current client-only dependency feature set because those generated impls also require
+  `kafka-protocol`'s `broker` feature.
 - Client-facing backlog: 0 APIs. `CreateTopics` and `DeleteTopics` now use generated
   `kafka-protocol` request/response codecs instead of handwritten body parsers.
 - Advanced runtime backlog: no missing public protocol adapters; share-consumer and telemetry session helpers are
@@ -29,6 +32,9 @@ Source checked:
   Automatic background runtime loops remain intentionally caller-owned.
 - Broker/controller/internal backlog: 0 public adapters; high-level workflows remain intentionally absent for
   quorum, coordinator, broker, controller, raft snapshot, and share-state internals.
+- Generated request framing is centralized in a single-buffer encoder based on
+  `Encodable::compute_size`; sync transport, SASL, admin helpers, and async wire code all use the
+  same path.
 
 ## API Matrix
 
@@ -132,3 +138,6 @@ the typed raw request API. Remaining high-level work is runtime-level:
 2. Telemetry runtime: `TelemetrySession` tracks broker subscriptions; the automatic scheduler/export pipeline remains outside the current stable API.
 3. Keep broker, controller, coordinator, and raft-log internals out of stable high-level APIs unless a dedicated
    controller client is introduced.
+4. Keep `kafka-protocol` on the `client` feature only unless broker-side APIs are deliberately
+   introduced; enabling generated `Request` impls widens compile surface for limited client-side
+   benefit.
