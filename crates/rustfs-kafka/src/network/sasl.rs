@@ -18,8 +18,8 @@ use pbkdf2::pbkdf2_hmac;
 use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::connection::SaslConfig;
 use super::connection::KafkaStream;
+use super::connection::SaslConfig;
 use crate::error::{Error, KafkaCode, ProtocolError, Result};
 
 const API_VERSION_SASL_HANDSHAKE: i16 = 1;
@@ -32,7 +32,10 @@ enum ScramAlgorithm {
     Sha512,
 }
 
-pub(crate) fn perform_sasl_authentication(stream: &mut KafkaStream, sasl: &SaslConfig) -> Result<()> {
+pub(crate) fn perform_sasl_authentication(
+    stream: &mut KafkaStream,
+    sasl: &SaslConfig,
+) -> Result<()> {
     let mechanism = sasl.mechanism().to_owned();
     let correlation_id = 1;
 

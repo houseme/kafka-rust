@@ -252,9 +252,7 @@ fn convert_share_acknowledge_partition_response(
     }
 }
 
-fn convert_share_acknowledge_node_endpoint(
-    endpoint: sa_resp::NodeEndpoint,
-) -> ShareNodeEndpoint {
+fn convert_share_acknowledge_node_endpoint(endpoint: sa_resp::NodeEndpoint) -> ShareNodeEndpoint {
     ShareNodeEndpoint {
         node_id: *endpoint.node_id,
         host: endpoint.host.to_string(),
@@ -265,8 +263,8 @@ fn convert_share_acknowledge_node_endpoint(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::str_bytes;
+    use super::*;
     use kafka_protocol::messages::BrokerId;
 
     use super::super::SHARE_ACK_TYPE_REJECT;

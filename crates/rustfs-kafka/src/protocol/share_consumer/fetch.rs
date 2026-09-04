@@ -346,8 +346,8 @@ fn convert_share_fetch_node_endpoint(endpoint: sf_resp::NodeEndpoint) -> ShareNo
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::str_bytes;
+    use super::*;
     use kafka_protocol::messages::BrokerId;
 
     use super::super::{SHARE_ACK_TYPE_ACCEPT, SHARE_ACK_TYPE_RELEASE};

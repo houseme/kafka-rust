@@ -4,11 +4,11 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use tracing::debug;
 
+#[cfg(feature = "security")]
+use super::sasl;
 use crate::error::Result;
 #[cfg(feature = "security")]
 use crate::tls::{RustlsConnector, TlsConfig, TlsStream};
-#[cfg(feature = "security")]
-use super::sasl;
 
 // --------------------------------------------------------------------
 

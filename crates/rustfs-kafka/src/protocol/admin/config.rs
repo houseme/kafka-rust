@@ -684,8 +684,8 @@ pub fn convert_list_config_resources_response(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::*;
+    use super::*;
     use kafka_protocol::messages::ApiKey;
     use kafka_protocol::messages::alter_configs_response::AlterConfigsResourceResponse as KpAlterConfigsResourceResponse;
     use kafka_protocol::messages::describe_configs_response::{

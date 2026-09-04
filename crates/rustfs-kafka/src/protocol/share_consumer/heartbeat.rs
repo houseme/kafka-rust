@@ -277,8 +277,8 @@ fn convert_share_assignment(assignment: sgh_resp::Assignment) -> HeartbeatAssign
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::str_bytes;
+    use super::*;
 
     #[test]
     fn consumer_group_heartbeat_request_maps_all_optional_fields() {
