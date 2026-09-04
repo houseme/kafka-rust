@@ -1,10 +1,9 @@
 //! `DeleteTopics` protocol (API key 20) for topic administration.
 
-use bytes::BytesMut;
 use kafka_protocol::messages::{DeleteTopicsRequest, DeleteTopicsResponse, RequestHeader};
-use kafka_protocol::protocol::{Encodable, HeaderVersion, StrBytes};
+use kafka_protocol::protocol::StrBytes;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 pub const API_KEY_DELETE_TOPICS: i16 = 20;
 pub const API_VERSION_DELETE_TOPICS: i16 = 2;
@@ -71,27 +70,7 @@ fn encode_framed_delete_topics_request(
     request: &DeleteTopicsRequest,
 ) -> Result<Vec<u8>> {
     let version = API_VERSION_DELETE_TOPICS;
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(
-            &mut header_buf,
-            DeleteTopicsRequest::header_version(version),
-        )
-        .map_err(|_| Error::codec())?;
-
-    let mut body_buf = BytesMut::new();
-    request
-        .encode(&mut body_buf, version)
-        .map_err(|_| Error::codec())?;
-
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
-    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
-    let mut out = BytesMut::with_capacity(4 + out_len);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
-    Ok(out.to_vec())
+    crate::protocol::encode_request_frame(header, request, version).map(|frame| frame.to_vec())
 }
 
 /// Convert a generated `DeleteTopicsResponse` into the crate's public shape.
@@ -114,7 +93,7 @@ mod tests {
     use super::*;
     use bytes::{Buf, Bytes};
     use kafka_protocol::messages::delete_topics_response::DeletableTopicResult as KpDeletableTopicResult;
-    use kafka_protocol::protocol::Decodable;
+    use kafka_protocol::protocol::{Decodable, HeaderVersion};
 
     #[test]
     fn test_delete_topics_request_builds() {

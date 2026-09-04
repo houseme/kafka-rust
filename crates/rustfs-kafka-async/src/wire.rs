@@ -1,8 +1,9 @@
 //! Shared async Kafka wire-protocol helpers.
 
-use bytes::{Bytes, BytesMut};
-use kafka_protocol::messages::{RequestHeader, ResponseHeader};
+use bytes::Bytes;
+use kafka_protocol::messages::RequestHeader;
 use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
+use rustfs_kafka::client::{decode_response_payload, encode_request_frame};
 use rustfs_kafka::error::{Error, KafkaCode, ProtocolError, Result};
 
 use crate::connection::AsyncConnection;
@@ -41,39 +42,14 @@ pub(crate) fn encode_kp_request<T>(
 where
     T: Encodable + HeaderVersion,
 {
-    let header_version = T::header_version(api_version);
-
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let total_len = usize_to_i32(header_buf.len() + body_buf.len())?;
-    let mut out = BytesMut::with_capacity(4 + non_negative_i32_to_usize(total_len)?);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
-    Ok(out.freeze())
+    encode_request_frame(header, body, api_version)
 }
 
-pub(crate) fn decode_kp_response<R>(mut bytes: Bytes, api_version: i16) -> Result<R>
+pub(crate) fn decode_kp_response<R>(bytes: Bytes, api_version: i16) -> Result<R>
 where
     R: Decodable + HeaderVersion,
 {
-    let response_header_version = R::header_version(api_version);
-    let _resp_header = ResponseHeader::decode(&mut bytes, response_header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    R::decode(&mut bytes, api_version).map_err(|_| Error::Protocol(ProtocolError::Codec))
-}
-
-pub(crate) fn usize_to_i32(value: usize) -> Result<i32> {
-    i32::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
+    decode_response_payload(bytes, api_version)
 }
 
 pub(crate) fn non_negative_i32_to_usize(value: i32) -> Result<usize> {

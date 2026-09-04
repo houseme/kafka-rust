@@ -110,6 +110,8 @@ pub use crate::protocol::telemetry::{
     build_get_telemetry_subscriptions_request, build_push_telemetry_request,
     convert_get_telemetry_subscriptions_response, convert_push_telemetry_response,
 };
+#[doc(hidden)]
+pub use crate::protocol::{decode_response_payload, encode_request_frame};
 pub use crate::utils::PartitionOffset;
 
 #[cfg(feature = "security")]

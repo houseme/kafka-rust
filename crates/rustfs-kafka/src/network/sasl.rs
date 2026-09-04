@@ -7,14 +7,14 @@ use std::io::{Read, Write};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use kafka_protocol::messages::{
-    ApiKey, RequestHeader, ResponseHeader, SaslAuthenticateRequest, SaslAuthenticateResponse,
-    SaslHandshakeRequest, SaslHandshakeResponse,
+    ApiKey, RequestHeader, SaslAuthenticateRequest, SaslAuthenticateResponse, SaslHandshakeRequest,
+    SaslHandshakeResponse,
 };
 use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
-use pbkdf2::pbkdf2_hmac;
+use pbkdf2::pbkdf2_hmac_array;
 use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256, Sha512};
 
@@ -273,8 +273,7 @@ fn compute_scram_sha256(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     type HmacSha256 = Hmac<Sha256>;
 
-    let mut salted_password = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations, &mut salted_password);
+    let salted_password = pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), salt, iterations);
     let client_key = hmac_bytes::<HmacSha256>(&salted_password, b"Client Key")?;
     let stored_key = Sha256::digest(&client_key).to_vec();
     let client_signature = hmac_bytes::<HmacSha256>(&stored_key, auth_message.as_bytes())?;
@@ -292,8 +291,7 @@ fn compute_scram_sha512(
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     type HmacSha512 = Hmac<Sha512>;
 
-    let mut salted_password = [0u8; 64];
-    pbkdf2_hmac::<Sha512>(password.as_bytes(), salt, iterations, &mut salted_password);
+    let salted_password = pbkdf2_hmac_array::<Sha512, 64>(password.as_bytes(), salt, iterations);
     let client_key = hmac_bytes::<HmacSha512>(&salted_password, b"Client Key")?;
     let stored_key = Sha512::digest(&client_key).to_vec();
     let client_signature = hmac_bytes::<HmacSha512>(&stored_key, auth_message.as_bytes())?;
@@ -355,26 +353,7 @@ fn send_kp_request_on_stream<T>(
 where
     T: Encodable + HeaderVersion,
 {
-    let header_version = T::header_version(api_version);
-
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    let total_len = i32::try_from(header_buf.len() + body_buf.len())
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-    let mut out = BytesMut::with_capacity(
-        4 + usize::try_from(total_len).map_err(|_| Error::Protocol(ProtocolError::Codec))?,
-    );
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
+    let out = crate::protocol::encode_request_frame(header, body, api_version)?;
     stream.write_all(&out).map_err(Error::from)?;
     stream.flush().map_err(Error::from)
 }
@@ -392,13 +371,7 @@ where
 
     let mut payload = vec![0u8; usize::try_from(size).map_err(|_| Error::codec())?];
     stream.read_exact(&mut payload).map_err(Error::from)?;
-    let mut bytes = Bytes::from(payload);
-
-    let response_header_version = R::header_version(api_version);
-    let _resp_header = ResponseHeader::decode(&mut bytes, response_header_version)
-        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
-
-    R::decode(&mut bytes, api_version).map_err(|_| Error::Protocol(ProtocolError::Codec))
+    crate::protocol::decode_response_payload(Bytes::from(payload), api_version)
 }
 
 fn map_kafka_code_or_unknown(code: i16) -> Error {

@@ -114,6 +114,73 @@ pub fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression
     }
 }
 
+/// Encodes a generated `kafka-protocol` request as a complete Kafka wire frame.
+///
+/// The returned buffer includes the four-byte size prefix followed by the
+/// request header and request body. Capacity is computed from
+/// `kafka-protocol`'s generated `compute_size` implementations before any
+/// bytes are written, avoiding intermediate header/body buffers on the hot
+/// request path.
+///
+/// # Errors
+///
+/// Returns an error if the request cannot be sized or encoded, or if the
+/// encoded frame length does not fit Kafka's i32 length prefix.
+pub fn encode_request_frame<T>(
+    header: &kafka_protocol::messages::RequestHeader,
+    body: &T,
+    api_version: i16,
+) -> Result<bytes::Bytes>
+where
+    T: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
+{
+    use bytes::BytesMut;
+    use kafka_protocol::protocol::Encodable;
+
+    let header_version = T::header_version(api_version);
+    let header_len = header
+        .compute_size(header_version)
+        .map_err(|_| Error::codec())?;
+    let body_len = body.compute_size(api_version).map_err(|_| Error::codec())?;
+    let payload_len = header_len.checked_add(body_len).ok_or_else(Error::codec)?;
+    let total_len = usize_to_i32(payload_len)?;
+    let frame_len = 4usize.checked_add(payload_len).ok_or_else(Error::codec)?;
+
+    let mut out = BytesMut::with_capacity(frame_len);
+    out.extend_from_slice(&total_len.to_be_bytes());
+    header
+        .encode(&mut out, header_version)
+        .map_err(|_| Error::codec())?;
+    body.encode(&mut out, api_version)
+        .map_err(|_| Error::codec())?;
+    debug_assert_eq!(out.len(), frame_len);
+
+    Ok(out.freeze())
+}
+
+/// Decodes a generated `kafka-protocol` response payload.
+///
+/// The input must start at the Kafka response header, after the four-byte frame
+/// size prefix has already been consumed.
+///
+/// # Errors
+///
+/// Returns an error if the response header or body cannot be decoded for the
+/// selected API version.
+pub fn decode_response_payload<R>(mut bytes: bytes::Bytes, api_version: i16) -> Result<R>
+where
+    R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+{
+    use kafka_protocol::messages::ResponseHeader;
+    use kafka_protocol::protocol::Decodable;
+
+    let response_header_version = R::header_version(api_version);
+    let _resp_header =
+        ResponseHeader::decode(&mut bytes, response_header_version).map_err(|_| Error::codec())?;
+
+    R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
+}
+
 // --------------------------------------------------------------------
 // Shared data types (moved from old protocol module)
 // --------------------------------------------------------------------
@@ -378,5 +445,45 @@ mod proptests {
             let d = Duration::from_millis(millis);
             prop_assert_eq!(to_millis_i64(d)?, i64::try_from(millis)?);
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use bytes::Buf;
+    use kafka_protocol::messages::{ApiKey, ApiVersionsRequest, RequestHeader};
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
+
+    use super::*;
+
+    #[test]
+    fn encode_request_frame_prefixes_exact_computed_size() {
+        let header = RequestHeader::default()
+            .with_client_id(Some(StrBytes::from_static_str("test-client")))
+            .with_request_api_key(ApiKey::ApiVersions as i16)
+            .with_request_api_version(0)
+            .with_correlation_id(42);
+        let request = ApiVersionsRequest::default();
+        let header_version = ApiVersionsRequest::header_version(0);
+        let expected_payload_len =
+            header.compute_size(header_version).unwrap() + request.compute_size(0).unwrap();
+
+        let frame = encode_request_frame(&header, &request, 0).unwrap();
+        let mut bytes = frame.clone();
+        let declared_len = bytes.get_i32();
+
+        assert_eq!(usize::try_from(declared_len).unwrap(), expected_payload_len);
+        assert_eq!(frame.len(), 4 + expected_payload_len);
+
+        let decoded_header =
+            RequestHeader::decode(&mut bytes, ApiVersionsRequest::header_version(0)).unwrap();
+        assert_eq!(decoded_header.request_api_key, ApiKey::ApiVersions as i16);
+        assert_eq!(decoded_header.request_api_version, 0);
+        assert_eq!(decoded_header.correlation_id, 42);
+        assert_eq!(
+            decoded_header.client_id.as_ref().map(ToString::to_string),
+            Some("test-client".to_owned())
+        );
+        assert!(!bytes.has_remaining());
     }
 }

@@ -12,7 +12,7 @@ use crate::error::{Error, KafkaCode, Result};
 use crate::protocol;
 use crate::utils::PartitionOffset;
 
-use super::config::ClientConfig;
+use super::{config::ClientConfig, transport};
 
 fn decode_find_coordinator_response(
     conn: &mut crate::network::KafkaConnection,
@@ -21,7 +21,7 @@ fn decode_find_coordinator_response(
     use kafka_protocol::messages::{FindCoordinatorResponse, ResponseHeader};
     use kafka_protocol::protocol::{Decodable, HeaderVersion};
 
-    let size = get_response_size(conn)?;
+    let size = transport::get_response_size(conn)?;
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
 
     let mut candidate_versions = vec![requested_version, 6, 5, 4, 3, 2, 1, 0];
@@ -135,7 +135,7 @@ fn get_group_coordinator(
             "get_group_coordinator_kp: asking for coordinator of '{}' on: {:?}",
             group, conn
         );
-        kp_send_request(
+        transport::kp_send_request(
             conn,
             &header,
             &request,
@@ -210,14 +210,14 @@ fn commit_offsets_inner(
             -1,
             offsets,
         );
-        kp_send_request(
+        transport::kp_send_request(
             conn,
             &header,
             &request,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
         )
         .map_err(|e| e.with_broker_context(&host, "OffsetCommit"))?;
-        let kp_resp = kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
+        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::OffsetCommitResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_COMMIT,
         )
@@ -289,14 +289,14 @@ fn fetch_group_offsets_inner(
             group,
             partitions,
         );
-        kp_send_request(
+        transport::kp_send_request(
             conn,
             &header,
             &request,
             crate::protocol::API_VERSION_OFFSET_FETCH,
         )
         .map_err(|e| e.with_broker_context(&host, "OffsetFetch"))?;
-        let kp_resp = kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
+        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::OffsetFetchResponse>(
             conn,
             crate::protocol::API_VERSION_OFFSET_FETCH,
         )
@@ -352,64 +352,6 @@ fn fetch_group_offsets_inner(
             None => return Ok(topic_map),
         }
     }
-}
-
-fn kp_send_request<T>(
-    conn: &mut crate::network::KafkaConnection,
-    header: &kafka_protocol::messages::RequestHeader,
-    body: &T,
-    api_version: i16,
-) -> Result<()>
-where
-    T: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
-{
-    use bytes::BytesMut;
-    use kafka_protocol::protocol::Encodable;
-    let header_version = T::header_version(api_version);
-
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, header_version)
-        .map_err(|_| Error::codec())?;
-
-    let mut body_buf = BytesMut::new();
-    body.encode(&mut body_buf, api_version)
-        .map_err(|_| Error::codec())?;
-
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
-    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
-    let mut out = BytesMut::with_capacity(4 + out_len);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
-    conn.send(&out)?;
-    Ok(())
-}
-
-fn kp_get_response<
-    R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
->(
-    conn: &mut crate::network::KafkaConnection,
-    api_version: i16,
-) -> Result<R> {
-    use kafka_protocol::messages::ResponseHeader;
-    use kafka_protocol::protocol::Decodable;
-
-    let size = get_response_size(conn)?;
-    let resp = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = resp;
-    let response_header_version = R::header_version(api_version);
-    let _resp_header =
-        ResponseHeader::decode(&mut bytes, response_header_version).map_err(|_| Error::codec())?;
-
-    R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
-}
-
-fn get_response_size(conn: &mut crate::network::KafkaConnection) -> Result<i32> {
-    let mut buf = [0u8; 4];
-    conn.read_exact(&mut buf)?;
-    Ok(i32::from_be_bytes(buf))
 }
 
 #[allow(clippy::disallowed_methods)]

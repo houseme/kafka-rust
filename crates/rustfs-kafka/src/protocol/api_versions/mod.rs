@@ -182,11 +182,7 @@ fn fetch_api_versions_response_raw(
     correlation_id: i32,
     client_id: &str,
 ) -> Result<kafka_protocol::messages::ApiVersionsResponse> {
-    use bytes::BytesMut;
-    use kafka_protocol::messages::{
-        ApiVersionsRequest, ApiVersionsResponse, RequestHeader, ResponseHeader,
-    };
-    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
+    use kafka_protocol::messages::{ApiVersionsRequest, ApiVersionsResponse, RequestHeader};
 
     let request = ApiVersionsRequest::default();
 
@@ -197,25 +193,9 @@ fn fetch_api_versions_response_raw(
         .with_client_id(Some(kafka_protocol::protocol::StrBytes::from_string(
             client_id.to_owned(),
         )));
-    let request_header_version = ApiVersionsRequest::header_version(API_VERSIONS_REQUEST_VERSION);
-    let response_header_version = ApiVersionsResponse::header_version(API_VERSIONS_REQUEST_VERSION);
 
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, request_header_version)
-        .map_err(|_| Error::codec())?;
-
-    let mut body_buf = BytesMut::new();
-    request
-        .encode(&mut body_buf, API_VERSIONS_REQUEST_VERSION)
-        .map_err(|_| Error::codec())?;
-
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
-    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
-    let mut out = BytesMut::with_capacity(4 + out_len);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
+    let out =
+        crate::protocol::encode_request_frame(&header, &request, API_VERSIONS_REQUEST_VERSION)?;
 
     conn.send(&out)?;
 
@@ -225,15 +205,10 @@ fn fetch_api_versions_response_raw(
         i32::from_be_bytes(buf)
     };
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = resp_bytes;
-    let _resp_header =
-        ResponseHeader::decode(&mut bytes, response_header_version).map_err(|_| Error::codec())?;
-
-    let kp_resp = kafka_protocol::messages::ApiVersionsResponse::decode(
-        &mut bytes,
+    let kp_resp = crate::protocol::decode_response_payload::<ApiVersionsResponse>(
+        resp_bytes,
         API_VERSIONS_REQUEST_VERSION,
-    )
-    .map_err(|_| Error::codec())?;
+    )?;
 
     Ok(kp_resp)
 }

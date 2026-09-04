@@ -1,13 +1,11 @@
 //! `InitProducerId` protocol (API key 22) for idempotent/transactional producer support.
 
-use bytes::BytesMut;
 use kafka_protocol::messages::{
-    InitProducerIdRequest, InitProducerIdResponse, RequestHeader, ResponseHeader,
+    ApiKey, InitProducerIdRequest, InitProducerIdResponse, RequestHeader,
 };
 use kafka_protocol::protocol::StrBytes;
-use kafka_protocol::protocol::{Decodable, Encodable};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::network::KafkaConnection;
 
 pub const API_VERSION_INIT_PRODUCER_ID: i16 = 2;
@@ -47,26 +45,12 @@ pub fn fetch_init_producer_id(
     }
 
     let header = RequestHeader::default()
-        .with_request_api_key(22)
+        .with_request_api_key(ApiKey::InitProducerId as i16)
         .with_request_api_version(version)
         .with_correlation_id(correlation_id)
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())));
 
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(&mut header_buf, version)
-        .map_err(|_| Error::codec())?;
-
-    let mut body_buf = BytesMut::new();
-    req.encode(&mut body_buf, version)
-        .map_err(|_| Error::codec())?;
-
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
-    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
-    let mut out = BytesMut::with_capacity(4 + out_len);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
+    let out = crate::protocol::encode_request_frame(&header, &req, version)?;
 
     conn.send(&out)?;
 
@@ -76,11 +60,8 @@ pub fn fetch_init_producer_id(
         i32::from_be_bytes(buf)
     };
     let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = resp_bytes;
-    let _resp_header = ResponseHeader::decode(&mut bytes, version).map_err(|_| Error::codec())?;
-
     let kp_resp =
-        InitProducerIdResponse::decode(&mut bytes, version).map_err(|_| Error::codec())?;
+        crate::protocol::decode_response_payload::<InitProducerIdResponse>(resp_bytes, version)?;
     Ok(InitProducerIdResponseData::from_response(&kp_resp))
 }
 

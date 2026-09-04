@@ -1,13 +1,12 @@
 //! `CreateTopics` protocol (API key 19) for topic administration.
 
-use bytes::BytesMut;
 use kafka_protocol::messages::{
     CreateTopicsRequest, CreateTopicsResponse, RequestHeader,
     create_topics_request::{CreatableTopic, CreatableTopicConfig},
 };
-use kafka_protocol::protocol::{Encodable, HeaderVersion, StrBytes};
+use kafka_protocol::protocol::StrBytes;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 pub const API_KEY_CREATE_TOPICS: i16 = 19;
 pub const API_VERSION_CREATE_TOPICS: i16 = 2;
@@ -138,27 +137,7 @@ fn encode_framed_create_topics_request(
     request: &CreateTopicsRequest,
 ) -> Result<Vec<u8>> {
     let version = API_VERSION_CREATE_TOPICS;
-    let mut header_buf = BytesMut::new();
-    header
-        .encode(
-            &mut header_buf,
-            CreateTopicsRequest::header_version(version),
-        )
-        .map_err(|_| Error::codec())?;
-
-    let mut body_buf = BytesMut::new();
-    request
-        .encode(&mut body_buf, version)
-        .map_err(|_| Error::codec())?;
-
-    let total_len = crate::protocol::usize_to_i32(header_buf.len() + body_buf.len())?;
-    let out_len = crate::protocol::non_negative_i32_to_usize(total_len)?;
-    let mut out = BytesMut::with_capacity(4 + out_len);
-    out.extend_from_slice(&total_len.to_be_bytes());
-    out.extend_from_slice(&header_buf);
-    out.extend_from_slice(&body_buf);
-
-    Ok(out.to_vec())
+    crate::protocol::encode_request_frame(header, request, version).map(|frame| frame.to_vec())
 }
 
 /// Convert a generated `CreateTopicsResponse` into the crate's public shape.
@@ -182,7 +161,7 @@ mod tests {
     use super::*;
     use bytes::{Buf, Bytes};
     use kafka_protocol::messages::create_topics_response::CreatableTopicResult;
-    use kafka_protocol::protocol::Decodable;
+    use kafka_protocol::protocol::{Decodable, HeaderVersion};
 
     #[test]
     fn test_topic_config_builder() {
