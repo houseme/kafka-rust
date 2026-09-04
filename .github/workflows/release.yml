@@ -1,0 +1,314 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.3.0). Leave empty to use tag."
+        required: false
+        type: string
+      dry_run:
+        description: "Dry run - skip crates.io publish and GitHub release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_dry_run: ${{ steps.version.outputs.is_dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+            TAG="v${VERSION}"
+          elif [ -n "${GITHUB_REF_NAME}" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          else
+            echo "::error::No version provided. Use workflow_dispatch input or push a v* tag."
+            exit 1
+          fi
+
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "is_dry_run=${{ inputs.dry_run || false }}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing version: ${VERSION} (tag: ${TAG})"
+
+      - name: Verify version consistency
+        run: |
+          EXPECTED="${{ steps.version.outputs.version }}"
+          cargo metadata --no-deps --format-version 1 > /tmp/metadata.json
+          python3 - "${EXPECTED}" <<'PY'
+          import json
+          import sys
+
+          expected = sys.argv[1]
+          expected_packages = {"rustfs-kafka", "rustfs-kafka-async"}
+
+          with open("/tmp/metadata.json", encoding="utf-8") as f:
+              metadata = json.load(f)
+
+          versions = {
+              package["name"]: package["version"]
+              for package in metadata["packages"]
+              if package["name"] in expected_packages
+          }
+
+          missing = expected_packages - set(versions)
+          if missing:
+              raise SystemExit(f"missing package metadata for: {', '.join(sorted(missing))}")
+
+          mismatched = {name: version for name, version in versions.items() if version != expected}
+          if mismatched:
+              details = ", ".join(f"{name}={version}" for name, version in sorted(mismatched.items()))
+              raise SystemExit(f"version mismatch; expected {expected}, got {details}")
+
+          print(f"Version OK: {expected}")
+          PY
+
+  test:
+    name: Test (${{ matrix.os }})
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Test workspace
+        run: cargo test --workspace
+
+      - name: Test docs
+        run: cargo test --workspace --doc
+
+      - name: Build all features
+        run: cargo build --workspace --all-features
+
+      - name: Test rustfs-kafka default TLS backend
+        run: cargo test -p rustfs-kafka --lib --tests --verbose
+
+      - name: Test rustfs-kafka ring TLS backend
+        run: cargo test -p rustfs-kafka --lib --tests --verbose --no-default-features --features security-ring
+
+      - name: Test rustfs-kafka without TLS
+        run: cargo test -p rustfs-kafka --lib --tests --verbose --no-default-features
+
+  lint:
+    name: Lint
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Rustfmt
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  publish:
+    name: Publish to crates.io
+    needs: [prepare, test, lint]
+    if: needs.prepare.outputs.is_dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish rustfs-kafka
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish --registry crates-io --package rustfs-kafka --allow-dirty
+          echo "Waiting for crates.io index..."
+          sleep 30
+
+      - name: Publish rustfs-kafka-async
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --registry crates-io --package rustfs-kafka-async --allow-dirty
+
+  github-release:
+    name: GitHub Release
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.is_dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Generate changelog
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          release_version = os.environ["RELEASE_VERSION"]
+          release_tag = os.environ["RELEASE_TAG"]
+          repository = os.environ["REPOSITORY"]
+
+          def git_output(*args: str) -> str:
+              result = subprocess.run(
+                  ["git", *args],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.DEVNULL,
+                  text=True,
+              )
+              return result.stdout.strip()
+
+          def previous_tag() -> str:
+              previous = git_output("describe", "--tags", "--abbrev=0", f"{release_tag}^")
+              if previous:
+                  return previous
+              return git_output("describe", "--tags", "--abbrev=0", "HEAD^")
+
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          section_pattern = re.compile(
+              rf"^## \[{re.escape(release_version)}\][^\n]*\n"
+              rf"(?P<body>.*?)(?=^## \[|^\[[^\]]+\]:\s|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          section_match = section_pattern.search(changelog)
+          release_body = section_match.group("body").strip() if section_match else ""
+
+          prev_tag = previous_tag()
+          if not release_body:
+              if prev_tag:
+                  commits = git_output(
+                      "log",
+                      "--pretty=format:- %s (%h)",
+                      f"{prev_tag}..HEAD",
+                      "--no-merges",
+                  )
+                  release_body = "### Changes\n\n" + (commits or "- No user-facing changes recorded.")
+              else:
+                  if release_version != "0.1.0":
+                      raise SystemExit(
+                          "refusing to emit Initial release for a non-initial version; "
+                          "check checkout tag history and CHANGELOG.md"
+                      )
+                  release_body = "### Changes\n\nInitial release."
+
+          notes = [
+              f"## kafka-rust v{release_version}",
+              "",
+              "Rust client libraries for Apache Kafka.",
+              "",
+              release_body,
+              "",
+              "### Installation",
+              "",
+              "```toml",
+              "[dependencies]",
+              f'rustfs-kafka = "{release_version}"',
+              f'rustfs-kafka-async = "{release_version}"',
+              "```",
+          ]
+
+          if prev_tag:
+              compare_url = f"https://github.com/{repository}/compare/{prev_tag}...{release_tag}"
+              notes.extend(["", f"**Full Changelog**: [{prev_tag}...{release_tag}]({compare_url})"])
+
+          Path("/tmp/release-notes.md").write_text("\n".join(notes).rstrip() + "\n", encoding="utf-8")
+          print(f"Release notes generated for {release_tag}; previous tag: {prev_tag or '<none>'}")
+          PY
+
+          cat /tmp/release-notes.md
+
+      - name: Validate release notes
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          test -s /tmp/release-notes.md
+          grep -F "## kafka-rust v${RELEASE_VERSION}" /tmp/release-notes.md
+          grep -F 'rustfs-kafka = "' /tmp/release-notes.md
+          grep -F 'rustfs-kafka-async = "' /tmp/release-notes.md
+
+          if [ "${RELEASE_VERSION}" != "0.1.0" ] && grep -Fxq "Initial release." /tmp/release-notes.md; then
+            echo "::error::Non-initial releases must not publish placeholder release notes."
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: v${{ needs.prepare.outputs.version }}
+          body_path: /tmp/release-notes.md
+          draft: false
+          prerelease: ${{ contains(needs.prepare.outputs.version, '-') }}
+          generate_release_notes: false
+
+  dry-run-summary:
+    name: Dry Run Summary
+    needs: [prepare, test, lint]
+    if: needs.prepare.outputs.is_dry_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          {
+            echo "## Dry Run Complete"
+            echo ""
+            echo "- Version: \`${{ needs.prepare.outputs.version }}\`"
+            echo "- Tag: \`${{ needs.prepare.outputs.tag }}\`"
+            echo "- Tests: passed"
+            echo "- Lint: passed"
+            echo ""
+            echo "To publish for real, re-run with dry_run unchecked."
+          } >> "$GITHUB_STEP_SUMMARY"
