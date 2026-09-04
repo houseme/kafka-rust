@@ -1,4 +1,4 @@
-//! ShareAcknowledge types, request builders, and response converters.
+//! `ShareAcknowledge` types, request builders, and response converters.
 
 use kafka_protocol::messages::{
     ApiKey, RequestHeader, ShareAcknowledgeRequest, ShareAcknowledgeResponse,

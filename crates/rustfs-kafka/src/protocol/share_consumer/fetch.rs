@@ -1,4 +1,4 @@
-//! ShareFetch types, request builders, and response converters.
+//! `ShareFetch` types, request builders, and response converters.
 
 use bytes::Bytes;
 use kafka_protocol::messages::{
