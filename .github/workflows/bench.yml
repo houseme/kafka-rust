@@ -5,6 +5,9 @@ on:
     - cron: '0 0 * * 0'  # Every Sunday UTC 0:00
   workflow_dispatch:  # Manual trigger
 
+permissions:
+  contents: read
+
 jobs:
   bench:
     runs-on: ubuntu-latest
