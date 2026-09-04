@@ -1,7 +1,7 @@
 # rustfs-kafka-async Agent Notes
 
 Scope: async wrapper crate for `rustfs-kafka`.
-Current release target: `1.3.0`.
+Current release target: `1.3.1`.
 
 ## What This Crate Owns
 

@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-04
+
 ### Added
 
 - Added `KafkaClient::resolved_api_version` and `AsyncKafkaClient::resolved_api_version`
   to expose the effective cached broker API version selected for a host and API key.
+- Added GitHub Actions release automation for tagged/manual releases, crates.io publishing,
+  GitHub Release creation, and dry-run validation.
+- Added a repository-local release skill documenting the kafka-rust release workflow.
 
 ### Changed
 
@@ -21,6 +26,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
   preserving caller-selected versions for raw protocol requests.
 - Added `CreateTopics` and `DeleteTopics` to API version constant, fallback, and resolver
   coverage.
+
+### Fixed
+
+- Fixed crate package readme paths so published packages use the intended crate readmes.
 
 ## [1.3.0] - 2026-09-04
 

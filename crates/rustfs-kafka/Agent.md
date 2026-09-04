@@ -1,7 +1,7 @@
 # rustfs-kafka Agent Notes
 
 Scope: synchronous core crate.
-Current release target: `1.3.0`.
+Current release target: `1.3.1`.
 
 ## What This Crate Owns
 

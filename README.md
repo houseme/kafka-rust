@@ -13,14 +13,14 @@ Fork project: forked from [kafka-rust](https://github.com/kafka-rust/kafka-rust)
 - `rustfs-kafka`: synchronous client/producer/consumer/admin APIs.
 - `rustfs-kafka-async`: async wrapper crate based on tokio.
 
-Current release target: `1.3.0`.
+Current release target: `1.3.1`.
 
 ## Crates
 
 ```toml
 [dependencies]
-rustfs-kafka = "1.3.0"
-rustfs-kafka-async = "1.3.0"
+rustfs-kafka = "1.3.1"
+rustfs-kafka-async = "1.3.1"
 ```
 
 ## Core Features

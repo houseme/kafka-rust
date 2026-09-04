@@ -30,7 +30,7 @@ including `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 
 ```toml
 [dependencies]
-rustfs-kafka-async = "1.3.0"
+rustfs-kafka-async = "1.3.1"
 ```
 
 Default builds include gzip, snappy, lz4, and zstd record batch codecs. With

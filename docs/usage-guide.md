@@ -9,8 +9,8 @@ This guide covers common usage for both:
 
 ```toml
 [dependencies]
-rustfs-kafka = "1.3.0"
-rustfs-kafka-async = "1.3.0"
+rustfs-kafka = "1.3.1"
+rustfs-kafka-async = "1.3.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -135,7 +135,7 @@ options from local member/assignment state.
 - Disable all default features:
 
 ```toml
-rustfs-kafka = { version = "1.3.0", default-features = false }
+rustfs-kafka = { version = "1.3.1", default-features = false }
 ```
 
 - Default builds enable gzip, snappy, lz4, and zstd record batch codecs through
@@ -143,7 +143,7 @@ rustfs-kafka = { version = "1.3.0", default-features = false }
 - Smaller builds can opt into individual codecs:
 
 ```toml
-rustfs-kafka = { version = "1.3.0", default-features = false, features = ["security", "gzip"] }
+rustfs-kafka = { version = "1.3.1", default-features = false, features = ["security", "gzip"] }
 ```
 
 ## 5. Integration Testing
