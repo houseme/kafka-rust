@@ -1,11 +1,33 @@
 //! Async Kafka client for metadata and connection management.
 
-use rustfs_kafka::client::SecurityConfig;
-use rustfs_kafka::error::{ConnectionError, Error, Result};
+use std::time::Duration;
+
+use rustfs_kafka::client::{
+    ApiVersionsResponseData, ConsumerGroupHeartbeatOptions, ConsumerGroupHeartbeatResponseData,
+    CreateTopicsResponseData, DeleteTopicsResponseData, GetTelemetrySubscriptionsOptions,
+    PushTelemetryOptions, PushTelemetryResponseData, SecurityConfig, ShareAcknowledgeOptions,
+    ShareAcknowledgeResponseData, ShareFetchOptions, ShareFetchResponseData,
+    ShareGroupHeartbeatOptions, ShareGroupHeartbeatResponseData,
+    TelemetrySubscriptionsResponseData, TopicConfig, build_consumer_group_heartbeat_request,
+    build_create_topics_protocol_request, build_delete_topics_protocol_request,
+    build_get_telemetry_subscriptions_request, build_push_telemetry_request,
+    build_share_acknowledge_request, build_share_fetch_request,
+    build_share_group_heartbeat_request, convert_api_versions_response,
+    convert_consumer_group_heartbeat_response, convert_create_topics_response,
+    convert_delete_topics_response, convert_get_telemetry_subscriptions_response,
+    convert_push_telemetry_response, convert_share_acknowledge_response,
+    convert_share_fetch_response, convert_share_group_heartbeat_response,
+};
+use rustfs_kafka::error::{ConnectionError, Error, ProtocolError, Result};
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-use kafka_protocol::messages::RequestHeader;
+use kafka_protocol::messages::{
+    ApiKey, ApiVersionsRequest, ApiVersionsResponse, ConsumerGroupHeartbeatResponse,
+    CreateTopicsResponse, DeleteTopicsResponse, GetTelemetrySubscriptionsResponse,
+    PushTelemetryResponse, RequestHeader, ShareAcknowledgeResponse, ShareFetchResponse,
+    ShareGroupHeartbeatResponse,
+};
 use kafka_protocol::protocol::StrBytes;
 
 use crate::connection::{AsyncConnection, AsyncConnectionPool};
@@ -186,6 +208,162 @@ impl AsyncKafkaClient {
         Err(last_err.unwrap_or(Error::Connection(ConnectionError::NoHostReachable)))
     }
 
+    /// Fetches Kafka API version ranges advertised by a broker.
+    ///
+    /// This async convenience API uses the same raw generated protocol path as
+    /// [`send_raw_protocol_request`] and converts the response into the public
+    /// `rustfs-kafka` response shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn fetch_api_versions(&mut self) -> Result<ApiVersionsResponseData> {
+        let response: ApiVersionsResponse = self
+            .send_raw_protocol_request(
+                ApiKey::ApiVersions as i16,
+                0,
+                &ApiVersionsRequest::default(),
+            )
+            .await?;
+        Ok(convert_api_versions_response(response))
+    }
+
+    /// Creates topics using the generated `kafka-protocol` `CreateTopics` codec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable, `timeout` does not fit the
+    /// Kafka protocol field, or the broker response cannot be decoded.
+    pub async fn create_topics(
+        &mut self,
+        topics: &[TopicConfig],
+        timeout: Duration,
+    ) -> Result<CreateTopicsResponseData> {
+        let timeout_ms = duration_to_millis_i32(timeout)?;
+        let (_header, request) = build_create_topics_protocol_request(0, "", topics, timeout_ms);
+        let response: CreateTopicsResponse = self
+            .send_raw_protocol_request(ApiKey::CreateTopics as i16, 2, &request)
+            .await?;
+        Ok(convert_create_topics_response(response))
+    }
+
+    /// Deletes topics by name using the generated `kafka-protocol` `DeleteTopics` codec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable, `timeout` does not fit the
+    /// Kafka protocol field, or the broker response cannot be decoded.
+    pub async fn delete_topics(
+        &mut self,
+        topic_names: &[&str],
+        timeout: Duration,
+    ) -> Result<DeleteTopicsResponseData> {
+        let timeout_ms = duration_to_millis_i32(timeout)?;
+        let (_header, request) =
+            build_delete_topics_protocol_request(0, "", topic_names, timeout_ms);
+        let response: DeleteTopicsResponse = self
+            .send_raw_protocol_request(ApiKey::DeleteTopics as i16, 2, &request)
+            .await?;
+        Ok(convert_delete_topics_response(response))
+    }
+
+    /// Fetches broker-side client telemetry subscription settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn get_telemetry_subscriptions(
+        &mut self,
+        client_instance_id: uuid::Uuid,
+    ) -> Result<TelemetrySubscriptionsResponseData> {
+        let options = GetTelemetrySubscriptionsOptions::for_client_instance(client_instance_id);
+        let (_header, request) = build_get_telemetry_subscriptions_request(0, "", options);
+        let response: GetTelemetrySubscriptionsResponse = self
+            .send_raw_protocol_request(ApiKey::GetTelemetrySubscriptions as i16, 0, &request)
+            .await?;
+        Ok(convert_get_telemetry_subscriptions_response(response))
+    }
+
+    /// Pushes an encoded client telemetry payload to a broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn push_telemetry(
+        &mut self,
+        options: &PushTelemetryOptions,
+    ) -> Result<PushTelemetryResponseData> {
+        let (_header, request) = build_push_telemetry_request(0, "", options);
+        let response: PushTelemetryResponse = self
+            .send_raw_protocol_request(ApiKey::PushTelemetry as i16, 0, &request)
+            .await?;
+        Ok(convert_push_telemetry_response(response))
+    }
+
+    /// Sends a low-level modern consumer-group heartbeat.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn consumer_group_heartbeat(
+        &mut self,
+        options: &ConsumerGroupHeartbeatOptions,
+    ) -> Result<ConsumerGroupHeartbeatResponseData> {
+        let (_header, request) = build_consumer_group_heartbeat_request(0, "", options);
+        let response: ConsumerGroupHeartbeatResponse = self
+            .send_raw_protocol_request(ApiKey::ConsumerGroupHeartbeat as i16, 1, &request)
+            .await?;
+        Ok(convert_consumer_group_heartbeat_response(response))
+    }
+
+    /// Sends a low-level share-group heartbeat.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn share_group_heartbeat(
+        &mut self,
+        options: &ShareGroupHeartbeatOptions,
+    ) -> Result<ShareGroupHeartbeatResponseData> {
+        let (_header, request) = build_share_group_heartbeat_request(0, "", options);
+        let response: ShareGroupHeartbeatResponse = self
+            .send_raw_protocol_request(ApiKey::ShareGroupHeartbeat as i16, 1, &request)
+            .await?;
+        Ok(convert_share_group_heartbeat_response(response))
+    }
+
+    /// Sends a low-level share fetch request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn share_fetch(
+        &mut self,
+        options: &ShareFetchOptions,
+    ) -> Result<ShareFetchResponseData> {
+        let (_header, request) = build_share_fetch_request(0, "", options);
+        let response: ShareFetchResponse = self
+            .send_raw_protocol_request(ApiKey::ShareFetch as i16, 1, &request)
+            .await?;
+        Ok(convert_share_fetch_response(response))
+    }
+
+    /// Sends a low-level share acknowledgement request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if brokers are unreachable or the broker response cannot be decoded.
+    pub async fn share_acknowledge(
+        &mut self,
+        options: &ShareAcknowledgeOptions,
+    ) -> Result<ShareAcknowledgeResponseData> {
+        let (_header, request) = build_share_acknowledge_request(0, "", options);
+        let response: ShareAcknowledgeResponse = self
+            .send_raw_protocol_request(ApiKey::ShareAcknowledge as i16, 1, &request)
+            .await?;
+        Ok(convert_share_acknowledge_response(response))
+    }
+
     fn request_hosts(&self) -> Vec<String> {
         if self.bootstrap_hosts.is_empty() {
             self.connected_hosts()
@@ -230,6 +408,10 @@ async fn connect_any_bootstrap(
     }
 
     false
+}
+
+fn duration_to_millis_i32(timeout: Duration) -> Result<i32> {
+    i32::try_from(timeout.as_millis()).map_err(|_| Error::Protocol(ProtocolError::Codec))
 }
 
 #[cfg(test)]
@@ -308,6 +490,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn async_typed_protocol_helpers_surface_no_host() {
+        let mut client = AsyncKafkaClient::new(vec![]).await.unwrap();
+
+        assert_no_host(client.fetch_api_versions().await);
+        assert_no_host(
+            client
+                .create_topics(&[TopicConfig::new("topic-a")], Duration::from_secs(10))
+                .await,
+        );
+        assert_no_host(
+            client
+                .delete_topics(&["topic-a"], Duration::from_secs(10))
+                .await,
+        );
+        assert_no_host(client.get_telemetry_subscriptions(uuid::Uuid::nil()).await);
+        assert_no_host(
+            client
+                .push_telemetry(&PushTelemetryOptions::new(
+                    uuid::Uuid::nil(),
+                    0,
+                    bytes::Bytes::new(),
+                ))
+                .await,
+        );
+        assert_no_host(
+            client
+                .consumer_group_heartbeat(&ConsumerGroupHeartbeatOptions::new(
+                    "group-a", "member-a",
+                ))
+                .await,
+        );
+        assert_no_host(
+            client
+                .share_group_heartbeat(&ShareGroupHeartbeatOptions::new("share-a", "member-a"))
+                .await,
+        );
+        assert_no_host(
+            client
+                .share_fetch(&ShareFetchOptions::new("share-a", "member-a"))
+                .await,
+        );
+        assert_no_host(
+            client
+                .share_acknowledge(&ShareAcknowledgeOptions::new("share-a", "member-a"))
+                .await,
+        );
+    }
+
+    #[test]
+    fn duration_to_millis_rejects_timeout_overflow() {
+        assert!(duration_to_millis_i32(Duration::from_millis(i32::MAX as u64)).is_ok());
+        assert!(matches!(
+            duration_to_millis_i32(Duration::from_millis(i32::MAX as u64 + 1)),
+            Err(Error::Protocol(ProtocolError::Codec))
+        ));
+    }
+
+    #[tokio::test]
     async fn raw_protocol_request_round_trips_generated_types() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -363,5 +603,12 @@ mod tests {
         assert_eq!(response.error_code, 0);
         assert_eq!(response.api_keys.len(), 1);
         assert_eq!(response.api_keys[0].api_key, ApiKey::ApiVersions as i16);
+    }
+
+    fn assert_no_host<T>(result: Result<T>) {
+        assert!(matches!(
+            result,
+            Err(Error::Connection(ConnectionError::NoHostReachable))
+        ));
     }
 }
