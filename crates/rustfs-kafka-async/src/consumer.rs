@@ -1027,8 +1027,12 @@ fn decode_partition_records(
         });
     }
 
-    let Ok(record_set) = RecordBatchDecoder::decode(&mut records_bytes) else {
-        return Err(Arc::new(Error::Protocol(ProtocolError::Codec)));
+    let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
+        Ok(record_set) => record_set,
+        Err(e) => {
+            let message = e.to_string();
+            return Err(Arc::new(map_record_decode_error(&message)));
+        }
     };
 
     let mut messages: Vec<OwnedMessage> = Vec::new();
@@ -1044,6 +1048,18 @@ fn decode_partition_records(
         highwatermark_offset: high_watermark,
         messages,
     })
+}
+
+fn map_record_decode_error(message: &str) -> Error {
+    if is_disabled_compression_feature_error(message) {
+        Error::Protocol(ProtocolError::UnsupportedCompression)
+    } else {
+        Error::Protocol(ProtocolError::Codec)
+    }
+}
+
+fn is_disabled_compression_feature_error(message: &str) -> bool {
+    message.contains("Support for") && message.contains("not enabled as a cargo feature")
 }
 
 fn no_host_reachable_error() -> Error {

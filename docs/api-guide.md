@@ -662,10 +662,24 @@ Metrics include produce/fetch/metadata refresh and connection-level counters/gau
 
 - `security` (default)
 - `security-ring`
+- `compression` (default; enables gzip, snappy, lz4, and zstd)
+- `gzip`
+- `snappy`
+- `lz4`
+- `zstd`
 - `producer_timestamp`
 - `metrics`
 - `nightly`
 - `integration_tests`
+
+Producer and consumer record batch compression is provided by `kafka-protocol`
+codec features. Default builds enable all supported codecs. If default features
+are disabled, enable each required codec explicitly, for example:
+
+```toml
+[dependencies]
+rustfs-kafka = { version = "1.2.0", default-features = false, features = ["security", "zstd"] }
+```
 
 ## 8. Async crate
 

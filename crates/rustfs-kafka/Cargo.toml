@@ -65,7 +65,7 @@ name = "partitioner"
 harness = false
 
 [features]
-default = ["security"]
+default = ["security", "compression"]
 
 # TLS/Security features (rustls, default crypto: aws-lc-rs)
 security = [
@@ -90,6 +90,11 @@ security-ring = [
 ]
 
 metrics = ["dep:metrics"]
+gzip = ["kafka-protocol/gzip"]
+snappy = ["kafka-protocol/snappy"]
+lz4 = ["kafka-protocol/lz4"]
+zstd = ["kafka-protocol/zstd"]
+compression = ["gzip", "snappy", "lz4", "zstd"]
 producer_timestamp = []
 nightly = []
 integration_tests = []

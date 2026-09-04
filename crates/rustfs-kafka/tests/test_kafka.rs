@@ -39,6 +39,8 @@ mod integration {
             "" | "NONE" => Compression::NONE,
             "GZIP" => Compression::GZIP,
             "SNAPPY" => Compression::SNAPPY,
+            "LZ4" => Compression::LZ4,
+            "ZSTD" => Compression::ZSTD,
             other => panic!("Unknown compression type: {other}"),
         }
     }
@@ -105,6 +107,16 @@ mod integration {
         with_var(KAFKA_CLIENT_COMPRESSION, Some("snappy"), || {
             let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
             assert_eq!(Compression::SNAPPY, parse_compression(&compression));
+        });
+
+        with_var(KAFKA_CLIENT_COMPRESSION, Some("lz4"), || {
+            let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
+            assert_eq!(Compression::LZ4, parse_compression(&compression));
+        });
+
+        with_var(KAFKA_CLIENT_COMPRESSION, Some("zstd"), || {
+            let compression = std::env::var(KAFKA_CLIENT_COMPRESSION).unwrap_or_default();
+            assert_eq!(Compression::ZSTD, parse_compression(&compression));
         });
 
         with_var(KAFKA_CLIENT_COMPRESSION, Some(""), || {

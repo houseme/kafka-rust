@@ -217,6 +217,11 @@ impl Error {
     }
 
     #[inline]
+    pub(crate) fn unsupported_compression() -> Self {
+        Self::Protocol(ProtocolError::UnsupportedCompression)
+    }
+
+    #[inline]
     #[allow(dead_code)]
     pub(crate) fn unexpected_eof() -> Self {
         Self::Protocol(ProtocolError::UnexpectedEOF)

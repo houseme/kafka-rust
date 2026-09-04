@@ -137,7 +137,7 @@ fn produce_messages_inner(
                 ack_timeout_ms,
                 compression,
                 &msgs,
-            );
+            )?;
             transport::kp_send_request(
                 conn,
                 &header,
@@ -160,7 +160,7 @@ fn produce_messages_inner(
                 ack_timeout_ms,
                 compression,
                 &msgs,
-            );
+            )?;
             transport::kp_send_request(
                 conn,
                 &header,

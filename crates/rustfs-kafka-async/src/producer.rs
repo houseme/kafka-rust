@@ -357,7 +357,7 @@ impl NativeProducer {
             key.as_ref(),
             value.as_ref(),
             &headers,
-        );
+        )?;
 
         send_kp_request(conn, &header, &request, API_VERSION_PRODUCE).await?;
         if self.required_acks == 0 {
@@ -533,7 +533,7 @@ fn build_single_produce_request(
     key: &[u8],
     value: &[u8],
     headers: &[(String, Bytes)],
-) -> (RequestHeader, ProduceRequest) {
+) -> Result<(RequestHeader, ProduceRequest)> {
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
         .with_request_api_key(ApiKey::Produce as i16)
@@ -574,8 +574,10 @@ fn build_single_produce_request(
         version: 2,
         compression: to_kp_compression(compression),
     };
-    RecordBatchEncoder::encode(&mut buf, &[record], &options)
-        .expect("failed to encode record batch");
+    RecordBatchEncoder::encode(&mut buf, &[record], &options).map_err(|err| {
+        let message = err.to_string();
+        map_record_encode_error(&message)
+    })?;
 
     let partition_data = kafka_protocol::messages::produce_request::PartitionProduceData::default()
         .with_index(partition)
@@ -591,7 +593,7 @@ fn build_single_produce_request(
         .with_timeout_ms(timeout_ms)
         .with_topic_data(vec![topic_data]);
 
-    (header, request)
+    Ok((header, request))
 }
 
 fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {
@@ -602,6 +604,18 @@ fn to_kp_compression(c: Compression) -> kafka_protocol::records::Compression {
         Compression::LZ4 => kafka_protocol::records::Compression::Lz4,
         Compression::ZSTD => kafka_protocol::records::Compression::Zstd,
     }
+}
+
+fn map_record_encode_error(message: &str) -> Error {
+    if is_disabled_compression_feature_error(message) {
+        Error::Protocol(ProtocolError::UnsupportedCompression)
+    } else {
+        Error::Protocol(ProtocolError::Codec)
+    }
+}
+
+fn is_disabled_compression_feature_error(message: &str) -> bool {
+    message.contains("Support for") && message.contains("not enabled as a cargo feature")
 }
 
 fn to_millis_i32(d: Duration) -> Result<i32> {
@@ -622,6 +636,8 @@ fn no_host_reachable_error() -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "gzip"))]
+    use rustfs_kafka::error::ProtocolError;
     use rustfs_kafka::error::{ConnectionError, Error};
 
     use super::*;
@@ -643,5 +659,53 @@ mod tests {
             result,
             Err(Error::Connection(ConnectionError::NoHostReachable))
         ));
+    }
+
+    #[cfg(not(feature = "gzip"))]
+    #[test]
+    fn build_single_produce_request_returns_error_when_codec_feature_is_disabled() {
+        let err = build_single_produce_request(
+            1,
+            "client-a",
+            1,
+            30_000,
+            Compression::GZIP,
+            "topic-a",
+            0,
+            b"key",
+            b"value",
+            &[],
+        )
+        .expect_err("disabled gzip support should return an error");
+
+        assert!(matches!(
+            err,
+            Error::Protocol(ProtocolError::UnsupportedCompression)
+        ));
+    }
+
+    #[cfg(feature = "compression")]
+    #[test]
+    fn build_single_produce_request_supports_enabled_compression_codecs() {
+        for compression in [
+            Compression::GZIP,
+            Compression::SNAPPY,
+            Compression::LZ4,
+            Compression::ZSTD,
+        ] {
+            build_single_produce_request(
+                1,
+                "client-a",
+                1,
+                30_000,
+                compression,
+                "topic-a",
+                0,
+                b"key",
+                b"value",
+                &[],
+            )
+            .unwrap_or_else(|err| panic!("{compression:?} should encode successfully: {err}"));
+        }
     }
 }
