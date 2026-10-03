@@ -3,7 +3,7 @@ use std::fmt;
 use std::hash::BuildHasherDefault;
 
 use crate::client::metadata::Topics;
-use crate::client::{FetchGroupOffset, FetchOffset, KafkaClient};
+use crate::client::{FetchGroupOffset, FetchOffset, FetchPartition, KafkaClient};
 use crate::error::{Error, KafkaCode, Result};
 use fnv::FnvHasher;
 use tracing::debug;
@@ -58,6 +58,9 @@ pub struct State {
 
     /// Set of (topic, partition) pairs that are currently paused.
     pub paused: HashSet<(String, i32)>,
+
+    /// Internal assignment references for allocation-free pause checks while fetching.
+    pub paused_assignments: HashSet<TopicPartition, PartitionHasher>,
 }
 
 impl fmt::Debug for State {
@@ -106,6 +109,7 @@ impl State {
             retry_partitions: VecDeque::new(),
             consumed_offsets,
             paused: HashSet::new(),
+            paused_assignments: HashSet::default(),
         })
     }
 
@@ -115,6 +119,24 @@ impl State {
 
     pub fn topic_ref(&self, name: &str) -> Option<AssignmentRef> {
         self.assignments.topic_ref(name)
+    }
+
+    pub fn fetch_requests(&self) -> impl Iterator<Item = FetchPartition<'_>> {
+        self.fetch_offsets
+            .iter()
+            .filter(|(tp, _)| !self.paused_assignments.contains(*tp))
+            .map(|(tp, state)| {
+                FetchPartition::new(self.topic_name(tp.topic_ref), tp.partition, state.offset)
+                    .with_max_bytes(state.max_bytes)
+            })
+    }
+
+    pub fn next_retry_partition(&mut self) -> Option<TopicPartition> {
+        let index = self
+            .retry_partitions
+            .iter()
+            .position(|tp| !self.paused_assignments.contains(tp))?;
+        self.retry_partitions.remove(index)
     }
 
     /// Returns a wrapper around `self.fetch_offsets` for nice dumping
@@ -332,8 +354,11 @@ fn load_fetch_states(
                 };
 
                 // the "latest" offset is the offset of the "next coming message"
-                let offset = match consumed_offsets.get(&tp) {
-                    Some(co) if co.offset >= e_off && co.offset < l_off => co.offset + 1,
+                let offset = match consumed_offsets
+                    .get(&tp)
+                    .and_then(|co| next_fetch_offset(co.offset, e_off, l_off))
+                {
+                    Some(offset) => offset,
                     _ => match config.fallback_offset {
                         FetchOffset::Latest => l_off,
                         FetchOffset::Earliest => e_off,
@@ -354,6 +379,13 @@ fn load_fetch_states(
         }
     }
     Ok(fetch_offsets)
+}
+
+fn next_fetch_offset(consumed_offset: i64, earliest: i64, latest: i64) -> Option<i64> {
+    // Kafka stores the next offset to fetch; the consumer tracks the previous one.
+    consumed_offset
+        .checked_add(1)
+        .filter(|&offset| offset >= earliest && offset <= latest)
 }
 
 pub struct OffsetsMapDebug<'a, T> {
@@ -395,5 +427,34 @@ impl fmt::Debug for TopicPartitionsDebug<'_> {
             )?;
         }
         write!(f, "]")
+    }
+}
+
+#[cfg(test)]
+mod offset_tests {
+    use super::next_fetch_offset;
+
+    #[test]
+    fn committed_offset_at_earliest_is_valid() {
+        assert_eq!(next_fetch_offset(-1, 0, 10), Some(0));
+        assert_eq!(next_fetch_offset(99, 100, 110), Some(100));
+    }
+
+    #[test]
+    fn committed_offset_at_latest_is_valid_including_empty_log() {
+        assert_eq!(next_fetch_offset(109, 100, 110), Some(110));
+        assert_eq!(next_fetch_offset(99, 100, 100), Some(100));
+    }
+
+    #[test]
+    fn committed_offsets_outside_log_range_require_fallback() {
+        assert_eq!(next_fetch_offset(98, 100, 110), None);
+        assert_eq!(next_fetch_offset(110, 100, 110), None);
+    }
+
+    #[test]
+    fn committed_offset_overflow_does_not_panic() {
+        assert_eq!(next_fetch_offset(i64::MAX, 0, i64::MAX), None);
+        assert_eq!(next_fetch_offset(i64::MAX - 1, 0, i64::MAX), Some(i64::MAX));
     }
 }

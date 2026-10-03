@@ -146,16 +146,30 @@ impl Consumer {
     /// Paused partitions will not be included in future `poll()` results
     /// until they are resumed with `resume()`.
     pub fn pause(&mut self, topic: &str, partitions: &[i32]) {
+        let topic_ref = self.state.topic_ref(topic);
         for &p in partitions {
             self.state.paused.insert((topic.to_owned(), p));
+            if let Some(topic_ref) = topic_ref {
+                self.state.paused_assignments.insert(TopicPartition {
+                    topic_ref,
+                    partition: p,
+                });
+            }
         }
         debug!("Paused partitions for topic '{}': {:?}", topic, partitions);
     }
 
     /// Resumes message fetching for the specified partitions of a topic.
     pub fn resume(&mut self, topic: &str, partitions: &[i32]) {
+        let topic_ref = self.state.topic_ref(topic);
         for &p in partitions {
             self.state.paused.remove(&(topic.to_owned(), p));
+            if let Some(topic_ref) = topic_ref {
+                self.state.paused_assignments.remove(&TopicPartition {
+                    topic_ref,
+                    partition: p,
+                });
+            }
         }
         debug!("Resumed partitions for topic '{}': {:?}", topic, partitions);
     }
@@ -274,7 +288,7 @@ impl Consumer {
     }
 
     fn fetch_messages(&mut self) -> (u32, Result<Vec<fetch_kp::OwnedFetchResponse>>) {
-        if let Some(tp) = self.state.retry_partitions.pop_front() {
+        if let Some(tp) = self.state.next_retry_partition() {
             let Some(s) = self.state.fetch_offsets.get(&tp) else {
                 return (1, Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition)));
             };
@@ -297,16 +311,12 @@ impl Consumer {
                 "fetching messages: (fetch-offsets: {:?})",
                 state.fetch_offsets_debug()
             );
-            let reqs: Vec<FetchPartition<'_>> = state
-                .fetch_offsets
-                .iter()
-                .map(|(tp, s)| {
-                    let topic = state.topic_name(tp.topic_ref);
-                    FetchPartition::new(topic, tp.partition, s.offset).with_max_bytes(s.max_bytes)
-                })
-                .collect();
+            let reqs: Vec<FetchPartition<'_>> = state.fetch_requests().collect();
+            if reqs.is_empty() {
+                return (0, Ok(Vec::new()));
+            }
             #[allow(clippy::cast_possible_truncation)] // partition count won't exceed u32
-            let num_partitions = state.fetch_offsets.len() as u32;
+            let num_partitions = reqs.len() as u32;
             (num_partitions, client.fetch_messages_kp(reqs.iter()))
         }
     }
@@ -386,12 +396,9 @@ impl Consumer {
                         if fetch_state.offset < data.highwatermark_offset {
                             if fetch_state.max_bytes < self.config.retry_max_bytes_limit {
                                 let prev_max_bytes = fetch_state.max_bytes;
-                                let incr_max_bytes = prev_max_bytes + prev_max_bytes;
-                                if incr_max_bytes > self.config.retry_max_bytes_limit {
-                                    fetch_state.max_bytes = self.config.retry_max_bytes_limit;
-                                } else {
-                                    fetch_state.max_bytes = incr_max_bytes;
-                                }
+                                fetch_state.max_bytes = prev_max_bytes
+                                    .saturating_mul(2)
+                                    .min(self.config.retry_max_bytes_limit);
                                 debug!(
                                     "increased max_bytes for {}:{} from {} to {}",
                                     &t.topic, tp.partition, prev_max_bytes, fetch_state.max_bytes
@@ -669,43 +676,162 @@ impl Iterator for MessageSetsIter<'_> {
 
 #[cfg(test)]
 mod pause_resume_tests {
+    use super::*;
+    use std::collections::{HashSet, VecDeque};
+
+    fn make_consumer() -> Consumer {
+        let assignments = assignment::from_map(HashMap::from([("t".to_owned(), vec![0, 1])]));
+        let topic_ref = assignments.topic_ref("t").unwrap();
+        let fetch_offsets = [0, 1]
+            .into_iter()
+            .map(|partition| {
+                (
+                    TopicPartition {
+                        topic_ref,
+                        partition,
+                    },
+                    state::FetchState {
+                        offset: 10 + i64::from(partition),
+                        max_bytes: 1024,
+                    },
+                )
+            })
+            .collect();
+        Consumer {
+            client: KafkaClient::new(Vec::new()),
+            state: state::State {
+                assignments,
+                fetch_offsets,
+                retry_partitions: VecDeque::new(),
+                consumed_offsets: HashMap::default(),
+                paused: HashSet::new(),
+                paused_assignments: HashSet::default(),
+            },
+            config: config::Config {
+                group: String::new(),
+                fallback_offset: FetchOffset::Earliest,
+                retry_max_bytes_limit: i32::MAX,
+            },
+        }
+    }
+
+    fn topic_partition(consumer: &Consumer, partition: i32) -> TopicPartition {
+        TopicPartition {
+            topic_ref: consumer.state.topic_ref("t").unwrap(),
+            partition,
+        }
+    }
+
+    fn requested_partitions(consumer: &Consumer) -> Vec<i32> {
+        let mut partitions: Vec<_> = consumer
+            .state
+            .fetch_requests()
+            .map(|request| request.partition)
+            .collect();
+        partitions.sort_unstable();
+        partitions
+    }
 
     #[test]
     fn test_pause_and_resume() {
-        // We can't easily create a full Consumer without a Kafka connection,
-        // so test the State directly
-        let paused = std::collections::HashSet::new();
-        assert!(paused.is_empty());
-
-        let mut paused = paused;
-        paused.insert(("t".to_owned(), 0));
-        paused.insert(("t".to_owned(), 1));
-
-        assert!(paused.contains(&("t".to_owned(), 0)));
-        assert!(paused.contains(&("t".to_owned(), 1)));
-        assert!(!paused.contains(&("t".to_owned(), 2)));
-
-        paused.remove(&("t".to_owned(), 0));
-        assert!(!paused.contains(&("t".to_owned(), 0)));
-        assert!(paused.contains(&("t".to_owned(), 1)));
+        let mut consumer = make_consumer();
+        assert_eq!(requested_partitions(&consumer), vec![0, 1]);
+        consumer.pause("t", &[0]);
+        assert!(consumer.is_paused("t", 0));
+        assert_eq!(requested_partitions(&consumer), vec![1]);
+        consumer.resume("t", &[0]);
+        assert!(!consumer.is_paused("t", 0));
+        assert_eq!(requested_partitions(&consumer), vec![0, 1]);
+        let state = consumer
+            .state
+            .fetch_offsets
+            .get(&topic_partition(&consumer, 0))
+            .unwrap();
+        assert_eq!(state.offset, 10);
     }
 
     #[test]
     fn test_pause_multiple_partitions() {
-        let mut paused = std::collections::HashSet::new();
-        paused.insert(("t".to_owned(), 0));
-        paused.insert(("t".to_owned(), 1));
-        paused.insert(("t".to_owned(), 2));
-        assert_eq!(paused.len(), 3);
-
-        paused.remove(&("t".to_owned(), 1));
-        assert_eq!(paused.len(), 2);
+        let mut consumer = make_consumer();
+        consumer.pause("t", &[0, 1]);
+        assert_eq!(consumer.paused_partitions().count(), 2);
+        assert!(consumer.poll().unwrap().is_empty());
+        let (count, responses) = consumer.fetch_messages();
+        assert_eq!(count, 0);
+        assert!(responses.unwrap().is_empty());
+        consumer.resume("t", &[1]);
+        assert_eq!(requested_partitions(&consumer), vec![1]);
     }
 
     #[test]
     fn test_pause_nonexistent_partition_no_panic() {
-        let mut paused = std::collections::HashSet::new();
-        paused.insert(("t".to_owned(), 999));
-        assert_eq!(paused.len(), 1);
+        let mut consumer = make_consumer();
+        consumer.pause("t", &[999]);
+        consumer.pause("unknown", &[0]);
+        assert!(consumer.is_paused("t", 999));
+        assert!(consumer.is_paused("unknown", 0));
+        assert_eq!(requested_partitions(&consumer), vec![0, 1]);
+        consumer.resume("t", &[999]);
+        consumer.resume("unknown", &[0]);
+        assert_eq!(consumer.paused_partitions().count(), 0);
+    }
+
+    #[test]
+    fn paused_retry_is_retained_without_blocking_active_retries() {
+        let mut consumer = make_consumer();
+        consumer.state.retry_partitions =
+            VecDeque::from([topic_partition(&consumer, 0), topic_partition(&consumer, 1)]);
+        consumer.pause("t", &[0]);
+        assert_eq!(
+            consumer.state.next_retry_partition(),
+            Some(topic_partition(&consumer, 1))
+        );
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+        assert_eq!(consumer.state.next_retry_partition(), None);
+        consumer.pause("t", &[1]);
+        assert!(consumer.poll().unwrap().is_empty());
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+        consumer.resume("t", &[0]);
+        assert_eq!(
+            consumer.state.next_retry_partition(),
+            Some(topic_partition(&consumer, 0))
+        );
+        assert!(consumer.state.retry_partitions.is_empty());
+    }
+
+    #[test]
+    fn retry_byte_growth_saturates_at_configured_limit() {
+        let mut consumer = make_consumer();
+        let tp = topic_partition(&consumer, 0);
+        consumer.state.fetch_offsets.get_mut(&tp).unwrap().max_bytes = 1_500_000_000;
+        let response = fetch_kp::OwnedFetchResponse {
+            correlation_id: 1,
+            topics: vec![fetch_kp::OwnedTopic {
+                topic: "t".to_owned(),
+                partitions: vec![fetch_kp::OwnedPartition {
+                    partition: 0,
+                    highwatermark: 20,
+                    data: Ok(fetch_kp::OwnedData {
+                        highwatermark_offset: 20,
+                        messages: Vec::new(),
+                    }),
+                }],
+            }],
+        };
+        assert!(
+            consumer
+                .process_fetch_responses(1, vec![response])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 0))
+                .unwrap()
+                .max_bytes,
+            i32::MAX
+        );
     }
 }
