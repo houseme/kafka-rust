@@ -378,8 +378,8 @@ impl NativeConsumer {
             send_kp_request(conn, &header, &request, API_VERSION_FETCH).await?;
             let response = get_fetch_response(conn, API_VERSION_FETCH).await?;
             let owned = convert_fetch_response(response, correlation);
-            if let Some(code) = first_fetch_error_code(&owned) {
-                return Err(Error::Kafka(code));
+            if let Some(err) = first_fetch_error(&owned) {
+                return Err(err);
             }
 
             owned_responses.push(owned);
@@ -972,15 +972,14 @@ fn convert_fetch_response(
     }
 }
 
-fn first_fetch_error_code(
-    resp: &rustfs_kafka::client::fetch_kp::OwnedFetchResponse,
-) -> Option<KafkaCode> {
+fn first_fetch_error(resp: &rustfs_kafka::client::fetch_kp::OwnedFetchResponse) -> Option<Error> {
     for topic in &resp.topics {
         for partition in &topic.partitions {
-            if let Err(err) = partition.data()
-                && let Error::TopicPartitionError { error_code, .. } = &**err
-            {
-                return Some(*error_code);
+            if let Err(err) = partition.data() {
+                return Some(match &**err {
+                    Error::TopicPartitionError { error_code, .. } => Error::Kafka(*error_code),
+                    _ => Error::from(Arc::clone(err)),
+                });
             }
         }
     }
@@ -1514,6 +1513,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum LaterFetch {
         PartitionError,
+        CorruptBatch,
         Disconnect,
         Block,
     }
@@ -1564,6 +1564,16 @@ mod tests {
                             )
                             .await;
                         }
+                        LaterFetch::CorruptBatch => {
+                            let mut response = fetch_response(partition, 0, 0);
+                            let records = &mut response.responses[0].partitions[0].records;
+                            let mut corrupt_records = records.take().unwrap().to_vec();
+                            // Preserve the valid Fetch frame and batch length,
+                            // but invalidate the record batch's CRC.
+                            *corrupt_records.last_mut().unwrap() ^= 1;
+                            *records = Some(Bytes::from(corrupt_records));
+                            reply(&mut socket, &header, API_VERSION_FETCH, response).await;
+                        }
                         LaterFetch::Disconnect => {}
                         LaterFetch::Block => {
                             blocked.notify_one();
@@ -1574,6 +1584,11 @@ mod tests {
             }));
         }
         let mut consumer = consumer_at(brokers[0], FetchOffset::Latest).await;
+        if matches!(later_fetch, LaterFetch::CorruptBatch) {
+            // Codec errors must propagate even when recoverable errors would
+            // receive multiple attempts.
+            native_consumer(&mut consumer).retry_attempts = 3;
+        }
         match later_fetch {
             LaterFetch::Block => {
                 checked(async {
@@ -1588,6 +1603,13 @@ mod tests {
                     checked(consumer.poll()).await,
                     Err(Error::Kafka(KafkaCode::TopicAuthorizationFailed))
                 ));
+            }
+            LaterFetch::CorruptBatch => {
+                assert!(matches!(
+                    checked(consumer.poll()).await,
+                    Err(Error::Protocol(ProtocolError::Codec))
+                ));
+                assert_eq!(consumer.native_error_stats().unwrap().total_errors, 1);
             }
             LaterFetch::Disconnect => {
                 assert!(matches!(
@@ -1617,6 +1639,11 @@ mod tests {
     #[tokio::test]
     async fn later_broker_partition_error_does_not_advance_undelivered_offsets() {
         assert_incomplete_poll_preserves_progress(LaterFetch::PartitionError).await;
+    }
+
+    #[tokio::test]
+    async fn later_broker_corrupt_batch_does_not_advance_undelivered_offsets_or_retry() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::CorruptBatch).await;
     }
 
     #[tokio::test]
