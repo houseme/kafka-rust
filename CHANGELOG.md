@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Kafka integration cleanup now includes the ZooKeeper profile when switching versions or exiting the test matrix.
 - Documented producer routing, consumer progress and retry behavior, TLS feature selection, benchmark scope, and current transaction and group lifecycle limitations.
 - The default Kafka integration matrix now covers NONE, SNAPPY, GZIP, LZ4, and ZSTD through the crate's compression feature.
 

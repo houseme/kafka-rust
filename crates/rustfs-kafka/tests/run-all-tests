@@ -25,7 +25,7 @@ DEFAULT_SCALA_VER='2.13'
 PRELOADED_DIR="$SCRIPT_DIR/kafka-rust-image/preloaded"
 
 cleanup() {
-    docker compose down 2>/dev/null || true
+    docker compose --profile zk down 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -135,6 +135,6 @@ for ver in "${versions[@]}"; do
             cargo test -p rustfs-kafka --features "integration_tests,compression"
         done
 
-        docker compose down
+        docker compose --profile zk down
     done
 done
