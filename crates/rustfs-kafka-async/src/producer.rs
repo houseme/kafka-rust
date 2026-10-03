@@ -13,7 +13,6 @@ use rustfs_kafka::client::{Compression, RequiredAcks, SecurityConfig};
 use rustfs_kafka::error::{ConnectionError, Error, KafkaCode, ProtocolError, Result};
 use rustfs_kafka::producer::{AsBytes, Record};
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -368,10 +367,17 @@ impl NativeProducer {
         for topic_resp in response.responses {
             for part in topic_resp.partition_responses {
                 if part.error_code != 0 {
-                    if let Some(code) = map_kafka_code(part.error_code) {
-                        return Err(Error::Kafka(code));
+                    let code = map_kafka_code(part.error_code).unwrap_or(KafkaCode::Unknown);
+                    if matches!(
+                        code,
+                        KafkaCode::UnknownTopicOrPartition
+                            | KafkaCode::LeaderNotAvailable
+                            | KafkaCode::NotLeaderForPartition
+                    ) {
+                        // Refresh on the next send; retrying here could duplicate a delivery.
+                        state.topics.remove(&topic);
                     }
-                    return Err(Error::Kafka(KafkaCode::Unknown));
+                    return Err(Error::Kafka(code));
                 }
             }
         }
@@ -405,25 +411,28 @@ fn try_resolve_from_cache(
     topic: &str,
     requested_partition: i32,
 ) -> Option<(i32, String)> {
-    let route = state.topics.get(topic)?;
-    let partitions = route.partitions.clone();
-    let available_partitions = route.available_partitions.clone();
+    let NativeProducerState {
+        brokers,
+        topics,
+        round_robin,
+    } = state;
+    let route = topics.get(topic)?;
     let partition = if requested_partition >= 0 {
         requested_partition
     } else {
-        pick_round_robin_partition(state, topic, &available_partitions)?
+        pick_round_robin_partition(round_robin, topic, &route.available_partitions)?
     };
 
-    let leader_id = *partitions.get(&partition)?;
+    let leader_id = *route.partitions.get(&partition)?;
     if leader_id < 0 {
         return None;
     }
-    let leader_host = state.brokers.get(&leader_id)?.clone();
+    let leader_host = brokers.get(&leader_id)?.clone();
     Some((partition, leader_host))
 }
 
 fn pick_round_robin_partition(
-    state: &mut NativeProducerState,
+    round_robin: &mut HashMap<String, usize>,
     topic: &str,
     available_partitions: &[i32],
 ) -> Option<i32> {
@@ -432,14 +441,14 @@ fn pick_round_robin_partition(
     }
 
     let len = available_partitions.len();
-    let idx = match state.round_robin.entry(topic.to_owned()) {
-        Entry::Occupied(mut occupied) => {
-            let idx = *occupied.get() % len;
-            *occupied.get_mut() = occupied.get().wrapping_add(1);
+    let idx = match round_robin.get_mut(topic) {
+        Some(next) => {
+            let idx = *next % len;
+            *next = next.wrapping_add(1);
             idx
         }
-        Entry::Vacant(vacant) => {
-            vacant.insert(1);
+        None => {
+            round_robin.insert(topic.to_owned(), 1);
             0
         }
     };
@@ -636,9 +645,22 @@ fn no_host_reachable_error() -> Error {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Buf;
+    use kafka_protocol::messages::ResponseHeader;
+    use kafka_protocol::messages::metadata_response::{
+        MetadataResponseBroker, MetadataResponsePartition, MetadataResponseTopic,
+    };
+    use kafka_protocol::messages::produce_response::{
+        PartitionProduceResponse, TopicProduceResponse,
+    };
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
+    use kafka_protocol::records::RecordBatchDecoder;
     #[cfg(not(feature = "gzip"))]
     use rustfs_kafka::error::ProtocolError;
     use rustfs_kafka::error::{ConnectionError, Error};
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
 
@@ -659,6 +681,293 @@ mod tests {
             result,
             Err(Error::Connection(ConnectionError::NoHostReachable))
         ));
+    }
+
+    #[test]
+    fn explicit_partition_does_not_advance_round_robin_routing() {
+        let mut state = NativeProducerState {
+            brokers: HashMap::from([(0, "broker:9092".to_owned())]),
+            topics: HashMap::from([(
+                "topic-a".to_owned(),
+                TopicRoute {
+                    partitions: HashMap::from([(0, 0), (1, 0)]),
+                    available_partitions: vec![0, 1],
+                },
+            )]),
+            ..NativeProducerState::default()
+        };
+        for (requested, expected) in [(1, 1), (-1, 0), (-1, 1), (-1, 0)] {
+            assert_eq!(
+                try_resolve_from_cache(&mut state, "topic-a", requested),
+                Some((expected, "broker:9092".to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn round_robin_counter_wraps_without_overflowing() {
+        let mut round_robin = HashMap::from([("topic-a".to_owned(), usize::MAX)]);
+        assert_eq!(
+            pick_round_robin_partition(&mut round_robin, "topic-a", &[0, 1]),
+            Some(1)
+        );
+        assert_eq!(
+            pick_round_robin_partition(&mut round_robin, "topic-a", &[0, 1]),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn send_refreshes_stale_topic_route_on_next_call_without_retrying() {
+        for (error_code, expected_code, required_acks) in [
+            (3, KafkaCode::UnknownTopicOrPartition, RequiredAcks::One),
+            (5, KafkaCode::LeaderNotAvailable, RequiredAcks::All),
+            (6, KafkaCode::NotLeaderForPartition, RequiredAcks::One),
+        ] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let old_leader = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let new_leader = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let old_addr = old_leader.local_addr().unwrap();
+                let new_addr = new_leader.local_addr().unwrap();
+                let acks = required_acks as i16;
+
+                let old_server = tokio::spawn(async move {
+                    let (mut socket, _) = old_leader.accept().await.unwrap();
+                    let correlation = read_metadata_request(&mut socket).await;
+                    write_metadata_response(&mut socket, correlation, &[old_addr, new_addr], 0)
+                        .await;
+                    let correlation = read_produce_request(&mut socket, 0, acks).await;
+                    write_produce_response(&mut socket, correlation, 0, error_code).await;
+
+                    // The next request must refresh metadata, never re-send the failed record.
+                    let correlation = read_metadata_request(&mut socket).await;
+                    write_metadata_response(&mut socket, correlation, &[old_addr, new_addr], 1)
+                        .await;
+                });
+                let new_server = tokio::spawn(async move {
+                    let (mut socket, _) = new_leader.accept().await.unwrap();
+                    for partition in [1, 0] {
+                        let correlation = read_produce_request(&mut socket, partition, acks).await;
+                        write_produce_response(&mut socket, correlation, partition, 0).await;
+                    }
+                });
+
+                let producer = test_producer(old_addr, required_acks).await;
+                let record = test_record();
+                let err = producer.send(&record).await.unwrap_err();
+                assert!(matches!(err, Error::Kafka(code) if code == expected_code));
+                producer.send(&record).await.unwrap();
+                producer.send(&record).await.unwrap();
+                old_server.await.unwrap();
+                new_server.await.unwrap();
+            })
+            .await
+            .expect("leader transition should complete without retrying the failed send");
+        }
+    }
+
+    #[tokio::test]
+    async fn send_preserves_cached_route_after_non_metadata_error() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_metadata_response(&mut socket, correlation, &[addr], 0).await;
+                let correlation = read_produce_request(&mut socket, 0, 1).await;
+                write_produce_response(&mut socket, correlation, 0, 7).await;
+                let correlation = read_produce_request(&mut socket, 1, 1).await;
+                write_produce_response(&mut socket, correlation, 1, 0).await;
+            });
+
+            let producer = test_producer(addr, RequiredAcks::One).await;
+            let record = test_record();
+            assert!(matches!(
+                producer.send(&record).await,
+                Err(Error::Kafka(KafkaCode::RequestTimedOut))
+            ));
+            producer.send(&record).await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .expect("non-metadata errors should preserve the route without retrying");
+    }
+
+    #[tokio::test]
+    async fn send_with_no_acks_sends_records_without_waiting_for_response() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_metadata_response(&mut socket, correlation, &[addr], 0).await;
+                // No Produce response is sent for either request.
+                read_produce_request(&mut socket, 0, 0).await;
+                read_produce_request(&mut socket, 1, 0).await;
+            });
+
+            let producer = test_producer(addr, RequiredAcks::None).await;
+            let record = test_record();
+            producer.send(&record).await.unwrap();
+            producer.send(&record).await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .expect("acks=0 must not wait for a Produce response");
+    }
+
+    async fn test_producer(addr: SocketAddr, required_acks: RequiredAcks) -> AsyncProducer {
+        AsyncProducer::builder(vec![addr.to_string()])
+            .with_client_id("producer-test".to_owned())
+            .with_required_acks(required_acks)
+            .with_ack_timeout(Duration::from_millis(1_234))
+            .build()
+            .await
+            .unwrap()
+    }
+
+    fn test_record() -> Record<'static, &'static str, &'static str> {
+        Record::from_key_value("topic-a", "key", "value").with_header("source", "test")
+    }
+
+    async fn read_request(
+        socket: &mut TcpStream,
+        api_key: ApiKey,
+        api_version: i16,
+        header_version: i16,
+    ) -> (i32, Bytes) {
+        let size = socket.read_i32().await.unwrap();
+        let mut frame = vec![0; usize::try_from(size).unwrap()];
+        socket.read_exact(&mut frame).await.unwrap();
+        let mut body = Bytes::from(frame);
+        let header = RequestHeader::decode(&mut body, header_version).unwrap();
+        assert_eq!(header.request_api_key, api_key as i16);
+        assert_eq!(header.request_api_version, api_version);
+        assert_eq!(header.client_id.unwrap().as_str(), "producer-test");
+        (header.correlation_id, body)
+    }
+
+    async fn read_metadata_request(socket: &mut TcpStream) -> i32 {
+        let (correlation, mut body) = read_request(
+            socket,
+            ApiKey::Metadata,
+            API_VERSION_METADATA,
+            MetadataRequest::header_version(API_VERSION_METADATA),
+        )
+        .await;
+        let request = MetadataRequest::decode(&mut body, API_VERSION_METADATA).unwrap();
+        let topics = request.topics.unwrap();
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].name.as_ref().unwrap().as_str(), "topic-a");
+        assert!(!body.has_remaining());
+        correlation
+    }
+
+    async fn read_produce_request(socket: &mut TcpStream, partition: i32, acks: i16) -> i32 {
+        let (correlation, mut body) = read_request(
+            socket,
+            ApiKey::Produce,
+            API_VERSION_PRODUCE,
+            ProduceRequest::header_version(API_VERSION_PRODUCE),
+        )
+        .await;
+        let mut request = ProduceRequest::decode(&mut body, API_VERSION_PRODUCE).unwrap();
+        assert_eq!(request.transactional_id, None);
+        assert_eq!(request.acks, acks);
+        assert_eq!(request.timeout_ms, 1_234);
+        assert_eq!(request.topic_data.len(), 1);
+        assert_eq!(request.topic_data[0].name.as_str(), "topic-a");
+        let partition_data = &mut request.topic_data[0].partition_data;
+        assert_eq!(partition_data.len(), 1);
+        assert_eq!(partition_data[0].index, partition);
+        let mut records = partition_data[0].records.take().unwrap();
+        assert!(!body.has_remaining());
+        let record_set = RecordBatchDecoder::decode(&mut records).unwrap();
+        assert_eq!(record_set.records.len(), 1);
+        let record = &record_set.records[0];
+        assert_eq!(record.key.as_deref(), Some(b"key".as_slice()));
+        assert_eq!(record.value.as_deref(), Some(b"value".as_slice()));
+        assert_eq!(
+            record.headers.get(&StrBytes::from_static_str("source")),
+            Some(&Some(Bytes::from_static(b"test")))
+        );
+        correlation
+    }
+
+    async fn write_metadata_response(
+        socket: &mut TcpStream,
+        correlation: i32,
+        brokers: &[SocketAddr],
+        leader: i32,
+    ) {
+        let brokers = brokers
+            .iter()
+            .enumerate()
+            .map(|(id, addr)| {
+                MetadataResponseBroker::default()
+                    .with_node_id(i32::try_from(id).unwrap().into())
+                    .with_host(StrBytes::from_static_str("127.0.0.1"))
+                    .with_port(i32::from(addr.port()))
+            })
+            .collect();
+        let partitions = [0, 1]
+            .into_iter()
+            .map(|partition| {
+                MetadataResponsePartition::default()
+                    .with_partition_index(partition)
+                    .with_leader_id(leader.into())
+                    .with_replica_nodes(vec![leader.into()])
+                    .with_isr_nodes(vec![leader.into()])
+            })
+            .collect();
+        let response = MetadataResponse::default()
+            .with_brokers(brokers)
+            .with_controller_id(0.into())
+            .with_topics(vec![
+                MetadataResponseTopic::default()
+                    .with_name(Some(StrBytes::from_static_str("topic-a").into()))
+                    .with_partitions(partitions),
+            ]);
+        write_response(socket, correlation, &response, API_VERSION_METADATA).await;
+    }
+
+    async fn write_produce_response(
+        socket: &mut TcpStream,
+        correlation: i32,
+        partition: i32,
+        error_code: i16,
+    ) {
+        let response = ProduceResponse::default().with_responses(vec![
+            TopicProduceResponse::default()
+                .with_name(StrBytes::from_static_str("topic-a").into())
+                .with_partition_responses(vec![
+                    PartitionProduceResponse::default()
+                        .with_index(partition)
+                        .with_error_code(error_code),
+                ]),
+        ]);
+        write_response(socket, correlation, &response, API_VERSION_PRODUCE).await;
+    }
+
+    async fn write_response<R: Encodable + HeaderVersion>(
+        socket: &mut TcpStream,
+        correlation: i32,
+        response: &R,
+        api_version: i16,
+    ) {
+        let mut frame = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(correlation)
+            .encode(&mut frame, R::header_version(api_version))
+            .unwrap();
+        response.encode(&mut frame, api_version).unwrap();
+        socket
+            .write_i32(i32::try_from(frame.len()).unwrap())
+            .await
+            .unwrap();
+        socket.write_all(&frame).await.unwrap();
     }
 
     #[cfg(not(feature = "gzip"))]
