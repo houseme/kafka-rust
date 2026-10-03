@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Async exact reads fill safely reserved storage directly, bound reads to the requested length, and preserve cancellation and EOF recovery. Cancelled-socket tests accept Linux reset semantics while verifying fresh connections.
 - Documented native batching, explicit batch retry decisions, connection recovery, transactional producer boundaries, and child manifest metadata; placed the sync poll correction under Unreleased.
 - Sync connection checkout no longer clones all hosts or reconnects the whole pool, and first checkout avoids a second connection when idle timeout is zero.
 - Removed explicit rust-version inheritance from both child crate manifests.

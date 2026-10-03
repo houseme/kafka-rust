@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use kafka_protocol::messages::{
     ApiKey, RequestHeader, SaslAuthenticateRequest, SaslAuthenticateResponse, SaslHandshakeRequest,
@@ -22,7 +22,7 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore};
 use sha2::{Digest, Sha256, Sha512};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream};
 use tracing::debug;
@@ -263,25 +263,38 @@ async fn stream_send(stream: &mut AsyncKafkaStream, data: &[u8]) -> Result<()> {
 }
 
 async fn stream_read_exact(stream: &mut AsyncKafkaStream, n: usize) -> Result<Bytes> {
-    let mut buf = BytesMut::with_capacity(n);
-    buf.resize(n, 0);
-
     match stream {
-        AsyncKafkaStream::Plain(stream) => {
-            stream
-                .read_exact(&mut buf)
-                .await
-                .map_err(to_io_connection_error)?;
-        }
-        AsyncKafkaStream::Tls(stream) => {
-            stream
-                .read_exact(&mut buf)
-                .await
-                .map_err(to_io_connection_error)?;
+        AsyncKafkaStream::Plain(stream) => read_exact_bytes(stream, n).await,
+        AsyncKafkaStream::Tls(stream) => read_exact_bytes(stream, n).await,
+    }
+}
+
+async fn read_exact_bytes(reader: &mut (impl AsyncRead + Unpin), n: usize) -> Result<Bytes> {
+    if n == 0 {
+        return Ok(Bytes::new());
+    }
+    let limit = u64::try_from(n).map_err(|_| Error::Protocol(ProtocolError::Codec))?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(n).map_err(|error| {
+        to_io_connection_error(io::Error::new(io::ErrorKind::OutOfMemory, error))
+    })?;
+    // Allocator capacity may exceed n. Limit the reader rather than exposing
+    // all spare capacity to the socket and consuming bytes from the next frame.
+    let mut reader = reader.take(limit);
+    while buf.len() < n {
+        match reader.read_buf(&mut buf).await {
+            Ok(0) => {
+                return Err(to_io_connection_error(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection ended before the requested bytes were read",
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(to_io_connection_error(error)),
         }
     }
-
-    Ok(buf.freeze())
+    Ok(Bytes::from(buf))
 }
 
 async fn stream_read_frame(stream: &mut AsyncKafkaStream) -> Result<Bytes> {
@@ -828,13 +841,15 @@ impl Default for AsyncConnectionPool {
 #[cfg(test)]
 mod tests {
     use std::future::{Future, poll_fn};
-    use std::task::Poll;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
-    use bytes::Buf;
+    use bytes::{Buf, BytesMut};
     use kafka_protocol::messages::{ApiVersionsRequest, ApiVersionsResponse, ResponseHeader};
     use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
     use rustfs_kafka::error::ConnectionError;
+    use tokio::io::ReadBuf;
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
 
@@ -845,6 +860,17 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(10), future)
             .await
             .expect("mock broker operation timed out")
+    }
+
+    async fn assert_cancelled_socket_closed(socket: &mut TcpStream) {
+        let error = checked(socket.read_u8()).await.unwrap_err();
+        // A cancelled read may leave inbound bytes unread. Linux can close
+        // that discarded connection with RST while other platforms send FIN.
+        // Both mean the old socket was retired; fresh replies must succeed.
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+        ));
     }
 
     async fn read_api_versions_request(socket: &mut TcpStream) -> RequestHeader {
@@ -932,10 +958,17 @@ mod tests {
                 ResponseFault::AbandonedRequest => {}
             }
             if !matches!(fault, ResponseFault::Eof) {
-                assert_eq!(
-                    checked(socket.read_u8()).await.unwrap_err().kind(),
-                    io::ErrorKind::UnexpectedEof,
-                );
+                if matches!(
+                    fault,
+                    ResponseFault::CancelLength | ResponseFault::CancelBody
+                ) {
+                    assert_cancelled_socket_closed(&mut socket).await;
+                } else {
+                    assert_eq!(
+                        checked(socket.read_u8()).await.unwrap_err().kind(),
+                        io::ErrorKind::UnexpectedEof,
+                    );
+                }
             }
             drop(socket);
             // Recovery creates a new connection; neither the incomplete frame
@@ -1079,14 +1112,17 @@ mod tests {
     async fn cancelled_raw_request_response_is_reconnected() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let host = listener.local_addr().unwrap().to_string();
-        let partial_response = Arc::new(Notify::new());
-        let sent = Arc::clone(&partial_response);
+        let request_received = Arc::new(Notify::new());
+        let received = Arc::clone(&request_received);
         let server = tokio::spawn(async move {
             let (mut socket, _) = checked(listener.accept()).await.unwrap();
             let header = read_api_versions_request(&mut socket).await;
-            let frame = response_frame(header.correlation_id, false);
-            checked(socket.write_all(&frame[..6])).await.unwrap();
-            sent.notify_one();
+            assert_eq!(header.correlation_id, 1);
+            // Cancel while waiting for the response's first byte. Closing with
+            // unread response bytes can produce RST on Linux, so it cannot
+            // support a portable EOF assertion. Mid-frame cancellation has
+            // separate coverage below the raw request/response API.
+            received.notify_one();
             assert_eq!(
                 checked(socket.read_u8()).await.unwrap_err().kind(),
                 io::ErrorKind::UnexpectedEof,
@@ -1106,8 +1142,8 @@ mod tests {
         let request = encode_kp_request(&header, &ApiVersionsRequest::default(), 0).unwrap();
         checked(async {
             tokio::select! {
-                result = conn.request_response(&request) => panic!("partial response completed: {result:?}"),
-                () = partial_response.notified() => {}
+                result = conn.request_response(&request) => panic!("response completed before cancellation: {result:?}"),
+                () = request_received.notified() => {}
             }
         }).await;
         assert!(pool.hosts().is_empty());
@@ -1129,10 +1165,7 @@ mod tests {
             let (mut socket, _) = checked(listener.accept()).await.unwrap();
             checked(socket.write_all(b"ab")).await.unwrap();
             sent.notify_one();
-            assert_eq!(
-                checked(socket.read_u8()).await.unwrap_err().kind(),
-                io::ErrorKind::UnexpectedEof
-            );
+            assert_cancelled_socket_closed(&mut socket).await;
             let (mut socket, _) = checked(listener.accept()).await.unwrap();
             let header = read_api_versions_request(&mut socket).await;
             assert_eq!(header.correlation_id, 1);
@@ -1178,8 +1211,10 @@ mod tests {
         });
         let mut pool = AsyncConnectionPool::new();
         let conn = checked(pool.get(&host)).await.unwrap();
+        assert!(checked(conn.read_exact(0)).await.unwrap().is_empty());
         checked(conn.send(b"raw")).await.unwrap();
         assert_eq!(checked(conn.read_exact(2)).await.unwrap(), &b"ab"[..]);
+        assert!(checked(conn.read_exact(0)).await.unwrap().is_empty());
         assert_eq!(checked(conn.read_exact(2)).await.unwrap(), &b"cd"[..]);
         assert_eq!(pool.hosts(), [host.as_str()]);
         let conn = checked(pool.get(&host)).await.unwrap();
@@ -1187,6 +1222,146 @@ mod tests {
         checked(get_kp_response::<ApiVersionsResponse>(conn, 0))
             .await
             .unwrap();
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_raw_read_assembles_tcp_fragments_without_consuming_following_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let sent = Arc::new(Notify::new());
+        let resume = Arc::new(Notify::new());
+        let server_sent = Arc::clone(&sent);
+        let server_resume = Arc::clone(&resume);
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            for fragment in [&b"ab"[..], &b"c"[..]] {
+                checked(socket.write_all(fragment)).await.unwrap();
+                server_sent.notify_one();
+                checked(server_resume.notified()).await;
+            }
+            checked(socket.write_all(b"defghij")).await.unwrap();
+        });
+        let mut conn = checked(AsyncConnection::connect(&host, None))
+            .await
+            .unwrap();
+        checked(sent.notified()).await;
+        let mut read = Box::pin(conn.read_exact(7));
+        for index in 0..2 {
+            if index != 0 {
+                checked(sent.notified()).await;
+            }
+            poll_fn(|cx| match read.as_mut().poll(cx) {
+                Poll::Pending => Poll::Ready(()),
+                Poll::Ready(result) => panic!("partial raw read completed: {result:?}"),
+            })
+            .await;
+            resume.notify_one();
+        }
+        assert_eq!(checked(read).await.unwrap(), &b"abcdefg"[..]);
+        assert_eq!(checked(conn.read_exact(3)).await.unwrap(), &b"hij"[..]);
+        assert!(conn.is_reusable());
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn adjacent_short_response_frames_are_not_overread() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            let mut request = [0; 3];
+            checked(socket.read_exact(&mut request)).await.unwrap();
+            assert_eq!(&request, b"one");
+            // Both frames are available to a single socket read; each declared
+            // payload must leave the following frame untouched.
+            let mut frames = Vec::new();
+            for payload in [b"abc", b"def"] {
+                frames.extend_from_slice(&3i32.to_be_bytes());
+                frames.extend_from_slice(payload);
+            }
+            checked(socket.write_all(&frames)).await.unwrap();
+            checked(socket.read_exact(&mut request)).await.unwrap();
+            assert_eq!(&request, b"two");
+        });
+        let mut conn = checked(AsyncConnection::connect(&host, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            checked(conn.request_response(b"one")).await.unwrap(),
+            &b"abc"[..]
+        );
+        assert_eq!(
+            checked(conn.request_response(b"two")).await.unwrap(),
+            &b"def"[..]
+        );
+        assert!(conn.is_reusable());
+        checked(server).await.unwrap();
+    }
+
+    struct InterruptedTcpReader {
+        stream: TcpStream,
+        interrupt_once: bool,
+    }
+
+    impl AsyncRead for InterruptedTcpReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if std::mem::take(&mut self.interrupt_once) {
+                return Poll::Ready(Err(io::ErrorKind::Interrupted.into()));
+            }
+            Pin::new(&mut self.stream).poll_read(cx, buf)
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_exact_read_retries_and_preserves_following_tcp_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            checked(socket.write_all(b"abcdef")).await.unwrap();
+        });
+        let mut reader = InterruptedTcpReader {
+            stream: checked(TcpStream::connect(host)).await.unwrap(),
+            interrupt_once: true,
+        };
+        assert_eq!(
+            checked(read_exact_bytes(&mut reader, 3)).await.unwrap(),
+            &b"abc"[..]
+        );
+        assert_eq!(
+            checked(read_exact_bytes(&mut reader, 3)).await.unwrap(),
+            &b"def"[..]
+        );
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn exact_read_capacity_overflow_returns_an_error_without_panicking() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            assert_eq!(
+                checked(socket.read_u8()).await.unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        });
+        let mut conn = checked(AsyncConnection::connect(&host, None))
+            .await
+            .unwrap();
+        let error = checked(conn.read_exact(u64::try_from(usize::MAX).unwrap()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Connection(ConnectionError::Io(ref io_error)) if io_error.kind() == io::ErrorKind::OutOfMemory)
+        );
+        assert!(!conn.is_reusable());
+        drop(conn);
         checked(server).await.unwrap();
     }
 
