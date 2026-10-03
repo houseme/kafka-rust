@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- Added fixed-input generated Produce encoding and multi-batch Fetch decoding benchmarks with byte and record throughput reporting.
+
 ### Fixed
 
 - The standalone `security-ring` feature now enables TLS and SASL modules, public configuration APIs, and secure builder paths without requiring `security`.
