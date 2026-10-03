@@ -172,3 +172,78 @@ fn produce_messages_inner(
 
     Ok(res)
 }
+
+/// Transactional sends are synchronous and never retried here. A transport,
+/// decoding, or broker error must be handled by the transaction state machine.
+pub(crate) fn produce_transactional_message(
+    client: &mut super::KafkaClient,
+    ack_timeout_ms: i32,
+    context: protocol::produce::TransactionContext<'_>,
+    message: &ProduceMessage<'_, '_>,
+) -> Result<()> {
+    let host = client
+        .state
+        .find_broker(message.topic, message.partition)
+        .ok_or(Error::Kafka(KafkaCode::UnknownTopicOrPartition))?
+        .to_owned();
+    let correlation = client.state.next_correlation_id();
+    let (mut header, request) = protocol::produce::build_transactional_produce_request(
+        correlation,
+        &client.config.client_id,
+        ack_timeout_ms,
+        client.config.compression,
+        (
+            message.topic,
+            message.partition,
+            message.key,
+            message.value,
+            message.headers,
+        ),
+        context,
+    )?;
+    let version = transport::apply_request_api_version(
+        &client.api_versions,
+        &host,
+        &mut header,
+        protocol::API_VERSION_PRODUCE,
+    );
+    let conn = client.conn_pool.get_conn(&host, Instant::now())?;
+    transport::kp_send_request(conn, &header, &request, version)
+        .map_err(|err| err.with_broker_context(&host, "Produce"))?;
+    let response =
+        protocol::transaction::read_response::<kafka_protocol::messages::ProduceResponse>(
+            conn,
+            correlation,
+            version,
+        )
+        .map_err(|err| err.with_broker_context(&host, "Produce"))?;
+    let result = validate_transactional_produce_response(&response, message);
+    if matches!(&result, Err(Error::Protocol(_))) {
+        let _ = conn.shutdown();
+    }
+    result
+}
+
+fn validate_transactional_produce_response(
+    response: &kafka_protocol::messages::ProduceResponse,
+    message: &ProduceMessage<'_, '_>,
+) -> Result<()> {
+    let [topic] = response.responses.as_slice() else {
+        return Err(Error::codec());
+    };
+    let [partition] = topic.partition_responses.as_slice() else {
+        return Err(Error::codec());
+    };
+    if topic.name.as_str() != message.topic || partition.index != message.partition {
+        return Err(Error::codec());
+    }
+    if partition.error_code != 0 {
+        return Err(Error::Kafka(
+            KafkaCode::from_protocol(partition.error_code).unwrap_or(KafkaCode::Unknown),
+        ));
+    }
+    if partition.base_offset < 0 {
+        return Err(Error::codec());
+    }
+    Ok(())
+}

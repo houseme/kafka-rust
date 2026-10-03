@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Transactional producers now use generated transaction codecs, discover transaction coordinators, send producer identity and sequence context, preserve sequences across commit and abort, and block unsafe reuse after RPC failures. Added real-broker isolation and fencing coverage.
 - Async typed requests now track pending correlations, reject mismatched or trailing response data, retire failed or cancelled connections, and avoid replaying low-level Produce after a sending attempt.
 - Batch producers stream buffered records into encoding, retain failed or ambiguous deliveries, retire only uniquely confirmed partitions, and require explicit flush or clear before accepting more records after failure.
 - ListOffsets now preserves broker timestamps and maps directly to the existing public offset types without intermediate per-partition vectors.

@@ -16,6 +16,16 @@ pub type ProduceMessageRef<'a> = (
     &'a [(String, bytes::Bytes)],
 );
 
+/// Identity and sequence for one transactional record. Kept private because
+/// the high-level producer owns sequence and transaction lifecycle state.
+#[derive(Clone, Copy)]
+pub(crate) struct TransactionContext<'a> {
+    pub(crate) transactional_id: &'a str,
+    pub(crate) producer_id: i64,
+    pub(crate) producer_epoch: i16,
+    pub(crate) sequence: i32,
+}
+
 #[tracing::instrument(skip(messages), fields(correlation_id = correlation_id))]
 pub fn build_produce_request(
     correlation_id: i32,
@@ -24,6 +34,51 @@ pub fn build_produce_request(
     timeout_ms: i32,
     compression: Compression,
     messages: &[ProduceMessageRef<'_>],
+) -> Result<(RequestHeader, ProduceRequest)> {
+    build_produce_request_with_context(
+        correlation_id,
+        client_id,
+        required_acks,
+        timeout_ms,
+        compression,
+        messages,
+        None,
+    )
+}
+
+pub(crate) fn build_transactional_produce_request(
+    correlation_id: i32,
+    client_id: &str,
+    timeout_ms: i32,
+    compression: Compression,
+    message: ProduceMessageRef<'_>,
+    context: TransactionContext<'_>,
+) -> Result<(RequestHeader, ProduceRequest)> {
+    if context.producer_id < 0 || context.producer_epoch < 0 || context.sequence < 0 {
+        return Err(Error::Config(
+            "invalid transactional producer identity or sequence".into(),
+        ));
+    }
+    build_produce_request_with_context(
+        correlation_id,
+        client_id,
+        -1,
+        timeout_ms,
+        compression,
+        &[message],
+        Some(context),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_produce_request_with_context(
+    correlation_id: i32,
+    client_id: &str,
+    required_acks: i16,
+    timeout_ms: i32,
+    compression: Compression,
+    messages: &[ProduceMessageRef<'_>],
+    context: Option<TransactionContext<'_>>,
 ) -> Result<(RequestHeader, ProduceRequest)> {
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
@@ -49,18 +104,18 @@ pub fn build_produce_request(
             .collect();
 
         let record = Record {
-            transactional: false,
+            transactional: context.is_some(),
             control: false,
             delete_horizon: false,
             partition_leader_epoch: -1,
-            producer_id: -1,
-            producer_epoch: -1,
+            producer_id: context.map_or(-1, |context| context.producer_id),
+            producer_epoch: context.map_or(-1, |context| context.producer_epoch),
             timestamp_type: TimestampType::Creation,
             offset: i64::from(offset),
             // The encoder groups records with the same offset - sequence. This
             // keeps one batch per partition while retaining base_sequence = -1
             // for a non-idempotent producer.
-            sequence: offset - 1,
+            sequence: context.map_or(offset - 1, |context| context.sequence),
             timestamp: 0,
             key: key.map(bytes::Bytes::copy_from_slice),
             value: value.map(bytes::Bytes::copy_from_slice),
@@ -105,7 +160,11 @@ pub fn build_produce_request(
             .collect::<Result<_>>()?;
 
     let request = ProduceRequest::default()
-        .with_transactional_id(None)
+        .with_transactional_id(context.map(|context| {
+            kafka_protocol::messages::TransactionalId(StrBytes::from_string(
+                context.transactional_id.to_owned(),
+            ))
+        }))
         .with_acks(required_acks)
         .with_timeout_ms(timeout_ms)
         .with_topic_data(topic_data);

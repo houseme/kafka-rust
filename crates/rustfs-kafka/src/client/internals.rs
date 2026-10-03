@@ -6,6 +6,13 @@ use crate::error::Result;
 use crate::producer::ProduceConfirm;
 
 pub(crate) trait KafkaClientInternals {
+    fn internal_produce_transactional_message(
+        &mut self,
+        ack_timeout: i32,
+        context: crate::protocol::produce::TransactionContext<'_>,
+        message: &ProduceMessage<'_, '_>,
+    ) -> Result<()>;
+
     fn internal_produce_messages<'a, 'b, I, J>(
         &mut self,
         required_acks: i16,

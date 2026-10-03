@@ -844,9 +844,70 @@ impl KafkaClient {
     pub fn get_conn_mut(&mut self, host: &str) -> Result<&mut network::KafkaConnection> {
         self.conn_pool.get_conn(host, std::time::Instant::now())
     }
+
+    /// Delay for explicit initialization or single-partition enrollment
+    /// rejections. Uncertain transaction outcomes are never retried.
+    pub(crate) fn transaction_retry_delay(&self, failed_attempt: u32) -> Option<Duration> {
+        self.config.retry_policy().next_delay(failed_attempt)
+    }
+
+    /// Discover a transaction coordinator without reading or writing the group
+    /// coordinator cache. Discovery carries no delivery state and may retry.
+    pub(crate) fn find_transaction_coordinator(
+        &mut self,
+        transactional_id: &str,
+    ) -> Result<String> {
+        let mut attempt = 1;
+        loop {
+            let correlation = self.state.next_correlation_id();
+            let result = match self.conn_pool.get_conn_any(std::time::Instant::now()) {
+                Some(conn) => protocol::transaction::fetch_transaction_coordinator(
+                    conn,
+                    correlation,
+                    &self.config.client_id,
+                    transactional_id,
+                ),
+                None => Err(Error::no_host_reachable()),
+            };
+            match result {
+                Ok(host) => return Ok(host),
+                Err(err)
+                    if attempt < self.config.retry_max_attempts()
+                        && matches!(
+                            &err,
+                            Error::Kafka(
+                                KafkaCode::GroupLoadInProgress
+                                    | KafkaCode::GroupCoordinatorNotAvailable
+                                    | KafkaCode::NotCoordinatorForGroup
+                            ) | Error::Connection(
+                                crate::error::ConnectionError::Io(_)
+                                    | crate::error::ConnectionError::Timeout(_)
+                                    | crate::error::ConnectionError::NoHostReachable
+                            )
+                        ) =>
+                {
+                    if let Some(delay) = self.config.retry_policy().next_delay(attempt) {
+                        std::thread::sleep(delay);
+                    }
+                    attempt += 1;
+                    tracing::debug!(?err, attempt, "Retrying transaction coordinator discovery");
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
 }
 
 impl KafkaClientInternals for KafkaClient {
+    fn internal_produce_transactional_message(
+        &mut self,
+        ack_timeout: i32,
+        context: protocol::produce::TransactionContext<'_>,
+        message: &ProduceMessage<'_, '_>,
+    ) -> Result<()> {
+        produce_ops::produce_transactional_message(self, ack_timeout, context, message)
+    }
+
     fn internal_produce_messages<'a, 'b, I, J>(
         &mut self,
         required_acks: i16,

@@ -37,12 +37,11 @@ pub fn fetch_init_producer_id(
 ) -> Result<InitProducerIdResponseData> {
     let version = API_VERSION_INIT_PRODUCER_ID;
 
-    let mut req = InitProducerIdRequest::default();
-    if let Some(tid) = transactional_id {
-        req = req.with_transactional_id(Some(kafka_protocol::messages::TransactionalId(
-            StrBytes::from_string(tid.to_owned()),
-        )));
-    }
+    let req = InitProducerIdRequest::default()
+        .with_transaction_timeout_ms(60_000)
+        .with_transactional_id(transactional_id.map(|tid| {
+            kafka_protocol::messages::TransactionalId(StrBytes::from_string(tid.to_owned()))
+        }));
 
     let header = RequestHeader::default()
         .with_request_api_key(ApiKey::InitProducerId as i16)
@@ -54,14 +53,11 @@ pub fn fetch_init_producer_id(
 
     conn.send(&out)?;
 
-    let size = {
-        let mut buf = [0u8; 4];
-        conn.read_exact(&mut buf)?;
-        i32::from_be_bytes(buf)
-    };
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let kp_resp =
-        crate::protocol::decode_response_payload::<InitProducerIdResponse>(resp_bytes, version)?;
+    let kp_resp = crate::protocol::transaction::read_response::<InitProducerIdResponse>(
+        conn,
+        correlation_id,
+        version,
+    )?;
     Ok(InitProducerIdResponseData::from_response(&kp_resp))
 }
 
