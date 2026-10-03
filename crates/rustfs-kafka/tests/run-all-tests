@@ -19,7 +19,7 @@ cd "$SCRIPT_DIR"
 export RUST_TEST_THREADS=1
 
 DEFAULT_VERS='3.9.2:4.1.2:4.2.0'
-DEFAULT_COMPRESSIONS='NONE:SNAPPY:GZIP'
+DEFAULT_COMPRESSIONS='NONE:SNAPPY:GZIP:LZ4:ZSTD'
 DEFAULT_SECURES=':secure'
 DEFAULT_SCALA_VER='2.13'
 PRELOADED_DIR="$SCRIPT_DIR/kafka-rust-image/preloaded"
@@ -132,7 +132,7 @@ for ver in "${versions[@]}"; do
             fi
             export KAFKA_CLIENT_COMPRESSION=$compression
             echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure_label"
-            cargo test --features "integration_tests,kafka-protocol/snappy,kafka-protocol/gzip"
+            cargo test -p rustfs-kafka --features "integration_tests,compression"
         done
 
         docker compose down
