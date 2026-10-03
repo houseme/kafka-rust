@@ -360,6 +360,7 @@ impl NativeProducer {
 
         send_kp_request(conn, &header, &request, API_VERSION_PRODUCE).await?;
         if self.required_acks == 0 {
+            conn.complete_request();
             return Ok(());
         }
 

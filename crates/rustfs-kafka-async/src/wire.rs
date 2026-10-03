@@ -1,9 +1,9 @@
 //! Shared async Kafka wire-protocol helpers.
 
-use bytes::Bytes;
-use kafka_protocol::messages::RequestHeader;
+use bytes::{Buf, Bytes};
+use kafka_protocol::messages::{RequestHeader, ResponseHeader};
 use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
-use rustfs_kafka::client::{decode_response_payload, encode_request_frame};
+use rustfs_kafka::client::encode_request_frame;
 use rustfs_kafka::error::{Error, KafkaCode, ProtocolError, Result};
 
 use crate::connection::AsyncConnection;
@@ -18,20 +18,25 @@ where
     T: Encodable + HeaderVersion,
 {
     let out = encode_kp_request(header, body, api_version)?;
-    conn.send(&out).await
+    conn.send_request(&out, header.correlation_id).await
 }
 
 pub(crate) async fn get_kp_response<R>(conn: &mut AsyncConnection, api_version: i16) -> Result<R>
 where
     R: Decodable + HeaderVersion,
 {
-    let size_bytes = conn.read_exact(4).await?;
-    let size = i32::from_be_bytes(
-        <[u8; 4]>::try_from(size_bytes.as_ref())
-            .map_err(|_| Error::Protocol(ProtocolError::Codec))?,
-    );
-    let bytes = conn.read_exact(non_negative_i32_to_u64(size)?).await?;
-    decode_kp_response(bytes, api_version)
+    let correlation_id = conn.pending_correlation_id()?;
+    let bytes = conn.read_response_frame().await?;
+    match decode_kp_response(bytes, api_version, correlation_id) {
+        Ok(response) => {
+            conn.complete_request();
+            Ok(response)
+        }
+        Err(error) => {
+            conn.invalidate();
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn encode_kp_request<T>(
@@ -45,19 +50,29 @@ where
     encode_request_frame(header, body, api_version)
 }
 
-pub(crate) fn decode_kp_response<R>(bytes: Bytes, api_version: i16) -> Result<R>
+pub(crate) fn decode_kp_response<R>(
+    mut bytes: Bytes,
+    api_version: i16,
+    expected_correlation_id: i32,
+) -> Result<R>
 where
     R: Decodable + HeaderVersion,
 {
-    decode_response_payload(bytes, api_version)
+    let header = ResponseHeader::decode(&mut bytes, R::header_version(api_version))
+        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
+    if header.correlation_id != expected_correlation_id {
+        return Err(Error::Protocol(ProtocolError::Codec));
+    }
+    let response =
+        R::decode(&mut bytes, api_version).map_err(|_| Error::Protocol(ProtocolError::Codec))?;
+    if bytes.has_remaining() {
+        return Err(Error::Protocol(ProtocolError::Codec));
+    }
+    Ok(response)
 }
 
 pub(crate) fn non_negative_i32_to_usize(value: i32) -> Result<usize> {
     usize::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
-}
-
-pub(crate) fn non_negative_i32_to_u64(value: i32) -> Result<u64> {
-    u64::try_from(value).map_err(|_| Error::Protocol(ProtocolError::Codec))
 }
 
 pub(crate) fn kafka_code_from_protocol(code: i16) -> Option<KafkaCode> {
@@ -186,7 +201,6 @@ mod tests {
     #[test]
     fn negative_lengths_are_rejected() {
         assert!(non_negative_i32_to_usize(-1).is_err());
-        assert!(non_negative_i32_to_u64(-1).is_err());
     }
 
     #[test]

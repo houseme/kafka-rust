@@ -5,13 +5,13 @@ use kafka_protocol::messages::{
     ApiKey, BrokerId, FetchRequest, FetchResponse, FindCoordinatorRequest, FindCoordinatorResponse,
     GroupId, ListOffsetsRequest, ListOffsetsResponse, MetadataRequest, MetadataResponse,
     OffsetCommitRequest, OffsetCommitResponse, OffsetFetchRequest, OffsetFetchResponse,
-    RequestHeader, ResponseHeader, TopicName, fetch_request::FetchPartition as KpFetchPartition,
+    RequestHeader, TopicName, fetch_request::FetchPartition as KpFetchPartition,
     fetch_request::FetchTopic as KpFetchTopic, list_offsets_request::ListOffsetsPartition,
     list_offsets_request::ListOffsetsTopic, metadata_request::MetadataRequestTopic,
     offset_commit_request::OffsetCommitRequestPartition,
     offset_commit_request::OffsetCommitRequestTopic, offset_fetch_request::OffsetFetchRequestTopic,
 };
-use kafka_protocol::protocol::{Decodable, HeaderVersion, StrBytes};
+use kafka_protocol::protocol::StrBytes;
 use kafka_protocol::records::RecordBatchDecoder;
 use rustfs_kafka::client::SecurityConfig;
 use rustfs_kafka::consumer::{FetchOffset, MessageSets};
@@ -26,10 +26,7 @@ use crate::connection::AsyncConnection;
 use crate::consumer_observability::{
     DEFAULT_NATIVE_RECENT_ERROR_LIMIT, NativeConsumerErrorStats, NativeConsumerObservability,
 };
-use crate::wire::{
-    get_kp_response, kafka_code_from_protocol as map_kafka_code, non_negative_i32_to_u64,
-    send_kp_request,
-};
+use crate::wire::{get_kp_response, kafka_code_from_protocol as map_kafka_code, send_kp_request};
 
 const API_VERSION_METADATA: i16 = 1;
 const API_VERSION_FETCH: i16 = 12;
@@ -899,33 +896,7 @@ async fn get_fetch_response(
     conn: &mut AsyncConnection,
     requested_version: i16,
 ) -> Result<FetchResponse> {
-    let size_bytes = conn.read_exact(4).await?;
-    let size = i32::from_be_bytes(
-        <[u8; 4]>::try_from(size_bytes.as_ref())
-            .map_err(|_| Error::Protocol(ProtocolError::Codec))?,
-    );
-    let resp_bytes = conn.read_exact(non_negative_i32_to_u64(size)?).await?;
-
-    let mut candidates = Vec::with_capacity(1 + 18);
-    candidates.push(requested_version);
-    for v in (0..=17).rev() {
-        if v != requested_version {
-            candidates.push(v);
-        }
-    }
-
-    for version in candidates {
-        let mut bytes = resp_bytes.clone();
-        let header_version = FetchResponse::header_version(version);
-        if ResponseHeader::decode(&mut bytes, header_version).is_err() {
-            continue;
-        }
-        if let Ok(resp) = FetchResponse::decode(&mut bytes, version) {
-            return Ok(resp);
-        }
-    }
-
-    Err(Error::Protocol(ProtocolError::Codec))
+    get_kp_response(conn, requested_version).await
 }
 
 fn convert_fetch_response(
@@ -1080,6 +1051,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::{Buf, BytesMut};
+    use kafka_protocol::messages::ResponseHeader;
     use kafka_protocol::messages::fetch_response::{FetchableTopicResponse, PartitionData};
     use kafka_protocol::messages::list_offsets_response::{
         ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
@@ -1093,7 +1065,7 @@ mod tests {
     use kafka_protocol::messages::offset_fetch_response::{
         OffsetFetchResponsePartition, OffsetFetchResponseTopic,
     };
-    use kafka_protocol::protocol::Encodable;
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
     use kafka_protocol::records::{Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType};
     use rustfs_kafka::error::{ConnectionError, Error};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

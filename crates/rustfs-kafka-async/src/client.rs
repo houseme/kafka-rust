@@ -256,9 +256,21 @@ impl AsyncKafkaClient {
             match send_kp_request(conn, &header, request, effective_api_version).await {
                 Ok(()) => match get_kp_response::<Resp>(conn, effective_api_version).await {
                     Ok(resp) => return Ok((host, resp)),
-                    Err(e) => last_err = Some(e.with_broker_context(&host, operation)),
+                    Err(e) => {
+                        let error = e.with_broker_context(&host, operation);
+                        if header.request_api_key == ApiKey::Produce as i16 {
+                            return Err(error);
+                        }
+                        last_err = Some(error);
+                    }
                 },
-                Err(e) => last_err = Some(e.with_broker_context(&host, operation)),
+                Err(e) => {
+                    let error = e.with_broker_context(&host, operation);
+                    if header.request_api_key == ApiKey::Produce as i16 {
+                        return Err(error);
+                    }
+                    last_err = Some(error);
+                }
             }
         }
 
@@ -561,7 +573,8 @@ fn duration_to_millis_i32(timeout: Duration) -> Result<i32> {
 mod tests {
     use bytes::Buf;
     use kafka_protocol::messages::{
-        ApiKey, ApiVersionsRequest, ApiVersionsResponse, CreateTopicsRequest,
+        ApiKey, ApiVersionsRequest, ApiVersionsResponse, CreateTopicsRequest, ProduceRequest,
+        ProduceResponse,
     };
     use kafka_protocol::protocol::{Decodable, HeaderVersion};
     use rustfs_kafka::error::{ConnectionError, Error};
@@ -569,6 +582,51 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[tokio::test]
+    async fn raw_produce_is_not_replayed_on_another_broker_after_response_eof() {
+        let primary = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backup = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let primary_host = primary.local_addr().unwrap().to_string();
+        let backup_host = backup.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = primary.accept().await.unwrap();
+            let size = socket.read_i32().await.unwrap();
+            let mut frame = vec![0; usize::try_from(size).unwrap()];
+            socket.read_exact(&mut frame).await.unwrap();
+            let mut frame = bytes::Bytes::from(frame);
+            let header =
+                RequestHeader::decode(&mut frame, ProduceRequest::header_version(9)).unwrap();
+            assert_eq!(header.request_api_key, ApiKey::Produce as i16);
+            assert_eq!(header.request_api_version, 9);
+            ProduceRequest::decode(&mut frame, 9).unwrap();
+            assert!(!frame.has_remaining());
+            // The broker may already have accepted the request before EOF.
+        });
+        let mut client = AsyncKafkaClient::new(vec![]).await.unwrap();
+        client.bootstrap_hosts = vec![primary_host, backup_host];
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.send_raw_protocol_request::<_, ProduceResponse>(
+                ApiKey::Produce as i16,
+                9,
+                &ProduceRequest::default().with_acks(1),
+            ),
+        )
+        .await
+        .expect("Produce should return its first transport failure");
+        assert!(matches!(result, Err(Error::BrokerRequestError { .. })));
+        assert!(
+            std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(backup.poll_accept(cx).is_pending())
+            })
+            .await
+        );
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn new_with_empty_hosts_succeeds() {
