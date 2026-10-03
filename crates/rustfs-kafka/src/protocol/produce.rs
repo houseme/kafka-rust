@@ -37,6 +37,12 @@ pub fn build_produce_request(
     > = std::collections::HashMap::new();
 
     for (topic, partition, key, value, headers) in messages {
+        let records = topic_map
+            .entry(topic)
+            .or_default()
+            .entry(*partition)
+            .or_default();
+        let offset = super::usize_to_i32(records.len())?;
         let kp_headers: indexmap::IndexMap<StrBytes, Option<bytes::Bytes>> = headers
             .iter()
             .map(|(k, v)| (StrBytes::from_string(k.clone()), Some(v.clone())))
@@ -50,19 +56,17 @@ pub fn build_produce_request(
             producer_id: -1,
             producer_epoch: -1,
             timestamp_type: TimestampType::Creation,
-            offset: 0,
-            sequence: -1,
+            offset: i64::from(offset),
+            // The encoder groups records with the same offset - sequence. This
+            // keeps one batch per partition while retaining base_sequence = -1
+            // for a non-idempotent producer.
+            sequence: offset - 1,
             timestamp: 0,
             key: key.map(bytes::Bytes::copy_from_slice),
             value: value.map(bytes::Bytes::copy_from_slice),
             headers: kp_headers,
         };
-        topic_map
-            .entry(topic)
-            .or_default()
-            .entry(*partition)
-            .or_default()
-            .push(record);
+        records.push(record);
     }
 
     let topic_data: Vec<kafka_protocol::messages::produce_request::TopicProduceData> =
@@ -223,6 +227,54 @@ mod tests {
 
     fn one_message() -> [ProduceMessageRef<'static>; 1] {
         [("topic-a", 0, None, Some(&b"value"[..]), &[])]
+    }
+
+    #[test]
+    fn produce_batches_have_contiguous_offsets_and_non_idempotent_sequences() {
+        let messages: [ProduceMessageRef<'_>; 5] = [
+            ("topic-a", 0, None, Some(b"first"), &[]),
+            ("topic-b", 0, None, Some(b"other-topic"), &[]),
+            ("topic-a", 1, None, Some(b"other-partition"), &[]),
+            ("topic-a", 0, None, Some(b"second"), &[]),
+            ("topic-a", 0, None, Some(b"third"), &[]),
+        ];
+        let (_, request) =
+            build_produce_request(1, "client-a", 1, 30_000, Compression::NONE, &messages).unwrap();
+
+        assert_eq!(request.topic_data.len(), 2);
+        for topic in request.topic_data {
+            for partition in topic.partition_data {
+                let expected_values: &[&[u8]] = match (topic.name.as_str(), partition.index) {
+                    ("topic-a", 0) => &[b"first", b"second", b"third"],
+                    ("topic-a", 1) => &[b"other-partition"],
+                    ("topic-b", 0) => &[b"other-topic"],
+                    other => panic!("unexpected topic/partition: {other:?}"),
+                };
+                let records = partition.records.unwrap();
+                let batch_info = kafka_protocol::records::RecordBatchDecoder::decode_batch_info(
+                    &mut records.clone(),
+                )
+                .unwrap();
+                assert_eq!(batch_info.len(), 1, "one batch per partition");
+                assert_eq!(batch_info[0].min_offset, 0);
+                assert_eq!(batch_info[0].base_sequence, -1);
+                assert_eq!(
+                    usize::try_from(batch_info[0].record_count).unwrap(),
+                    expected_values.len()
+                );
+                // The broker requires lastOffsetDelta + 1 == recordsCount.
+                let last_offset_delta = i32::from_be_bytes(records[23..27].try_into().unwrap());
+                assert_eq!(last_offset_delta + 1, batch_info[0].record_count);
+                let decoded =
+                    kafka_protocol::records::RecordBatchDecoder::decode_all(&mut records.clone())
+                        .unwrap();
+                assert_eq!(decoded.len(), 1);
+                for (index, record) in decoded[0].records.iter().enumerate() {
+                    assert_eq!(record.offset, i64::try_from(index).unwrap());
+                    assert_eq!(record.value.as_deref().unwrap(), expected_values[index]);
+                }
+            }
+        }
     }
 
     #[cfg(not(feature = "gzip"))]

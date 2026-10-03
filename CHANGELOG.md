@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Produce record batches now use contiguous relative offsets while preserving a single non-idempotent batch per partition.
 - Sync transport now completes partial writes, flushes request frames, and terminates connections on write or flush errors.
 - Updated test assertions to satisfy Rust 1.99 Clippy and improve failure diagnostics.
 
