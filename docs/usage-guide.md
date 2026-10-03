@@ -117,7 +117,41 @@ async fn main() -> rustfs_kafka::error::Result<()> {
 }
 ```
 
-## 4. TLS and Feature Flags
+## 4. Delivery, Routing, and Recovery
+
+Sync consumers exclude paused partitions from both normal and oversized-message retry fetches. Paused retries
+remain pending until `resume`; pausing every partition makes `poll` return an empty result. Resuming retains the
+partition's next fetch offset. A committed offset equal to the earliest retained offset is a valid starting point.
+Sync consumers publish offsets, retry buffer changes, and retry queue updates only after all partition responses
+succeed. Transport errors, partition errors, and oversized-message errors preserve progress and pending retries;
+a response that omits the retried partition also leaves that retry pending.
+
+Async consumers query committed group offsets before applying `Earliest`, `Latest`, or `ByTime` to partitions
+without a committed offset. Metadata refreshes preserve established positions. Progress advances after all broker
+responses for a poll succeed, immediately before the returned message sets are delivered. Failed or cancelled polls
+leave progress for undelivered messages unchanged. Call `commit` only after successfully processing the returned
+messages; polling still advances the in-memory position before application processing.
+
+Sync transport writes complete request frames and flushes TCP/TLS before reading the response. Fetch decoding
+includes all record batches returned for a partition. Produce requests maintain contiguous relative offsets within
+each partition batch, including compressed batches.
+
+`StickyPartitioner` keeps its batch state per topic and chooses another available partition if the previous one
+loses its leader. Explicit record partitions remain unchanged. Calling `with_partitioner` on either sync producer
+builder preserves previously selected TLS, client ID, and acknowledgement settings. The regular producer also
+retains its timestamp setting, and the batch producer retains its batching settings.
+
+Async producer cache hits borrow partition routes instead of copying all partition metadata. A
+`NotLeaderForPartition`, `LeaderNotAvailable`, or `UnknownTopicOrPartition` response clears that topic's route.
+The failed call returns the broker error; the next send reloads metadata. Application retries still need to account
+for uncertain delivery after network errors.
+
+Existing high-level limitations remain: `TransactionalProducer` does not carry transaction context into Produce,
+and the automatic group heartbeat thread does not send broker heartbeats. Connection cancellation recovery,
+transactional delivery, group lifecycle, and batch flush failure semantics need further work tracked in
+[rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
+
+## 5. TLS and Feature Flags
 
 ### Low-Level Protocol Building Blocks
 
@@ -130,6 +164,8 @@ options from local member/assignment state.
 
 - Default TLS feature: `security` (rustls + aws-lc-rs).
 - Alternative TLS provider: `security-ring`.
+- Either TLS feature enables the same secure client, producer, consumer, and SASL APIs. To select ring without
+  enabling the default aws-lc-rs backend, use `default-features = false, features = ["security-ring", "compression"]`.
 - Default trust roots come from `webpki-roots`; configure private or enterprise CAs with
   `SecurityConfig::with_ca_cert`.
 - Disable all default features:
@@ -146,9 +182,11 @@ rustfs-kafka = { version = "1.3.1", default-features = false }
 rustfs-kafka = { version = "1.3.1", default-features = false, features = ["security", "gzip"] }
 ```
 
-## 5. Integration Testing
+## 6. Integration Testing and Protocol Benchmarks
 
 The repository includes Docker-based integration tests:
+
+The default compression matrix covers NONE, SNAPPY, GZIP, LZ4, and ZSTD through the crate's `compression` feature.
 
 ```bash
 cd crates/rustfs-kafka/tests
@@ -169,3 +207,12 @@ Async secure SASL acceptance checks:
 ./run-sync-secure-tests
 ./run-async-secure-tests
 ```
+
+Run the generated protocol codec benchmarks in release mode:
+
+```bash
+cargo bench -p rustfs-kafka --bench protocol_serialization
+```
+
+These fixed-input benchmarks measure generated Produce frame encoding and multi-batch Fetch decoding. They
+provide codec timings and throughput, not private adapter allocation costs or end-to-end broker throughput.

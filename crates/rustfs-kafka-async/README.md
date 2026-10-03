@@ -60,5 +60,13 @@ async fn main() -> rustfs_kafka::Result<()> {
 
 - This crate is intentionally lightweight and reuses protocol data structures from `rustfs-kafka`.
 - Native async producer path supports metadata-backed auto partition resolution.
+- Cached producer routes are borrowed; a leader error clears the affected topic route so the next send refreshes
+  metadata. The failed send returns its broker error without an automatic resend.
+- Consumers start from committed group offsets, using the configured fallback only when a partition has no
+  committed offset. Metadata refreshes retain existing positions.
+- Failed or cancelled multi-broker polls do not advance offsets for messages that were not returned. A successful
+  poll advances in-memory progress; commit after application processing succeeds.
+- Connections interrupted by cancellation or transport failure still require recovery work tracked in
+  [rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
 - Secure integration coverage includes Docker end-to-end checks for SASL `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 - For full feature details, consult the root crate docs and `docs/usage-guide.md` in the repository.

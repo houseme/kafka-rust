@@ -65,6 +65,24 @@ rustfs-kafka-async = "1.3.1"
 Default builds include Kafka record batch compression support. For smaller builds, disable default features and enable
 only the codecs you need, for example `features = ["security", "gzip"]`.
 
+## Runtime Behavior
+
+- Sync request frames are written completely and flushed before waiting for a response.
+- Fetch responses decode every record batch in each partition; Produce batches use contiguous relative offsets.
+- Sync consumers honor `pause`/`resume` in regular and retry fetches. Committed offsets at the earliest retained
+  position remain valid. Failed polls preserve fetch progress and outstanding retries.
+- Async consumers initialize from committed offsets, then use the configured fallback for partitions without a
+  committed position. A failed or cancelled multi-broker poll does not advance progress for unreturned messages.
+- Sticky partitioning maintains separate state per topic and reselects when a partition becomes unavailable.
+- Producer builders preserve TLS, client ID, and other configuration when a custom partitioner is selected.
+- Async producers borrow cached partition routes. A broker leader error invalidates the affected topic route;
+  the next send refreshes metadata and the failed send returns its original error.
+
+The high-level `TransactionalProducer` currently sends ordinary Produce records without transaction context;
+applications cannot rely on abort to hide those records. `GroupCoordinator`'s background heartbeat thread currently
+does not send broker heartbeats. These existing limitations and follow-up work are tracked in
+[rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
+
 ## Documentation
 
 - API docs: [docs.rs/rustfs-kafka](https://docs.rs/rustfs-kafka/)

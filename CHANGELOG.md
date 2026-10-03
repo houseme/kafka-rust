@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Documented producer routing, consumer progress and retry behavior, TLS feature selection, benchmark scope, and current transaction and group lifecycle limitations.
 - The default Kafka integration matrix now covers NONE, SNAPPY, GZIP, LZ4, and ZSTD through the crate's compression feature.
 
 ### Fixed
@@ -21,7 +22,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - The standalone `security-ring` feature now enables TLS and SASL modules, public configuration APIs, and secure builder paths without requiring `security`.
 - Async producers borrow cached partition routes and invalidate topic metadata after leader errors without automatically resending failed records.
 - Async consumers restore committed or fallback starting offsets, propagate OffsetFetch top-level errors, and advance progress only after every broker response succeeds.
-- Producer and batch producer builders retain TLS, client ID, and timestamp configuration when selecting a custom partitioner.
+- Producer and batch producer builders retain TLS and client ID configuration when selecting a custom partitioner; the regular producer also retains its timestamp setting.
 - Sticky partitioning now maintains per-topic state, reselects unavailable partitions, and avoids per-message mutex locking.
 - Sync consumers honor pause/resume in normal and retry fetches, accept committed offsets at the earliest retained boundary, and cap retry buffer growth without overflow.
 - OffsetFetch top-level errors now participate in retry and coordinator rediscovery; unavailable coordinator connections return an error instead of panicking.
