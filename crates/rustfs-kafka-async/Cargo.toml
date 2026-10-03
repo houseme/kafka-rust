@@ -36,6 +36,7 @@ rand.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+kafka-protocol = { workspace = true, features = ["broker"] }
 tokio = { workspace = true, features = ["full"] }
 
 [features]

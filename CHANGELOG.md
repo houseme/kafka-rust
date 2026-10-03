@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Async consumers restore committed or fallback starting offsets, propagate OffsetFetch top-level errors, and advance progress only after every broker response succeeds.
 - Producer and batch producer builders retain TLS, client ID, and timestamp configuration when selecting a custom partitioner.
 - Sticky partitioning now maintains per-topic state, reselects unavailable partitions, and avoids per-message mutex locking.
 - Sync consumers honor pause/resume in normal and retry fetches, accept committed offsets at the earliest retained boundary, and cap retry buffer growth without overflow.

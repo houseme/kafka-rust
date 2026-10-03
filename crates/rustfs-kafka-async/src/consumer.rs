@@ -382,10 +382,14 @@ impl NativeConsumer {
                 return Err(Error::Kafka(code));
             }
 
-            self.advance_offsets(&owned);
             owned_responses.push(owned);
         }
 
+        // A failed or cancelled poll must not consume messages it never returns.
+        // Publish progress only once every broker response has been collected.
+        for response in &owned_responses {
+            self.advance_offsets(response);
+        }
         Ok(MessageSets::from_fetch_responses(owned_responses))
     }
 
@@ -511,8 +515,7 @@ impl NativeConsumer {
                 }
                 if let Some(host) = brokers.get(&leader) {
                     let tp = (topic_name.to_string(), partition.partition_index);
-                    self.leaders.insert(tp.clone(), host.clone());
-                    self.offsets.entry(tp).or_insert(0);
+                    self.leaders.insert(tp, host.clone());
                 }
             }
         }
@@ -618,6 +621,11 @@ impl NativeConsumer {
         send_kp_request(conn, &header, &request, API_VERSION_OFFSET_FETCH).await?;
         let response =
             get_kp_response::<OffsetFetchResponse>(conn, API_VERSION_OFFSET_FETCH).await?;
+        if response.error_code != 0 {
+            return Err(Error::Kafka(
+                map_kafka_code(response.error_code).unwrap_or(KafkaCode::Unknown),
+            ));
+        }
 
         let mut committed = HashMap::new();
         for topic in response.topics {
@@ -1068,9 +1076,558 @@ fn no_host_reachable_error() -> Error {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use bytes::{Buf, BytesMut};
+    use kafka_protocol::messages::fetch_response::{FetchableTopicResponse, PartitionData};
+    use kafka_protocol::messages::list_offsets_response::{
+        ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
+    };
+    use kafka_protocol::messages::metadata_response::{
+        MetadataResponseBroker, MetadataResponsePartition, MetadataResponseTopic,
+    };
+    use kafka_protocol::messages::offset_commit_response::{
+        OffsetCommitResponsePartition, OffsetCommitResponseTopic,
+    };
+    use kafka_protocol::messages::offset_fetch_response::{
+        OffsetFetchResponsePartition, OffsetFetchResponseTopic,
+    };
+    use kafka_protocol::protocol::Encodable;
+    use kafka_protocol::records::{Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType};
     use rustfs_kafka::error::{ConnectionError, Error};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Notify;
 
     use super::*;
+
+    const TEST_TOPIC: &str = "offset-test";
+    const TEST_GROUP: &str = "offset-group";
+    const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    async fn checked<F: Future>(future: F) -> F::Output {
+        tokio::time::timeout(TEST_TIMEOUT, future)
+            .await
+            .expect("mock broker operation timed out")
+    }
+
+    fn test_topic() -> TopicName {
+        TopicName::from(StrBytes::from_string(TEST_TOPIC.to_owned()))
+    }
+
+    async fn read_request<T>(
+        socket: &mut TcpStream,
+        api_key: ApiKey,
+        version: i16,
+    ) -> (RequestHeader, T)
+    where
+        T: Decodable + HeaderVersion,
+    {
+        let size = checked(socket.read_i32()).await.unwrap();
+        let mut frame = vec![0; usize::try_from(size).unwrap()];
+        checked(socket.read_exact(&mut frame)).await.unwrap();
+        let mut frame = Bytes::from(frame);
+        let header = RequestHeader::decode(&mut frame, T::header_version(version)).unwrap();
+        assert_eq!(header.request_api_key, api_key as i16);
+        assert_eq!(header.request_api_version, version);
+        let request = T::decode(&mut frame, version).unwrap();
+        assert!(!frame.has_remaining());
+        (header, request)
+    }
+
+    async fn reply<T>(socket: &mut TcpStream, header: &RequestHeader, version: i16, response: T)
+    where
+        T: Encodable + HeaderVersion,
+    {
+        let mut frame = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(header.correlation_id)
+            .encode(&mut frame, T::header_version(version))
+            .unwrap();
+        response.encode(&mut frame, version).unwrap();
+        checked(socket.write_i32(i32::try_from(frame.len()).unwrap()))
+            .await
+            .unwrap();
+        checked(socket.write_all(&frame)).await.unwrap();
+    }
+
+    async fn serve_metadata(socket: &mut TcpStream, brokers: &[SocketAddr]) {
+        let (header, request) =
+            read_request::<MetadataRequest>(socket, ApiKey::Metadata, API_VERSION_METADATA).await;
+        assert_eq!(request.topics.unwrap()[0].name, Some(test_topic()));
+        let response = MetadataResponse::default()
+            .with_brokers(
+                brokers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, addr)| {
+                        MetadataResponseBroker::default()
+                            .with_node_id(BrokerId::from(i32::try_from(index).unwrap()))
+                            .with_host(StrBytes::from_string(addr.ip().to_string()))
+                            .with_port(i32::from(addr.port()))
+                    })
+                    .collect(),
+            )
+            .with_topics(vec![
+                MetadataResponseTopic::default()
+                    .with_name(Some(test_topic()))
+                    .with_partitions(
+                        (0..brokers.len())
+                            .map(|index| {
+                                let index = i32::try_from(index).unwrap();
+                                MetadataResponsePartition::default()
+                                    .with_partition_index(index)
+                                    .with_leader_id(BrokerId::from(index))
+                            })
+                            .collect(),
+                    ),
+            ]);
+        reply(socket, &header, API_VERSION_METADATA, response).await;
+    }
+
+    async fn serve_initialization(
+        socket: &mut TcpStream,
+        brokers: &[SocketAddr],
+        committed_offsets: &[i64],
+        offset_fetch_error: i16,
+    ) {
+        serve_metadata(socket, brokers).await;
+        let (header, request) = read_request::<FindCoordinatorRequest>(
+            socket,
+            ApiKey::FindCoordinator,
+            API_VERSION_FIND_COORDINATOR,
+        )
+        .await;
+        assert_eq!(request.key.as_str(), TEST_GROUP);
+        reply(
+            socket,
+            &header,
+            API_VERSION_FIND_COORDINATOR,
+            FindCoordinatorResponse::default()
+                .with_host(StrBytes::from_string(brokers[0].ip().to_string()))
+                .with_port(i32::from(brokers[0].port())),
+        )
+        .await;
+        let (header, request) = read_request::<OffsetFetchRequest>(
+            socket,
+            ApiKey::OffsetFetch,
+            API_VERSION_OFFSET_FETCH,
+        )
+        .await;
+        assert_eq!(request.group_id.as_str(), TEST_GROUP);
+        let topics = request.topics.unwrap();
+        assert_eq!(topics[0].name, test_topic());
+        let mut partitions = topics[0].partition_indexes.clone();
+        partitions.sort_unstable();
+        assert_eq!(
+            partitions,
+            (0..i32::try_from(brokers.len()).unwrap()).collect::<Vec<_>>()
+        );
+        reply(
+            socket,
+            &header,
+            API_VERSION_OFFSET_FETCH,
+            OffsetFetchResponse::default()
+                .with_error_code(offset_fetch_error)
+                .with_topics(if offset_fetch_error == 0 {
+                    vec![
+                        OffsetFetchResponseTopic::default()
+                            .with_name(test_topic())
+                            .with_partitions(
+                                committed_offsets
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, offset)| {
+                                        OffsetFetchResponsePartition::default()
+                                            .with_partition_index(i32::try_from(index).unwrap())
+                                            .with_committed_offset(*offset)
+                                    })
+                                    .collect(),
+                            ),
+                    ]
+                } else {
+                    Vec::new()
+                }),
+        )
+        .await;
+    }
+
+    fn fetch_response(partition: i32, offset: i64, error_code: i16) -> FetchResponse {
+        let record = Record {
+            transactional: false,
+            control: false,
+            delete_horizon: false,
+            partition_leader_epoch: -1,
+            producer_id: -1,
+            producer_epoch: -1,
+            timestamp_type: TimestampType::Creation,
+            offset,
+            sequence: -1,
+            timestamp: 0,
+            key: None,
+            value: Some(Bytes::from_static(b"delivered")),
+            headers: Default::default(),
+        };
+        let mut records = BytesMut::new();
+        RecordBatchEncoder::encode(
+            &mut records,
+            &[record],
+            &RecordEncodeOptions {
+                version: 2,
+                compression: kafka_protocol::records::Compression::None,
+            },
+        )
+        .unwrap();
+        FetchResponse::default().with_responses(vec![
+            FetchableTopicResponse::default()
+                .with_topic(test_topic())
+                .with_partitions(vec![
+                    PartitionData::default()
+                        .with_partition_index(partition)
+                        .with_error_code(error_code)
+                        .with_high_watermark(offset + 1)
+                        .with_records(Some(records.freeze())),
+                ]),
+        ])
+    }
+
+    async fn serve_fetch(socket: &mut TcpStream, partition: i32, offset: i64) {
+        let (header, request) =
+            read_request::<FetchRequest>(socket, ApiKey::Fetch, API_VERSION_FETCH).await;
+        assert_eq!(request.topics[0].topic, test_topic());
+        assert_eq!(request.topics[0].partitions[0].partition, partition);
+        assert_eq!(request.topics[0].partitions[0].fetch_offset, offset);
+        reply(
+            socket,
+            &header,
+            API_VERSION_FETCH,
+            fetch_response(partition, offset, 0),
+        )
+        .await;
+    }
+
+    async fn serve_commit(socket: &mut TcpStream, expected: &[(i32, i64)]) {
+        let (header, request) = read_request::<OffsetCommitRequest>(
+            socket,
+            ApiKey::OffsetCommit,
+            API_VERSION_OFFSET_COMMIT,
+        )
+        .await;
+        assert_eq!(request.group_id.as_str(), TEST_GROUP);
+        assert_eq!(request.topics[0].name, test_topic());
+        let mut committed: Vec<_> = request.topics[0]
+            .partitions
+            .iter()
+            .map(|partition| (partition.partition_index, partition.committed_offset))
+            .collect();
+        committed.sort_unstable();
+        assert_eq!(committed, expected);
+        reply(
+            socket,
+            &header,
+            API_VERSION_OFFSET_COMMIT,
+            OffsetCommitResponse::default().with_topics(vec![
+                OffsetCommitResponseTopic::default()
+                    .with_name(test_topic())
+                    .with_partitions(
+                        expected
+                            .iter()
+                            .map(|(partition, _)| {
+                                OffsetCommitResponsePartition::default()
+                                    .with_partition_index(*partition)
+                            })
+                            .collect(),
+                    ),
+            ]),
+        )
+        .await;
+    }
+
+    async fn consumer_at(addr: SocketAddr, fallback: FetchOffset) -> AsyncConsumer {
+        checked(
+            AsyncConsumer::builder(vec![addr.to_string()])
+                .with_group(TEST_GROUP.to_owned())
+                .with_topic(TEST_TOPIC.to_owned())
+                .with_fallback_offset(fallback)
+                .with_native_retry_attempts(1)
+                .build(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn native_consumer(consumer: &mut AsyncConsumer) -> &mut NativeConsumer {
+        match &mut consumer.mode {
+            AsyncConsumerMode::Native(native) => native,
+        }
+    }
+
+    async fn assert_start_offset(
+        committed: i64,
+        fallback: FetchOffset,
+        expected_timestamp: Option<i64>,
+        start_offset: i64,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            serve_initialization(&mut socket, &[addr], &[committed], 0).await;
+            if let Some(timestamp) = expected_timestamp {
+                let (header, request) = read_request::<ListOffsetsRequest>(
+                    &mut socket,
+                    ApiKey::ListOffsets,
+                    API_VERSION_LIST_OFFSETS,
+                )
+                .await;
+                assert_eq!(request.topics[0].partitions[0].timestamp, timestamp);
+                reply(
+                    &mut socket,
+                    &header,
+                    API_VERSION_LIST_OFFSETS,
+                    ListOffsetsResponse::default().with_topics(vec![
+                        ListOffsetsTopicResponse::default()
+                            .with_name(test_topic())
+                            .with_partitions(vec![
+                                ListOffsetsPartitionResponse::default()
+                                    .with_partition_index(0)
+                                    .with_offset(start_offset),
+                            ]),
+                    ]),
+                )
+                .await;
+            }
+            serve_fetch(&mut socket, 0, start_offset).await;
+            serve_commit(&mut socket, &[(0, start_offset + 1)]).await;
+        });
+        let mut consumer = consumer_at(addr, fallback).await;
+        let messages = checked(consumer.poll()).await.unwrap();
+        assert_eq!(
+            messages.iter().next().unwrap().messages()[0].offset,
+            start_offset
+        );
+        checked(consumer.commit()).await.unwrap();
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn poll_resumes_committed_offset_and_commits_next_delivered_offset() {
+        assert_start_offset(42, FetchOffset::Latest, None, 42).await;
+    }
+
+    #[tokio::test]
+    async fn poll_resolves_earliest_when_no_offset_is_committed() {
+        assert_start_offset(-1, FetchOffset::Earliest, Some(-2), 5).await;
+    }
+
+    #[tokio::test]
+    async fn poll_resolves_latest_when_no_offset_is_committed() {
+        assert_start_offset(-1, FetchOffset::Latest, Some(-1), 27).await;
+    }
+
+    #[tokio::test]
+    async fn poll_resolves_timestamp_when_no_offset_is_committed() {
+        assert_start_offset(-1, FetchOffset::ByTime(1_234), Some(1_234), 16).await;
+    }
+
+    #[tokio::test]
+    async fn offset_fetch_coordinator_error_does_not_fall_back_or_initialize_offsets() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            serve_initialization(&mut socket, &[addr], &[], 16).await;
+            // Dropping the consumer must close the stream without sending a
+            // ListOffsets or Fetch request after the failed OffsetFetch.
+            assert_eq!(
+                checked(socket.read_u8()).await.unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+        });
+        let mut consumer = consumer_at(addr, FetchOffset::Latest).await;
+        assert!(matches!(
+            checked(consumer.poll()).await,
+            Err(Error::Kafka(KafkaCode::NotCoordinatorForGroup))
+        ));
+        let native = native_consumer(&mut consumer);
+        assert!(native.offsets.is_empty());
+        assert!(native.dirty_offsets.is_empty());
+        drop(consumer);
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_refresh_preserves_progress_from_delivered_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            serve_initialization(&mut socket, &[addr], &[42], 0).await;
+            serve_fetch(&mut socket, 0, 42).await;
+            serve_metadata(&mut socket, &[addr]).await;
+            // Existing progress must bypass OffsetFetch and ListOffsets.
+            serve_fetch(&mut socket, 0, 43).await;
+            serve_commit(&mut socket, &[(0, 44)]).await;
+        });
+        let mut consumer = consumer_at(addr, FetchOffset::Latest).await;
+        checked(consumer.poll()).await.unwrap();
+        checked(native_consumer(&mut consumer).refresh_metadata())
+            .await
+            .unwrap();
+        let messages = checked(consumer.poll()).await.unwrap();
+        assert_eq!(messages.iter().next().unwrap().messages()[0].offset, 43);
+        checked(consumer.commit()).await.unwrap();
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_multi_broker_poll_commits_next_offsets_for_all_delivered_records() {
+        let first_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let first_addr = first_listener.local_addr().unwrap();
+        let second_addr = second_listener.local_addr().unwrap();
+        let first_server = tokio::spawn(async move {
+            let (mut socket, _) = checked(first_listener.accept()).await.unwrap();
+            serve_initialization(&mut socket, &[first_addr, second_addr], &[10, 20], 0).await;
+            serve_fetch(&mut socket, 0, 10).await;
+            serve_commit(&mut socket, &[(0, 11), (1, 21)]).await;
+        });
+        let second_server = tokio::spawn(async move {
+            let (mut socket, _) = checked(second_listener.accept()).await.unwrap();
+            serve_fetch(&mut socket, 1, 20).await;
+        });
+        let mut consumer = consumer_at(first_addr, FetchOffset::Latest).await;
+        let messages = checked(consumer.poll()).await.unwrap();
+        let mut delivered: Vec<_> = messages
+            .iter()
+            .map(|set| (set.partition(), set.messages()[0].offset))
+            .collect();
+        delivered.sort_unstable();
+        assert_eq!(delivered, [(0, 10), (1, 20)]);
+        checked(consumer.commit()).await.unwrap();
+        checked(first_server).await.unwrap();
+        checked(second_server).await.unwrap();
+    }
+
+    #[derive(Clone, Copy)]
+    enum LaterFetch {
+        PartitionError,
+        Disconnect,
+        Block,
+    }
+
+    async fn assert_incomplete_poll_preserves_progress(later_fetch: LaterFetch) {
+        let first_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let brokers = Arc::new(vec![
+            first_listener.local_addr().unwrap(),
+            second_listener.local_addr().unwrap(),
+        ]);
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+        let blocked = Arc::new(Notify::new());
+        let mut servers = Vec::new();
+        for (index, listener) in [first_listener, second_listener].into_iter().enumerate() {
+            let brokers = Arc::clone(&brokers);
+            let fetch_count = Arc::clone(&fetch_count);
+            let blocked = Arc::clone(&blocked);
+            servers.push(tokio::spawn(async move {
+                let (mut socket, _) = checked(listener.accept()).await.unwrap();
+                if index == 0 {
+                    serve_initialization(&mut socket, &brokers, &[0, 0], 0).await;
+                }
+                let (header, request) =
+                    read_request::<FetchRequest>(&mut socket, ApiKey::Fetch, API_VERSION_FETCH)
+                        .await;
+                assert_eq!(request.topics[0].partitions[0].fetch_offset, 0);
+                let partition = i32::try_from(index).unwrap();
+                assert_eq!(request.topics[0].partitions[0].partition, partition);
+                // HashMap iteration can choose either broker first. Fail only
+                // after the other broker has successfully returned its records.
+                if fetch_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    reply(
+                        &mut socket,
+                        &header,
+                        API_VERSION_FETCH,
+                        fetch_response(partition, 0, 0),
+                    )
+                    .await;
+                } else {
+                    match later_fetch {
+                        LaterFetch::PartitionError => {
+                            reply(
+                                &mut socket,
+                                &header,
+                                API_VERSION_FETCH,
+                                fetch_response(partition, 0, 29),
+                            )
+                            .await;
+                        }
+                        LaterFetch::Disconnect => {}
+                        LaterFetch::Block => {
+                            blocked.notify_one();
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                }
+            }));
+        }
+        let mut consumer = consumer_at(brokers[0], FetchOffset::Latest).await;
+        match later_fetch {
+            LaterFetch::Block => {
+                checked(async {
+                    tokio::select! {
+                        result = consumer.poll() => panic!("poll completed before cancellation: {result:?}"),
+                        () = blocked.notified() => {}
+                    }
+                }).await;
+            }
+            LaterFetch::PartitionError => {
+                assert!(matches!(
+                    checked(consumer.poll()).await,
+                    Err(Error::Kafka(KafkaCode::TopicAuthorizationFailed))
+                ));
+            }
+            LaterFetch::Disconnect => {
+                assert!(matches!(
+                    checked(consumer.poll()).await,
+                    Err(Error::Connection(_))
+                ));
+            }
+        }
+        let native = native_consumer(&mut consumer);
+        let expected = HashMap::from([
+            ((TEST_TOPIC.to_owned(), 0), 0),
+            ((TEST_TOPIC.to_owned(), 1), 0),
+        ]);
+        assert_eq!(native.offsets, expected);
+        assert!(native.dirty_offsets.is_empty());
+        checked(consumer.commit()).await.unwrap();
+        for server in servers {
+            if matches!(later_fetch, LaterFetch::Block) && !server.is_finished() {
+                server.abort();
+                assert!(checked(server).await.unwrap_err().is_cancelled());
+            } else {
+                checked(server).await.unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn later_broker_partition_error_does_not_advance_undelivered_offsets() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::PartitionError).await;
+    }
+
+    #[tokio::test]
+    async fn later_broker_disconnect_does_not_advance_undelivered_offsets() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::Disconnect).await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_poll_at_later_broker_does_not_advance_undelivered_offsets() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::Block).await;
+    }
 
     #[tokio::test]
     async fn from_hosts_fails_with_unreachable_hosts() {
