@@ -29,11 +29,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    // Warm metadata, connection, encoder, and broker before timing either mode.
+    // Warm both code paths, then require several stable reference windows.
+    // Fixed warmup counts alone may leave the broker's JVM compilation active.
     producer.send_all(&records).await?;
-    let warmup_rounds = rounds.saturating_mul(4).min(64);
-    window(&producer, &records, warmup_rounds, false).await?;
+    let warmup_rounds = rounds.clamp(16, 64);
     window(&producer, &records, warmup_rounds, true).await?;
+    let mut previous: Option<Duration> = None;
+    let mut stable_windows = 0;
+    let mut warmup_windows = 0;
+    for index in 1..=12 {
+        let elapsed = window(&producer, &records, warmup_rounds, false).await?;
+        warmup_windows = index;
+        println!("warmup_window={index} seconds={:.6}", elapsed.as_secs_f64());
+        if let Some(before) = previous {
+            let drift = (elapsed.as_secs_f64() / before.as_secs_f64() - 1.0).abs();
+            stable_windows = if drift <= 0.10 { stable_windows + 1 } else { 0 };
+        }
+        previous = Some(elapsed);
+        if stable_windows >= 3 {
+            break;
+        }
+    }
+    if stable_windows < 3 {
+        producer.close().await?;
+        println!("comparison=inconclusive reference warmup did not stabilize");
+        return Ok(());
+    }
 
     let a1 = window(&producer, &records, rounds, false).await?;
     let b1 = window(&producer, &records, rounds, true).await?;
@@ -42,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     producer.close().await?;
 
     println!(
-        "records_per_batch={count} rounds={rounds} warmup_rounds={warmup_rounds} payload_bytes=1024 acks=all partition=0"
+        "records_per_batch={count} rounds={rounds} warmup_rounds={warmup_rounds} warmup_windows={warmup_windows} payload_bytes=1024 acks=all partition=0"
     );
     for (label, time) in [("A1", a1), ("B1", b1), ("B2", b2), ("A2", a2)] {
         println!(

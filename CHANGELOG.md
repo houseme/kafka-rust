@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- The batching example requires three consecutive reference warmup comparisons within 10 percent, caps warmup at twelve windows, and retains the 15 percent ABBA baseline-drift gate.
 - Batch producers store topic names once across partitions and records. Unexpected confirmations return a codec error while uniquely confirmed requested partitions retire; ordering, retained failures, counters, and explicit retry guards are preserved.
 - Async Produce routing borrows cached broker hosts and owns each distinct batch host once; request headers share the encoded client ID while retaining broker, partition, and record order.
 - Async exact reads fill safely reserved storage directly, bound reads to the requested length, and preserve cancellation and EOF recovery. Cancelled-socket tests accept Linux reset semantics while verifying fresh connections.
