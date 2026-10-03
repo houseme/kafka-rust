@@ -43,6 +43,7 @@ rand = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
+kafka-protocol = { workspace = true, features = ["broker"] }
 ctor.workspace = true
 getopts.workspace = true
 tracing-subscriber.workspace = true

@@ -117,7 +117,7 @@ fn get_group_coordinator(
         let conn = ctx
             .conn_pool
             .get_conn_any(now)
-            .expect("available connection");
+            .ok_or_else(Error::no_host_reachable)?;
         let host = conn.host().to_owned();
         let api_version = transport::apply_request_api_version(
             ctx.api_versions,
@@ -285,39 +285,27 @@ fn fetch_group_offsets_inner(
             api_version,
         )
         .map_err(|e| e.with_broker_context(&host, "OffsetFetch"))?;
+        let mut retry_code = offset_fetch_retry_code(kp_resp.error_code, group, ctx.state)?;
         let our_resp =
             crate::protocol::consumer::convert_offset_fetch_response(kp_resp, ctx.correlation_id);
 
-        let mut retry_code = None;
         let mut topic_map = HashMap::with_capacity(our_resp.topic_partitions.len());
 
-        'rproc: for tp in our_resp.topic_partitions {
-            let mut partition_offsets = Vec::with_capacity(tp.partitions.len());
-            for p in tp.partitions {
-                match KafkaCode::from_protocol(p.error) {
-                    None => {
-                        partition_offsets.push(PartitionOffset {
-                            offset: p.offset,
-                            partition: p.partition,
-                        });
-                    }
-                    Some(e @ KafkaCode::GroupLoadInProgress) => {
-                        retry_code = Some(e);
+        if retry_code.is_none() {
+            'rproc: for tp in our_resp.topic_partitions {
+                let mut partition_offsets = Vec::with_capacity(tp.partitions.len());
+                for p in tp.partitions {
+                    if let Some(code) = offset_fetch_retry_code(p.error, group, ctx.state)? {
+                        retry_code = Some(code);
                         break 'rproc;
                     }
-                    Some(e @ KafkaCode::NotCoordinatorForGroup) => {
-                        debug!(
-                            "fetch_group_offsets_kp: resetting group coordinator for '{}'",
-                            group
-                        );
-                        ctx.state.remove_group_coordinator(group);
-                        retry_code = Some(e);
-                        break 'rproc;
-                    }
-                    Some(e) => return Err(Error::Kafka(e)),
+                    partition_offsets.push(PartitionOffset {
+                        offset: p.offset,
+                        partition: p.partition,
+                    });
                 }
+                topic_map.insert(tp.topic, partition_offsets);
             }
-            topic_map.insert(tp.topic, partition_offsets);
         }
 
         match retry_code {
@@ -338,9 +326,214 @@ fn fetch_group_offsets_inner(
     }
 }
 
+fn offset_fetch_retry_code(
+    error_code: i16,
+    group: &str,
+    state: &mut super::state::ClientState,
+) -> Result<Option<KafkaCode>> {
+    match KafkaCode::from_protocol(error_code) {
+        None => Ok(None),
+        Some(code @ KafkaCode::GroupLoadInProgress) => Ok(Some(code)),
+        Some(code @ KafkaCode::NotCoordinatorForGroup) => {
+            debug!(
+                "fetch_group_offsets_kp: resetting group coordinator for '{}'",
+                group
+            );
+            state.remove_group_coordinator(group);
+            Ok(Some(code))
+        }
+        Some(code) => Err(Error::Kafka(code)),
+    }
+}
+
 #[allow(clippy::disallowed_methods)]
 fn retry_sleep(cfg: &ClientConfig, attempt: u32) {
     if let Some(delay) = cfg.retry_policy().next_delay(attempt) {
         std::thread::sleep(delay);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    use bytes::{Bytes, BytesMut};
+    use kafka_protocol::messages::{
+        ApiKey, BrokerId, FindCoordinatorRequest, FindCoordinatorResponse, OffsetFetchRequest,
+        OffsetFetchResponse, RequestHeader, ResponseHeader, TopicName,
+    };
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
+
+    use super::*;
+    use crate::client::{KafkaClient, RetryPolicy};
+
+    #[test]
+    fn group_coordinator_returns_no_host_for_an_empty_connection_pool() {
+        let mut client = KafkaClient::new(vec![]);
+        let mut ctx = OffsetRequestContext {
+            correlation_id: 1,
+            client_id: &client.config.client_id,
+            state: &mut client.state,
+            conn_pool: &mut client.conn_pool,
+            config: &client.config,
+            api_versions: &client.api_versions,
+        };
+
+        assert!(matches!(
+            get_group_coordinator("test-group", &mut ctx, Instant::now()),
+            Err(Error::Connection(
+                crate::error::ConnectionError::NoHostReachable
+            ))
+        ));
+    }
+
+    #[test]
+    fn group_offsets_retry_a_top_level_loading_error() {
+        let (result, _) = fetch_offsets_from_mock(&[KafkaCode::GroupLoadInProgress as i16, 0], 2);
+        let offsets = result.unwrap();
+        assert_eq!(offsets["test-topic"][0].offset, 42);
+    }
+
+    #[test]
+    fn group_offsets_rediscover_coordinator_after_a_top_level_error() {
+        let (result, coordinator) =
+            fetch_offsets_from_mock(&[KafkaCode::NotCoordinatorForGroup as i16, 0], 2);
+        assert_eq!(result.unwrap()["test-topic"][0].offset, 42);
+        assert!(coordinator.is_some());
+    }
+
+    #[test]
+    fn group_offsets_return_top_level_errors_when_retry_is_exhausted() {
+        for code in [
+            KafkaCode::GroupLoadInProgress,
+            KafkaCode::NotCoordinatorForGroup,
+        ] {
+            let (result, coordinator) = fetch_offsets_from_mock(&[code as i16], 1);
+            assert!(matches!(result, Err(Error::Kafka(error)) if error == code));
+            if code == KafkaCode::NotCoordinatorForGroup {
+                assert!(coordinator.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn group_offsets_return_a_terminal_top_level_error() {
+        let (result, _) = fetch_offsets_from_mock(&[KafkaCode::GroupAuthorizationFailed as i16], 2);
+        assert!(matches!(
+            result,
+            Err(Error::Kafka(KafkaCode::GroupAuthorizationFailed))
+        ));
+    }
+
+    fn fetch_offsets_from_mock(
+        errors: &[i16],
+        max_attempts: u32,
+    ) -> (
+        Result<HashMap<String, Vec<PartitionOffset>>>,
+        Option<String>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let errors = errors.to_vec();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            for (index, &error_code) in errors.iter().enumerate() {
+                if index > 0 && errors[index - 1] == KafkaCode::NotCoordinatorForGroup as i16 {
+                    let (header, version) = read_request(&mut stream, ApiKey::FindCoordinator);
+                    let response = FindCoordinatorResponse::default()
+                        .with_node_id(BrokerId::from(1))
+                        .with_host(StrBytes::from_string(address.ip().to_string()))
+                        .with_port(i32::from(address.port()));
+                    write_response(&mut stream, &header, version, &response);
+                }
+                let (header, version) = read_request(&mut stream, ApiKey::OffsetFetch);
+                let mut response = OffsetFetchResponse::default().with_error_code(error_code);
+                if error_code == 0 {
+                    response = response.with_topics(vec![
+                        kafka_protocol::messages::offset_fetch_response::OffsetFetchResponseTopic::default()
+                            .with_name(TopicName::from(StrBytes::from_static_str("test-topic")))
+                            .with_partitions(vec![
+                                kafka_protocol::messages::offset_fetch_response::OffsetFetchResponsePartition::default()
+                                    .with_partition_index(0)
+                                    .with_committed_offset(42),
+                            ]),
+                    ]);
+                }
+                write_response(&mut stream, &header, version, &response);
+            }
+        });
+
+        let mut client = KafkaClient::new(vec![address.to_string()]);
+        client.config.retry.policy = RetryPolicy::Fixed {
+            interval: Duration::ZERO,
+            max_attempts,
+        };
+        client.config.connection.rw_timeout = Duration::from_secs(5);
+        client.state.set_group_coordinator(
+            "test-group",
+            &protocol::consumer::GroupCoordinatorResponse {
+                broker_id: 1,
+                host: address.ip().to_string(),
+                port: i32::from(address.port()),
+                ..Default::default()
+            },
+        );
+        let mut ctx = OffsetRequestContext {
+            correlation_id: 1,
+            client_id: &client.config.client_id,
+            state: &mut client.state,
+            conn_pool: &mut client.conn_pool,
+            config: &client.config,
+            api_versions: &client.api_versions,
+        };
+        let result = fetch_group_offsets_inner(&[("test-topic", 0)], "test-group", &mut ctx);
+        let coordinator = client
+            .state
+            .group_coordinator("test-group")
+            .map(str::to_owned);
+        server.join().unwrap();
+        (result, coordinator)
+    }
+
+    fn read_request(stream: &mut TcpStream, api_key: ApiKey) -> (RequestHeader, i16) {
+        let mut length = [0; 4];
+        stream.read_exact(&mut length).unwrap();
+        let mut bytes = vec![0; usize::try_from(i32::from_be_bytes(length)).unwrap()];
+        stream.read_exact(&mut bytes).unwrap();
+        let version = i16::from_be_bytes(bytes[2..4].try_into().unwrap());
+        let header_version = match api_key {
+            ApiKey::FindCoordinator => FindCoordinatorRequest::header_version(version),
+            ApiKey::OffsetFetch => OffsetFetchRequest::header_version(version),
+            _ => unreachable!(),
+        };
+        let header = RequestHeader::decode(&mut Bytes::from(bytes), header_version).unwrap();
+        assert_eq!(header.request_api_key, api_key as i16);
+        (header, version)
+    }
+
+    fn write_response<T: Encodable + HeaderVersion>(
+        stream: &mut TcpStream,
+        request: &RequestHeader,
+        version: i16,
+        response: &T,
+    ) {
+        let mut payload = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(request.correlation_id)
+            .encode(&mut payload, T::header_version(version))
+            .unwrap();
+        response.encode(&mut payload, version).unwrap();
+        stream
+            .write_all(&i32::try_from(payload.len()).unwrap().to_be_bytes())
+            .unwrap();
+        stream.write_all(&payload).unwrap();
     }
 }

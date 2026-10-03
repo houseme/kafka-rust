@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- OffsetFetch top-level errors now participate in retry and coordinator rediscovery; unavailable coordinator connections return an error instead of panicking.
 - Fetch decoding now consumes every batch, including empty compacted batches, rejects corrupt tails, and moves decoded payloads without redundant Bytes clones.
 - Produce record batches now use contiguous relative offsets while preserving a single non-idempotent batch per partition.
 - Sync transport now completes partial writes, flushes request frames, and terminates connections on write or flush errors.
