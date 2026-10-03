@@ -84,6 +84,12 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
 - Async typed requests validate correlation and consume the complete response. Interrupted or failed connections
   are discarded and reconnected on the next checkout; Produce errors are returned without automatic replay.
 - `list_offsets` preserves broker timestamps, and sync connection selection reconnects only the selected broker.
+- Sync typed responses validate the pending correlation, requested version, and complete payload before reuse.
+  Fetching an unknown topic or partition returns an error before sending any broker request.
+- With `producer_timestamp` enabled, sync `CreateTime` timestamps use the current Unix milliseconds once per
+  Produce call. The default retains zero timestamps. Configure `LogAppendTime` on the broker; selecting it on
+  a sync producer returns a configuration error before network activity.
+- Retry backoff caps overflow at the configured maximum and rejects non-finite or nonpositive multipliers.
 
 `TransactionalProducer` uses a separate transaction coordinator and sends transaction IDs, producer identities,
 epochs, and sequences in transactional batches. Commit and abort preserve sequence state. A transaction RPC failure

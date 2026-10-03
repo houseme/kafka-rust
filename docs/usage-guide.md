@@ -147,6 +147,12 @@ loses its leader. Explicit record partitions remain unchanged. Calling `with_par
 builder preserves previously selected TLS, client ID, and acknowledgement settings. The regular producer also
 retains its timestamp setting, and the batch producer retains its batching settings.
 
+Enable `producer_timestamp` and select `ProducerTimestamp::CreateTime` to include the current Unix milliseconds
+in sync Produce batches. One clock sample applies to every broker and partition in that call, including
+transactional batches. The default `None` retains zero timestamps. Producers constructed from a client inherit
+its setting; the regular producer can override it with `with_timestamp`. `LogAppendTime` belongs to the broker's `message.timestamp.type` policy;
+selecting it on a sync producer returns a configuration error before sending metadata or transaction requests.
+
 Async producer cache hits borrow partition routes instead of copying all partition metadata. A
 `NotLeaderForPartition`, `LeaderNotAvailable`, or `UnknownTopicOrPartition` response clears that topic's route.
 The failed call returns the broker error; the next send reloads metadata. Application retries still need to account
@@ -155,6 +161,8 @@ for uncertain delivery after network errors.
 Batch producer `flush` retains its buffer after transport failure. With acknowledgements enabled, it removes only
 partitions with unique successful confirmations; failed, missing, or duplicate confirmations keep those partitions
 pending. The returned confirmation list exposes broker partition errors. Automatic flush propagates them as errors.
+Unexpected topic or partition confirmations return a codec error; uniquely confirmed requested partitions are
+still retired. Buffered topic names are shared across their partitions and records.
 While unconfirmed records remain after a failure, `send` rejects new records before enqueuing them. Explicit `flush`
 retries pending records, and `clear` discards them. Earlier brokers may have accepted records before a transport
 failure, so explicit retries still require an application decision about duplicates. With `acks=0`, a successful
@@ -166,9 +174,19 @@ individual IO semantics; callers own protocol boundaries across separate raw ope
 protects the complete frame exchange and returns the payload for caller decoding. Low-level Produce failures after
 a sending attempt do not fail over to another broker automatically.
 
+Sync typed requests also validate pending correlation IDs, use the actual request version for decoding, and
+reject trailing payload bytes. Invalid responses close the connection. Group v1 responses use generated layouts
+and Kafka's API keys. A Fetch input containing an unknown topic or partition fails before any broker request;
+refresh metadata before retrying it. Async exact reads fill reserved storage directly and stop at the requested
+frame boundary, retaining the same cancellation and EOF recovery rules.
+
 `list_offsets` returns the broker's timestamp, including `-1` when no timestamp is available. `fetch_offsets` keeps
 its existing offset-only return type. Sync pool checkout selects the oldest connection, tries another on failure,
 and updates only the chosen connection's checkout time.
+
+`RetryPolicy::next_delay` returns no delay for a disabled retry or an invalid multiplier (non-finite or
+nonpositive). Valid exponent overflow saturates at `max`; shrinking multipliers and zero delays remain
+supported. The delay is deterministic and does not include jitter.
 
 ### Transactional Producer
 
@@ -270,4 +288,5 @@ cargo run -p rustfs-kafka-async --release --example batch-throughput -- localhos
 ```
 
 The example sends 1 KiB values to partition 0 with `acks=all`, warms metadata and IO, and measures A1-B1-B2-A2.
-It reports no speedup conclusion when sequential baseline drift exceeds 15 percent.
+Warmup is bounded to 12 reference windows and requires three consecutive adjacent windows within 10 percent.
+It reports no speedup conclusion if warmup fails to stabilize or sequential baseline drift exceeds 15 percent.

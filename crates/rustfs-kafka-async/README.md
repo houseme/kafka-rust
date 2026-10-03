@@ -65,6 +65,7 @@ async fn main() -> rustfs_kafka::Result<()> {
   records delivered; retrying the whole batch can duplicate them.
 - Cached producer routes are borrowed; a leader error clears the affected topic route so the next send refreshes
   metadata. The failed send returns its broker error without an automatic resend.
+- Native batches own each distinct broker host once and share the encoded client ID across request headers.
 - Consumers start from committed group offsets, using the configured fallback only when a partition has no
   committed offset. Metadata refreshes retain existing positions.
 - Failed or cancelled multi-broker polls do not advance offsets for messages that were not returned. A successful
@@ -72,5 +73,7 @@ async fn main() -> rustfs_kafka::Result<()> {
 - Typed responses validate correlation IDs and full payload consumption. Connections interrupted by cancellation
   or transport failure are discarded on their next checkout, without automatically replaying Produce.
 - Raw `send`/`read_exact` protect individual IO operations; callers own protocol boundaries between separate calls.
+- Exact reads fill reserved storage directly without zero-initializing the whole response, and stop at the requested
+  length so adjacent frames remain available to the following read.
 - Secure integration coverage includes Docker end-to-end checks for SASL `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.
 - For full feature details, consult the root crate docs and `docs/usage-guide.md` in the repository.
