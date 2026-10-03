@@ -1,2 +1,6 @@
 [files]
 extend-exclude = ["Cargo.*", "/target"]
+
+[default.extend-words]
+lso = "lso"
+LSO = "LSO"
