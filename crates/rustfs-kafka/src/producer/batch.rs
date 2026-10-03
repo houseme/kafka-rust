@@ -21,6 +21,8 @@ struct BatchRecord {
     headers: Vec<(String, Bytes)>,
 }
 
+type BatchBuffer = BTreeMap<String, BTreeMap<i32, Vec<BatchRecord>>>;
+
 #[derive(PartialEq, Eq)]
 enum BatchConfirmation {
     Successful,
@@ -53,7 +55,7 @@ pub struct BatchProducer<P = DefaultPartitioner> {
     state: State<P>,
     config: Config,
     batch_config: BatchConfig,
-    buffer: BTreeMap<(String, i32), Vec<BatchRecord>>,
+    buffer: BatchBuffer,
     buffer_size: usize,
     buffer_bytes: usize,
     batch_start: Option<Instant>,
@@ -109,7 +111,6 @@ impl<P: Partitioner> BatchProducer<P> {
             .partitioner
             .partition(Topics::new(&self.state.partitions), &mut msg);
 
-        let topic = msg.topic.to_owned();
         let partition = msg.partition;
         let record_bytes = msg.key.as_ref().map_or(0, |k| k.len())
             + msg.value.as_ref().map_or(0, |v| v.len())
@@ -125,10 +126,16 @@ impl<P: Partitioner> BatchProducer<P> {
             headers: msg.headers.to_vec(),
         };
 
-        self.buffer
-            .entry((topic, partition))
-            .or_default()
-            .push(batch_record);
+        if let Some(partitions) = self.buffer.get_mut(msg.topic) {
+            partitions.entry(partition).or_default().push(batch_record);
+        } else {
+            self.buffer
+                .entry(msg.topic.to_owned())
+                .or_default()
+                .entry(partition)
+                .or_default()
+                .push(batch_record);
+        }
         self.buffer_size += 1;
         self.buffer_bytes += record_bytes;
 
@@ -166,25 +173,14 @@ impl<P: Partitioner> BatchProducer<P> {
     /// # Errors
     ///
     /// Returns an error if producing the batch fails or a required partition
-    /// confirmation is missing or duplicated. Successfully confirmed partitions
-    /// are removed even when another partition's confirmation is malformed.
+    /// confirmation is missing, duplicated, or unexpected. Successfully confirmed
+    /// partitions are removed even when another confirmation is malformed.
     pub fn flush(&mut self) -> Result<Vec<ProduceConfirm>> {
         if self.buffer.is_empty() {
             return Ok(Vec::new());
         }
 
-        let messages = self
-            .buffer
-            .iter()
-            .flat_map(|((topic, partition), records)| {
-                records.iter().map(move |r| client::ProduceMessage {
-                    key: r.key.as_deref(),
-                    value: r.value.as_deref(),
-                    topic,
-                    partition: *partition,
-                    headers: &r.headers,
-                })
-            });
+        let messages = buffered_messages(&self.buffer);
 
         let confirms = match self.client.internal_produce_messages(
             self.config.required_acks,
@@ -209,8 +205,17 @@ impl<P: Partitioner> BatchProducer<P> {
 
     fn retire_confirmed_records(&mut self, confirms: &[ProduceConfirm]) -> Result<()> {
         let mut acknowledgements = HashMap::new();
+        let mut malformed = false;
         for confirm in confirms {
             for partition in &confirm.partition_confirms {
+                if !self
+                    .buffer
+                    .get(confirm.topic.as_str())
+                    .is_some_and(|partitions| partitions.contains_key(&partition.partition))
+                {
+                    malformed = true;
+                    continue;
+                }
                 acknowledgements
                     .entry((confirm.topic.as_str(), partition.partition))
                     .and_modify(|status| *status = BatchConfirmation::Ambiguous)
@@ -224,31 +229,38 @@ impl<P: Partitioner> BatchProducer<P> {
             }
         }
 
-        let malformed = acknowledgements
+        malformed |= acknowledgements
             .values()
             .any(|status| *status == BatchConfirmation::Ambiguous)
-            || self.buffer.keys().any(|(topic, partition)| {
-                !acknowledgements.contains_key(&(topic.as_str(), *partition))
+            || self.buffer.iter().any(|(topic, partitions)| {
+                partitions
+                    .keys()
+                    .any(|partition| !acknowledgements.contains_key(&(topic.as_str(), *partition)))
             });
-        let all_confirmed = self.buffer.keys().all(|(topic, partition)| {
-            acknowledgements.get(&(topic.as_str(), *partition))
-                == Some(&BatchConfirmation::Successful)
+        let all_confirmed = self.buffer.iter().all(|(topic, partitions)| {
+            partitions.keys().all(|partition| {
+                acknowledgements.get(&(topic.as_str(), *partition))
+                    == Some(&BatchConfirmation::Successful)
+            })
         });
         if all_confirmed {
             self.clear();
         } else {
             let mut removed_count = 0;
             let mut removed_bytes = 0;
-            self.buffer.retain(|(topic, partition), records| {
-                if acknowledgements.get(&(topic.as_str(), *partition))
-                    == Some(&BatchConfirmation::Successful)
-                {
-                    removed_count += records.len();
-                    removed_bytes += records.iter().map(BatchRecord::byte_size).sum::<usize>();
-                    false
-                } else {
-                    true
-                }
+            self.buffer.retain(|topic, partitions| {
+                partitions.retain(|partition, records| {
+                    if acknowledgements.get(&(topic.as_str(), *partition))
+                        == Some(&BatchConfirmation::Successful)
+                    {
+                        removed_count += records.len();
+                        removed_bytes += records.iter().map(BatchRecord::byte_size).sum::<usize>();
+                        false
+                    } else {
+                        true
+                    }
+                });
+                !partitions.is_empty()
             });
             self.buffer_size -= removed_count;
             self.buffer_bytes -= removed_bytes;
@@ -300,6 +312,20 @@ impl<P: Partitioner> BatchProducer<P> {
 
 fn to_option(data: &[u8]) -> Option<&[u8]> {
     if data.is_empty() { None } else { Some(data) }
+}
+
+fn buffered_messages(buffer: &BatchBuffer) -> impl Iterator<Item = client::ProduceMessage<'_, '_>> {
+    buffer.iter().flat_map(|(topic, partitions)| {
+        partitions.iter().flat_map(move |(partition, records)| {
+            records.iter().map(move |record| client::ProduceMessage {
+                key: record.key.as_deref(),
+                value: record.value.as_deref(),
+                topic,
+                partition: *partition,
+                headers: &record.headers,
+            })
+        })
+    })
 }
 
 // --------------------------------------------------------------------
@@ -660,12 +686,15 @@ mod tests {
     fn test_clear_resets_state() {
         let mut bp = make_test_producer(BatchConfig::default());
         bp.buffer.insert(
-            ("t".to_string(), 0),
-            vec![BatchRecord {
-                key: Some(Bytes::from_static(&[1])),
-                value: Some(Bytes::from_static(&[2])),
-                headers: vec![],
-            }],
+            "t".to_string(),
+            BTreeMap::from([(
+                0,
+                vec![BatchRecord {
+                    key: Some(Bytes::from_static(&[1])),
+                    value: Some(Bytes::from_static(&[2])),
+                    headers: vec![],
+                }],
+            )]),
         );
         bp.buffer_size = 1;
         bp.buffer_bytes = 3;
@@ -704,9 +733,11 @@ mod delivery_tests {
     use std::thread::JoinHandle;
 
     type ObservedBatch = Vec<(String, i32, usize)>;
+    type ExpectedValues = Vec<(&'static str, i32, Vec<&'static [u8]>)>;
 
     enum BrokerReply {
         Confirm(Vec<(&'static str, i32, i16)>),
+        ConfirmOrdered(Vec<(&'static str, i32, i16)>, ExpectedValues),
         Disconnect,
         NoAcks,
     }
@@ -749,18 +780,33 @@ mod delivery_tests {
                 for topic in request.topic_data {
                     for partition in topic.partition_data {
                         let mut records = partition.records.unwrap();
-                        let count = RecordBatchDecoder::decode_all(&mut records)
-                            .unwrap()
-                            .iter()
-                            .map(|batch| batch.records.len())
-                            .sum();
+                        let decoded = RecordBatchDecoder::decode_all(&mut records).unwrap();
+                        let count = decoded.iter().map(|batch| batch.records.len()).sum();
+                        if let BrokerReply::ConfirmOrdered(_, expected) = &reply {
+                            let (_, _, expected) = expected
+                                .iter()
+                                .find(|(name, id, _)| {
+                                    *name == topic.name.as_str() && *id == partition.index
+                                })
+                                .unwrap();
+                            let values: Vec<_> = decoded
+                                .iter()
+                                .flat_map(|batch| {
+                                    batch
+                                        .records
+                                        .iter()
+                                        .map(|record| record.value.as_deref().unwrap())
+                                })
+                                .collect();
+                            assert_eq!(values, *expected);
+                        }
                         partitions.push((topic.name.to_string(), partition.index, count));
                     }
                 }
                 partitions.sort_unstable();
                 observed.push(partitions);
                 match reply {
-                    BrokerReply::Confirm(confirms) => {
+                    BrokerReply::Confirm(confirms) | BrokerReply::ConfirmOrdered(confirms, _) => {
                         write_response(&mut stream, &header, &produce_response(confirms));
                     }
                     BrokerReply::Disconnect => break,
@@ -944,6 +990,15 @@ mod delivery_tests {
             (2, 11)
         );
         assert_eq!(producer.batch_start, started);
+        assert_eq!(
+            producer
+                .buffer
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["u"]
+        );
+        assert_eq!(producer.buffer["u"].len(), 1);
         assert!(
             producer
                 .send(&Record::from_value("u", "new").with_partition(0))
@@ -1151,5 +1206,124 @@ mod delivery_tests {
             (1, 8)
         );
         assert!(producer.failed_flush);
+    }
+
+    #[test]
+    fn cached_topic_buffers_preserve_partition_and_record_order_on_the_wire() {
+        let expected: ExpectedValues = vec![
+            ("t", 0, vec![b"first", b"second"]),
+            ("t", 1, vec![b"partition"]),
+            ("u", 0, vec![b"other"]),
+        ];
+        let (mut producer, server) = mock_batch_producer(
+            vec![BrokerReply::ConfirmOrdered(
+                vec![("t", 0, 0), ("t", 1, 0), ("u", 0, 0)],
+                expected,
+            )],
+            RequiredAcks::One,
+            100,
+        );
+        producer
+            .send(&Record::from_value("u", "other").with_partition(0))
+            .unwrap();
+        producer
+            .send(&Record::from_value("t", "first").with_partition(0))
+            .unwrap();
+        let topic_key = producer.buffer.get_key_value("t").unwrap().0.as_ptr();
+        producer
+            .send(&Record::from_value("t", "partition").with_partition(1))
+            .unwrap();
+        producer
+            .send(&Record::from_value("t", "second").with_partition(0))
+            .unwrap();
+        assert_eq!(
+            producer.buffer.get_key_value("t").unwrap().0.as_ptr(),
+            topic_key
+        );
+        assert_eq!(producer.buffer.len(), 2);
+        assert_eq!(producer.buffer["t"].len(), 2);
+        let ordered: Vec<_> = buffered_messages(&producer.buffer)
+            .map(|record| (record.topic, record.partition, record.value.unwrap()))
+            .collect();
+        assert_eq!(
+            ordered,
+            vec![
+                ("t", 0, b"first".as_slice()),
+                ("t", 0, b"second".as_slice()),
+                ("t", 1, b"partition".as_slice()),
+                ("u", 0, b"other".as_slice()),
+            ]
+        );
+        producer.flush().unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            vec![vec![
+                ("t".into(), 0, 2),
+                ("t".into(), 1, 1),
+                ("u".into(), 0, 1)
+            ]]
+        );
+    }
+
+    #[test]
+    fn unexpected_confirmation_does_not_replace_a_missing_requested_confirmation() {
+        let (mut producer, server) = mock_batch_producer(
+            vec![
+                BrokerReply::Confirm(vec![("t", 0, 0), ("unexpected", 0, 0)]),
+                BrokerReply::Confirm(vec![("u", 0, 0)]),
+            ],
+            RequiredAcks::One,
+            100,
+        );
+        producer
+            .send(&Record::from_value("t", "confirmed").with_partition(0))
+            .unwrap();
+        producer
+            .send(&Record::from_value("u", "pending").with_partition(0))
+            .unwrap();
+        let started = producer.batch_start;
+        assert!(matches!(
+            producer.flush(),
+            Err(Error::Protocol(ProtocolError::Codec))
+        ));
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (1, 7)
+        );
+        assert_eq!(producer.batch_start, started);
+        assert!(producer.failed_flush);
+        assert!(!producer.buffer.contains_key("t"));
+        assert_eq!(producer.buffer["u"][&0].len(), 1);
+        producer.flush().unwrap();
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (0, 0)
+        );
+        assert!(!producer.failed_flush);
+        assert_eq!(server.join().unwrap()[1], vec![("u".into(), 0, 1)]);
+    }
+
+    #[test]
+    fn unexpected_confirmation_reports_codec_error_after_retiring_unique_success() {
+        let (mut producer, server) = mock_batch_producer(
+            vec![BrokerReply::Confirm(vec![("t", 0, 0), ("t", 1, 0)])],
+            RequiredAcks::One,
+            100,
+        );
+        producer
+            .send(&Record::from_value("t", "confirmed").with_partition(0))
+            .unwrap();
+        assert!(matches!(
+            producer.flush(),
+            Err(Error::Protocol(ProtocolError::Codec))
+        ));
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (0, 0)
+        );
+        assert!(producer.buffer.is_empty());
+        assert!(producer.batch_start.is_none());
+        assert!(!producer.failed_flush);
+        assert_eq!(server.join().unwrap(), vec![vec![("t".into(), 0, 1)]]);
     }
 }
