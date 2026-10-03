@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Added AsyncProducer::send_all with one Produce request per broker, partition-order preservation, complete ACK validation, and no redundant key/value pre-copying.
 - Added fixed-input generated Produce encoding and multi-batch Fetch decoding benchmarks with byte and record throughput reporting.
 
 ### Changed

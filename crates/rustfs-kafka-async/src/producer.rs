@@ -46,6 +46,28 @@ struct TopicRoute {
     available_partitions: Vec<i32>,
 }
 
+struct BrokerRecords<'a> {
+    host: String,
+    topics: Vec<TopicRecords<'a>>,
+    topic_indices: HashMap<&'a str, usize>,
+}
+
+struct TopicRecords<'a> {
+    name: &'a str,
+    partitions: Vec<PartitionRecords>,
+    partition_indices: HashMap<i32, usize>,
+}
+
+struct PartitionRecords {
+    partition: i32,
+    records: Vec<KpRecord>,
+}
+
+struct ProduceResponseValidation {
+    result: Result<()>,
+    malformed: bool,
+}
+
 enum AsyncProducerMode {
     Native(Box<NativeProducer>),
 }
@@ -267,8 +289,26 @@ impl AsyncProducer {
         K: AsBytes,
         V: AsBytes,
     {
+        self.send_all(std::slice::from_ref(record)).await
+    }
+
+    /// Sends a batch with one Produce request per destination broker.
+    ///
+    /// Input order is preserved within each topic partition. Unspecified partitions
+    /// use the same round-robin routing as [`Self::send`]. An empty batch succeeds
+    /// without contacting a broker.
+    ///
+    /// This operation is not atomic: earlier broker requests or other partitions
+    /// may succeed before an error is returned. Records are never automatically
+    /// retried, so retrying the entire batch can duplicate messages. With
+    /// [`RequiredAcks::None`], success only confirms that requests were written.
+    pub async fn send_all<K, V>(&self, records: &[Record<'_, K, V>]) -> Result<()>
+    where
+        K: AsBytes,
+        V: AsBytes,
+    {
         match &self.mode {
-            AsyncProducerMode::Native(native) => native.send(record).await,
+            AsyncProducerMode::Native(native) => native.send_all(records).await,
         }
     }
 
@@ -318,73 +358,215 @@ impl AsyncProducerBuilder {
 }
 
 impl NativeProducer {
-    async fn send<K, V>(&self, record: &Record<'_, K, V>) -> Result<()>
+    async fn send_all<K, V>(&self, records: &[Record<'_, K, V>]) -> Result<()>
     where
         K: AsBytes,
         V: AsBytes,
     {
-        let topic = record.topic.to_owned();
-        let requested_partition = record.partition;
-        let key = Bytes::copy_from_slice(record.key.as_bytes());
-        let value = Bytes::copy_from_slice(record.value.as_bytes());
-        let headers: Vec<(String, Bytes)> = record.headers.iter().cloned().collect();
+        if records.is_empty() {
+            return Ok(());
+        }
 
         let correlation_id = self.correlation.fetch_add(1, Ordering::Relaxed);
         let mut client = self.client.lock().await;
         let mut state = self.state.lock().await;
         client.ensure_connected().await?;
 
-        let (partition, leader_host) = resolve_partition_and_leader(
-            &mut client,
-            &mut state,
-            &topic,
-            requested_partition,
-            correlation_id,
-        )
-        .await?;
-        let client_id = client.client_id().to_owned();
-        let conn = client.get_connection(&leader_host).await?;
-
-        let (header, request) = build_single_produce_request(
-            correlation_id,
-            &client_id,
-            self.required_acks,
-            self.ack_timeout_ms,
-            self.compression,
-            &topic,
-            partition,
-            key.as_ref(),
-            value.as_ref(),
-            &headers,
-        )?;
-
-        send_kp_request(conn, &header, &request, API_VERSION_PRODUCE).await?;
-        if self.required_acks == 0 {
-            conn.complete_request();
-            return Ok(());
+        let mut brokers: Vec<BrokerRecords<'_>> = Vec::new();
+        let mut broker_indices = HashMap::new();
+        for record in records {
+            let (partition, leader_host) = resolve_partition_and_leader(
+                &mut client,
+                &mut state,
+                record.topic,
+                record.partition,
+                correlation_id,
+            )
+            .await?;
+            let broker_index = match broker_indices.get(leader_host.as_str()) {
+                Some(&index) => index,
+                None => {
+                    let index = brokers.len();
+                    broker_indices.insert(leader_host.clone(), index);
+                    brokers.push(BrokerRecords {
+                        host: leader_host,
+                        topics: Vec::new(),
+                        topic_indices: HashMap::new(),
+                    });
+                    index
+                }
+            };
+            add_record_to_broker(&mut brokers[broker_index], partition, record)?;
         }
 
-        let response = get_kp_response::<ProduceResponse>(conn, API_VERSION_PRODUCE).await?;
-        for topic_resp in response.responses {
-            for part in topic_resp.partition_responses {
-                if part.error_code != 0 {
-                    let code = map_kafka_code(part.error_code).unwrap_or(KafkaCode::Unknown);
-                    if matches!(
-                        code,
-                        KafkaCode::UnknownTopicOrPartition
-                            | KafkaCode::LeaderNotAvailable
-                            | KafkaCode::NotLeaderForPartition
-                    ) {
-                        // Refresh on the next send; retrying here could duplicate a delivery.
-                        state.topics.remove(&topic);
-                    }
-                    return Err(Error::Kafka(code));
-                }
+        let client_id = client.client_id().to_owned();
+        // Encode every batch before sending any Produce request, so codec errors
+        // cannot cause partial delivery to the brokers processed earlier.
+        let mut requests = Vec::with_capacity(brokers.len());
+        for (index, broker) in brokers.into_iter().enumerate() {
+            let request_correlation = if index == 0 {
+                correlation_id
+            } else {
+                self.correlation.fetch_add(1, Ordering::Relaxed)
+            };
+            let (header, request) = build_produce_request(
+                request_correlation,
+                &client_id,
+                self.required_acks,
+                self.ack_timeout_ms,
+                self.compression,
+                broker.topics,
+            )?;
+            requests.push((broker.host, header, request));
+        }
+
+        for (host, header, request) in requests {
+            let conn = client.get_connection(&host).await?;
+            send_kp_request(conn, &header, &request, API_VERSION_PRODUCE).await?;
+            if self.required_acks == 0 {
+                conn.complete_request();
+                continue;
             }
+            let response = get_kp_response::<ProduceResponse>(conn, API_VERSION_PRODUCE).await?;
+            let validation = check_produce_response(response, &request, &mut state);
+            if validation.malformed {
+                conn.invalidate();
+            }
+            validation.result?;
         }
 
         Ok(())
     }
+}
+
+fn add_record_to_broker<'a, K: AsBytes, V: AsBytes>(
+    broker: &mut BrokerRecords<'a>,
+    partition: i32,
+    record: &Record<'a, K, V>,
+) -> Result<()> {
+    let topic_index = match broker.topic_indices.get(record.topic) {
+        Some(&index) => index,
+        None => {
+            let index = broker.topics.len();
+            broker.topic_indices.insert(record.topic, index);
+            broker.topics.push(TopicRecords {
+                name: record.topic,
+                partitions: Vec::new(),
+                partition_indices: HashMap::new(),
+            });
+            index
+        }
+    };
+    let topic = &mut broker.topics[topic_index];
+    let partition_index = match topic.partition_indices.get(&partition) {
+        Some(&index) => index,
+        None => {
+            let index = topic.partitions.len();
+            topic.partition_indices.insert(partition, index);
+            topic.partitions.push(PartitionRecords {
+                partition,
+                records: Vec::new(),
+            });
+            index
+        }
+    };
+    let records = &mut topic.partitions[partition_index].records;
+    let count = i32::try_from(records.len().saturating_add(1))
+        .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
+    let offset = count - 1;
+    let key = record.key.as_bytes();
+    let value = record.value.as_bytes();
+    records.push(KpRecord {
+        transactional: false,
+        control: false,
+        delete_horizon: false,
+        partition_leader_epoch: -1,
+        producer_id: -1,
+        producer_epoch: -1,
+        timestamp_type: TimestampType::Creation,
+        offset: i64::from(offset),
+        // Keep base_sequence=-1 while maintaining the encoder's offset/sequence
+        // relationship so all records in this partition form a single batch.
+        sequence: offset.wrapping_sub(1),
+        timestamp: 0,
+        key: (!key.is_empty()).then(|| Bytes::copy_from_slice(key)),
+        value: (!value.is_empty()).then(|| Bytes::copy_from_slice(value)),
+        headers: record
+            .headers
+            .iter()
+            .map(|(key, value)| (StrBytes::from_string(key.clone()), Some(value.clone())))
+            .collect(),
+    });
+    Ok(())
+}
+
+fn check_produce_response(
+    response: ProduceResponse,
+    request: &ProduceRequest,
+    state: &mut NativeProducerState,
+) -> ProduceResponseValidation {
+    let mut expected: HashMap<_, (bool, HashMap<_, bool>)> = request
+        .topic_data
+        .iter()
+        .map(|topic| {
+            (
+                topic.name.as_str(),
+                (
+                    false,
+                    topic
+                        .partition_data
+                        .iter()
+                        .map(|partition| (partition.index, false))
+                        .collect(),
+                ),
+            )
+        })
+        .collect();
+    let mut first_error = None;
+    let mut malformed = false;
+    for topic in response.responses {
+        let Some((topic_seen, partitions)) = expected.get_mut(topic.name.as_str()) else {
+            malformed = true;
+            continue;
+        };
+        if *topic_seen {
+            malformed = true;
+        }
+        *topic_seen = true;
+        for partition in topic.partition_responses {
+            let Some(seen) = partitions.get_mut(&partition.index) else {
+                malformed = true;
+                continue;
+            };
+            if *seen {
+                malformed = true;
+            }
+            *seen = true;
+            if partition.error_code == 0 {
+                continue;
+            }
+            let code = map_kafka_code(partition.error_code).unwrap_or(KafkaCode::Unknown);
+            if matches!(
+                code,
+                KafkaCode::UnknownTopicOrPartition
+                    | KafkaCode::LeaderNotAvailable
+                    | KafkaCode::NotLeaderForPartition
+            ) {
+                // Refresh on the next call; retrying here could duplicate a delivery.
+                state.topics.remove(topic.name.as_str());
+            }
+            first_error.get_or_insert(code);
+        }
+    }
+    malformed |= expected
+        .values()
+        .any(|(_, partitions)| partitions.values().any(|seen| !seen));
+    let result = match first_error {
+        Some(code) => Err(Error::Kafka(code)),
+        None if malformed => Err(Error::Protocol(ProtocolError::Codec)),
+        None => Ok(()),
+    };
+    ProduceResponseValidation { result, malformed }
 }
 
 async fn resolve_partition_and_leader(
@@ -531,18 +713,13 @@ fn build_metadata_request(
     (header, request)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_single_produce_request(
+fn build_produce_request(
     correlation_id: i32,
     client_id: &str,
     required_acks: i16,
     timeout_ms: i32,
     compression: Compression,
-    topic: &str,
-    partition: i32,
-    key: &[u8],
-    value: &[u8],
-    headers: &[(String, Bytes)],
+    topics: Vec<TopicRecords<'_>>,
 ) -> Result<(RequestHeader, ProduceRequest)> {
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
@@ -550,58 +727,37 @@ fn build_single_produce_request(
         .with_request_api_version(API_VERSION_PRODUCE)
         .with_correlation_id(correlation_id);
 
-    let kp_headers = headers
-        .iter()
-        .map(|(k, v)| (StrBytes::from_string(k.clone()), Some(v.clone())))
-        .collect();
-
-    let record = KpRecord {
-        transactional: false,
-        control: false,
-        delete_horizon: false,
-        partition_leader_epoch: -1,
-        producer_id: -1,
-        producer_epoch: -1,
-        timestamp_type: TimestampType::Creation,
-        offset: 0,
-        sequence: -1,
-        timestamp: 0,
-        key: if key.is_empty() {
-            None
-        } else {
-            Some(Bytes::copy_from_slice(key))
-        },
-        value: if value.is_empty() {
-            None
-        } else {
-            Some(Bytes::copy_from_slice(value))
-        },
-        headers: kp_headers,
-    };
-
-    let mut buf = BytesMut::new();
     let options = RecordEncodeOptions {
         version: 2,
         compression: to_kp_compression(compression),
     };
-    RecordBatchEncoder::encode(&mut buf, &[record], &options).map_err(|err| {
-        let message = err.to_string();
-        map_record_encode_error(&message)
-    })?;
-
-    let partition_data = kafka_protocol::messages::produce_request::PartitionProduceData::default()
-        .with_index(partition)
-        .with_records(Some(buf.freeze()));
-
-    let topic_data = kafka_protocol::messages::produce_request::TopicProduceData::default()
-        .with_name(TopicName::from(StrBytes::from_string(topic.to_owned())))
-        .with_partition_data(vec![partition_data]);
+    let mut topic_data = Vec::with_capacity(topics.len());
+    for topic in topics {
+        let mut partition_data = Vec::with_capacity(topic.partitions.len());
+        for partition in topic.partitions {
+            let mut buf = BytesMut::new();
+            RecordBatchEncoder::encode(&mut buf, &partition.records, &options)
+                .map_err(|err| map_record_encode_error(&err.to_string()))?;
+            partition_data.push(
+                kafka_protocol::messages::produce_request::PartitionProduceData::default()
+                    .with_index(partition.partition)
+                    .with_records(Some(buf.freeze())),
+            );
+        }
+        topic_data.push(
+            kafka_protocol::messages::produce_request::TopicProduceData::default()
+                .with_name(TopicName::from(StrBytes::from_string(
+                    topic.name.to_owned(),
+                )))
+                .with_partition_data(partition_data),
+        );
+    }
 
     let request = ProduceRequest::default()
         .with_transactional_id(None)
         .with_acks(required_acks)
         .with_timeout_ms(timeout_ms)
-        .with_topic_data(vec![topic_data]);
+        .with_topic_data(topic_data);
 
     Ok((header, request))
 }
@@ -651,6 +807,7 @@ mod tests {
     use kafka_protocol::messages::metadata_response::{
         MetadataResponseBroker, MetadataResponsePartition, MetadataResponseTopic,
     };
+    use kafka_protocol::messages::produce_request::{PartitionProduceData, TopicProduceData};
     use kafka_protocol::messages::produce_response::{
         PartitionProduceResponse, TopicProduceResponse,
     };
@@ -819,6 +976,360 @@ mod tests {
         .expect("acks=0 must not wait for a Produce response");
     }
 
+    #[tokio::test]
+    async fn send_all_groups_topics_and_partitions_into_one_request_per_broker() {
+        for required_acks in [RequiredAcks::None, RequiredAcks::One, RequiredAcks::All] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let first_addr = first.local_addr().unwrap();
+                let second_addr = second.local_addr().unwrap();
+                let acks = required_acks as i16;
+                let first_server = tokio::spawn(async move {
+                    let (mut socket, _) = first.accept().await.unwrap();
+                    for (topic, leaders) in [("topic-a", [0, 1]), ("topic-b", [0, 0])] {
+                        let correlation = read_topic_metadata_request(&mut socket, topic).await;
+                        write_topic_metadata_response(
+                            &mut socket,
+                            correlation,
+                            topic,
+                            &[first_addr, second_addr],
+                            &leaders,
+                        )
+                        .await;
+                    }
+                    let (correlation, request) = read_batch_request(&mut socket, acks).await;
+                    assert_eq!(request.topic_data.len(), 2);
+                    let topic_a = &request.topic_data[0];
+                    assert_eq!(topic_a.name.as_str(), "topic-a");
+                    assert_eq!(topic_a.partition_data.len(), 1);
+                    assert_eq!(topic_a.partition_data[0].index, 0);
+                    assert_partition_batch(&topic_a.partition_data[0], &["a0", "a2"]);
+                    let topic_b = &request.topic_data[1];
+                    assert_eq!(topic_b.name.as_str(), "topic-b");
+                    assert_eq!(topic_b.partition_data.len(), 2);
+                    assert_eq!(topic_b.partition_data[0].index, 0);
+                    assert_partition_batch(&topic_b.partition_data[0], &["b0"]);
+                    assert_eq!(topic_b.partition_data[1].index, 1);
+                    assert_partition_batch(&topic_b.partition_data[1], &["b1"]);
+                    if acks != 0 {
+                        write_batch_response(&mut socket, correlation, &request, 0).await;
+                    }
+                    1
+                });
+                let second_server = tokio::spawn(async move {
+                    let (mut socket, _) = second.accept().await.unwrap();
+                    let (correlation, request) = read_batch_request(&mut socket, acks).await;
+                    assert_eq!(request.topic_data.len(), 1);
+                    assert_eq!(request.topic_data[0].name.as_str(), "topic-a");
+                    assert_eq!(request.topic_data[0].partition_data.len(), 1);
+                    let partition = &request.topic_data[0].partition_data[0];
+                    assert_eq!(partition.index, 1);
+                    assert_partition_batch(partition, &["a1", "a3"]);
+                    if acks != 0 {
+                        write_batch_response(&mut socket, correlation, &request, 0).await;
+                    }
+                    1
+                });
+
+                let producer = test_producer(first_addr, required_acks).await;
+                producer
+                    .send_all(&[
+                        batch_record("topic-a", 0, "a0"),
+                        batch_record("topic-a", 1, "a1"),
+                        batch_record("topic-b", 0, "b0"),
+                        batch_record("topic-a", 0, "a2"),
+                        batch_record("topic-a", 1, "a3"),
+                        batch_record("topic-b", 1, "b1"),
+                    ])
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    first_server.await.unwrap() + second_server.await.unwrap(),
+                    2
+                );
+            })
+            .await
+            .expect("six records across two brokers must complete with two Produce requests");
+        }
+    }
+
+    #[tokio::test]
+    async fn send_all_with_no_acks_reuses_connection_and_preserves_round_robin() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_metadata_response(&mut socket, correlation, &[addr], 0).await;
+                let (_, request) = read_batch_request(&mut socket, 0).await;
+                assert_eq!(request.topic_data.len(), 1);
+                let partitions = &request.topic_data[0].partition_data;
+                assert_eq!(partitions.len(), 2);
+                assert_eq!(partitions[0].index, 0);
+                assert_partition_batch(&partitions[0], &["first", "third"]);
+                assert_eq!(partitions[1].index, 1);
+                assert_partition_batch(&partitions[1], &["second"]);
+                // Neither Produce request receives a response, and both share the socket.
+                read_produce_request(&mut socket, 1, 0).await;
+            });
+            let producer = test_producer(addr, RequiredAcks::None).await;
+            producer
+                .send_all(&[
+                    batch_record("topic-a", -1, "first"),
+                    batch_record("topic-a", -1, "second"),
+                    batch_record("topic-a", -1, "third"),
+                ])
+                .await
+                .unwrap();
+            producer.send(&test_record()).await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .expect("acks=0 batches must complete without responses or reconnecting");
+    }
+
+    #[tokio::test]
+    async fn send_all_empty_batch_does_not_take_locks_or_send_requests() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let producer = test_producer(addr, RequiredAcks::One).await;
+        let AsyncProducerMode::Native(native) = &producer.mode;
+        let _client_guard = native.client.lock().await;
+        let _state_guard = native.state.lock().await;
+        let records: [Record<'_, &str, &str>; 0] = [];
+        tokio::time::timeout(Duration::from_millis(100), producer.send_all(&records))
+            .await
+            .expect("an empty batch must not wait for locks")
+            .unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), socket.read_u8())
+                .await
+                .is_err(),
+            "an empty batch must not send any request"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_all_stops_after_partial_broker_failure_without_retrying() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let third = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addrs = [
+                first.local_addr().unwrap(),
+                second.local_addr().unwrap(),
+                third.local_addr().unwrap(),
+            ];
+            let first_server = tokio::spawn(async move {
+                let (mut socket, _) = first.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_topic_metadata_response(
+                    &mut socket,
+                    correlation,
+                    "topic-a",
+                    &addrs,
+                    &[0, 1, 2],
+                )
+                .await;
+                let (correlation, request) = read_batch_request(&mut socket, 1).await;
+                assert_partition_batch(&request.topic_data[0].partition_data[0], &["delivered"]);
+                write_batch_response(&mut socket, correlation, &request, 0).await;
+            });
+            let second_server = tokio::spawn(async move {
+                let (mut socket, _) = second.accept().await.unwrap();
+                let (correlation, request) = read_batch_request(&mut socket, 1).await;
+                assert_partition_batch(&request.topic_data[0].partition_data[0], &["failed"]);
+                write_batch_response(&mut socket, correlation, &request, 6).await;
+            });
+            let producer = test_producer(addrs[0], RequiredAcks::One).await;
+            assert!(matches!(
+                producer
+                    .send_all(&[
+                        batch_record("topic-a", 0, "delivered"),
+                        batch_record("topic-a", 1, "failed"),
+                        batch_record("topic-a", 2, "unsent"),
+                    ])
+                    .await,
+                Err(Error::Kafka(KafkaCode::NotLeaderForPartition))
+            ));
+            first_server.await.unwrap();
+            second_server.await.unwrap();
+            let AsyncProducerMode::Native(native) = &producer.mode;
+            assert!(!native.state.lock().await.topics.contains_key("topic-a"));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), third.accept())
+                    .await
+                    .is_err(),
+                "later brokers must not be contacted after the first failure"
+            );
+        })
+        .await
+        .expect("partial broker failure must return the original error without retrying");
+    }
+
+    #[tokio::test]
+    async fn send_all_rejects_malformed_ack_sets_without_retry_and_reconnects_on_next_call() {
+        #[derive(Clone, Copy)]
+        enum AckCase {
+            Sparse,
+            Empty,
+            DuplicatePartition,
+            DuplicateTopic,
+            ExtraPartition,
+            ExtraTopic,
+            SparseLeaderError,
+        }
+        for case in [
+            AckCase::Sparse,
+            AckCase::Empty,
+            AckCase::DuplicatePartition,
+            AckCase::DuplicateTopic,
+            AckCase::ExtraPartition,
+            AckCase::ExtraTopic,
+            AckCase::SparseLeaderError,
+        ] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let leader_error = matches!(case, AckCase::SparseLeaderError);
+                let server = tokio::spawn(async move {
+                    let (mut original, _) = listener.accept().await.unwrap();
+                    let correlation = read_metadata_request(&mut original).await;
+                    write_metadata_response(&mut original, correlation, &[addr], 0).await;
+                    let (correlation, request) = read_batch_request(&mut original, 1).await;
+                    assert_eq!(request.topic_data.len(), 1);
+                    let partitions = &request.topic_data[0].partition_data;
+                    assert_eq!(partitions.len(), 2);
+                    assert_eq!(partitions[0].index, 0);
+                    assert_partition_batch(&partitions[0], &["first"]);
+                    assert_eq!(partitions[1].index, 1);
+                    assert_partition_batch(&partitions[1], &["second"]);
+                    let topics = match case {
+                        AckCase::Sparse => vec![ack_topic("topic-a", &[(0, 0)])],
+                        AckCase::Empty => vec![],
+                        AckCase::DuplicatePartition => {
+                            vec![ack_topic("topic-a", &[(0, 0), (0, 0), (1, 0)])]
+                        }
+                        AckCase::DuplicateTopic => vec![
+                            ack_topic("topic-a", &[(0, 0)]),
+                            ack_topic("topic-a", &[(1, 0)]),
+                        ],
+                        AckCase::ExtraPartition => {
+                            vec![ack_topic("topic-a", &[(0, 0), (1, 0), (2, 6)])]
+                        }
+                        AckCase::ExtraTopic => vec![
+                            ack_topic("topic-a", &[(0, 0), (1, 0)]),
+                            ack_topic("unknown-topic", &[(0, 6)]),
+                        ],
+                        AckCase::SparseLeaderError => vec![ack_topic("topic-a", &[(0, 6)])],
+                    };
+                    write_response(
+                        &mut original,
+                        correlation,
+                        &ProduceResponse::default().with_responses(topics),
+                        API_VERSION_PRODUCE,
+                    )
+                    .await;
+
+                    // Keep the original socket open. Only the caller's next explicit
+                    // send should create this new connection after invalidation.
+                    let (mut replacement, _) = listener.accept().await.unwrap();
+                    if leader_error {
+                        let correlation = read_metadata_request(&mut replacement).await;
+                        write_metadata_response(&mut replacement, correlation, &[addr], 0).await;
+                    }
+                    let correlation = read_produce_request(&mut replacement, 0, 1).await;
+                    write_produce_response(&mut replacement, correlation, 0, 0).await;
+                });
+                let producer = test_producer(addr, RequiredAcks::One).await;
+                let error = producer
+                    .send_all(&[
+                        batch_record("topic-a", 0, "first"),
+                        batch_record("topic-a", 1, "second"),
+                    ])
+                    .await
+                    .unwrap_err();
+                if leader_error {
+                    assert!(matches!(
+                        error,
+                        Error::Kafka(KafkaCode::NotLeaderForPartition)
+                    ));
+                } else {
+                    assert!(matches!(error, Error::Protocol(ProtocolError::Codec)));
+                }
+                let AsyncProducerMode::Native(native) = &producer.mode;
+                assert_eq!(
+                    native.state.lock().await.topics.contains_key("topic-a"),
+                    !leader_error
+                );
+                producer
+                    .send(&test_record().with_partition(0))
+                    .await
+                    .unwrap();
+                server.await.unwrap();
+            })
+            .await
+            .expect("malformed ACKs must fail without retry, then reconnect on explicit send");
+        }
+    }
+
+    #[cfg(not(feature = "gzip"))]
+    #[tokio::test]
+    async fn send_all_disabled_codec_sends_no_produce_requests() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let first_addr = first.local_addr().unwrap();
+            let second_addr = second.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = first.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_topic_metadata_response(
+                    &mut socket,
+                    correlation,
+                    "topic-a",
+                    &[first_addr, second_addr],
+                    &[0, 1],
+                )
+                .await;
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), socket.read_u8())
+                        .await
+                        .is_err(),
+                    "a codec error must occur before any Produce request is sent"
+                );
+            });
+            let producer = AsyncProducer::builder(vec![first_addr.to_string()])
+                .with_client_id("producer-test".to_owned())
+                .with_compression(Compression::GZIP)
+                .build()
+                .await
+                .unwrap();
+            producer.send_all::<&str, &str>(&[]).await.unwrap();
+            assert!(matches!(
+                producer
+                    .send_all(&[
+                        batch_record("topic-a", 0, "first"),
+                        batch_record("topic-a", 1, "second"),
+                    ])
+                    .await,
+                Err(Error::Protocol(ProtocolError::UnsupportedCompression))
+            ));
+            server.await.unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), second.accept())
+                    .await
+                    .is_err(),
+                "a codec error must not establish a Produce connection to another broker"
+            );
+        })
+        .await
+        .expect("disabled codecs must fail before sending to any broker");
+    }
+
     async fn test_producer(addr: SocketAddr, required_acks: RequiredAcks) -> AsyncProducer {
         AsyncProducer::builder(vec![addr.to_string()])
             .with_client_id("producer-test".to_owned())
@@ -851,6 +1362,10 @@ mod tests {
     }
 
     async fn read_metadata_request(socket: &mut TcpStream) -> i32 {
+        read_topic_metadata_request(socket, "topic-a").await
+    }
+
+    async fn read_topic_metadata_request(socket: &mut TcpStream, expected_topic: &str) -> i32 {
         let (correlation, mut body) = read_request(
             socket,
             ApiKey::Metadata,
@@ -861,30 +1376,19 @@ mod tests {
         let request = MetadataRequest::decode(&mut body, API_VERSION_METADATA).unwrap();
         let topics = request.topics.unwrap();
         assert_eq!(topics.len(), 1);
-        assert_eq!(topics[0].name.as_ref().unwrap().as_str(), "topic-a");
+        assert_eq!(topics[0].name.as_ref().unwrap().as_str(), expected_topic);
         assert!(!body.has_remaining());
         correlation
     }
 
     async fn read_produce_request(socket: &mut TcpStream, partition: i32, acks: i16) -> i32 {
-        let (correlation, mut body) = read_request(
-            socket,
-            ApiKey::Produce,
-            API_VERSION_PRODUCE,
-            ProduceRequest::header_version(API_VERSION_PRODUCE),
-        )
-        .await;
-        let mut request = ProduceRequest::decode(&mut body, API_VERSION_PRODUCE).unwrap();
-        assert_eq!(request.transactional_id, None);
-        assert_eq!(request.acks, acks);
-        assert_eq!(request.timeout_ms, 1_234);
+        let (correlation, mut request) = read_batch_request(socket, acks).await;
         assert_eq!(request.topic_data.len(), 1);
         assert_eq!(request.topic_data[0].name.as_str(), "topic-a");
         let partition_data = &mut request.topic_data[0].partition_data;
         assert_eq!(partition_data.len(), 1);
         assert_eq!(partition_data[0].index, partition);
         let mut records = partition_data[0].records.take().unwrap();
-        assert!(!body.has_remaining());
         let record_set = RecordBatchDecoder::decode(&mut records).unwrap();
         assert_eq!(record_set.records.len(), 1);
         let record = &record_set.records[0];
@@ -897,11 +1401,38 @@ mod tests {
         correlation
     }
 
+    async fn read_batch_request(socket: &mut TcpStream, acks: i16) -> (i32, ProduceRequest) {
+        let (correlation, mut body) = read_request(
+            socket,
+            ApiKey::Produce,
+            API_VERSION_PRODUCE,
+            ProduceRequest::header_version(API_VERSION_PRODUCE),
+        )
+        .await;
+        let request = ProduceRequest::decode(&mut body, API_VERSION_PRODUCE).unwrap();
+        assert_eq!(request.transactional_id, None);
+        assert_eq!(request.acks, acks);
+        assert_eq!(request.timeout_ms, 1_234);
+        assert!(!body.has_remaining());
+        (correlation, request)
+    }
+
     async fn write_metadata_response(
         socket: &mut TcpStream,
         correlation: i32,
         brokers: &[SocketAddr],
         leader: i32,
+    ) {
+        write_topic_metadata_response(socket, correlation, "topic-a", brokers, &[leader, leader])
+            .await;
+    }
+
+    async fn write_topic_metadata_response(
+        socket: &mut TcpStream,
+        correlation: i32,
+        topic: &str,
+        brokers: &[SocketAddr],
+        leaders: &[i32],
     ) {
         let brokers = brokers
             .iter()
@@ -913,11 +1444,12 @@ mod tests {
                     .with_port(i32::from(addr.port()))
             })
             .collect();
-        let partitions = [0, 1]
-            .into_iter()
-            .map(|partition| {
+        let partitions = leaders
+            .iter()
+            .enumerate()
+            .map(|(partition, &leader)| {
                 MetadataResponsePartition::default()
-                    .with_partition_index(partition)
+                    .with_partition_index(i32::try_from(partition).unwrap())
                     .with_leader_id(leader.into())
                     .with_replica_nodes(vec![leader.into()])
                     .with_isr_nodes(vec![leader.into()])
@@ -928,10 +1460,93 @@ mod tests {
             .with_controller_id(0.into())
             .with_topics(vec![
                 MetadataResponseTopic::default()
-                    .with_name(Some(StrBytes::from_static_str("topic-a").into()))
+                    .with_name(Some(StrBytes::from_string(topic.to_owned()).into()))
                     .with_partitions(partitions),
             ]);
         write_response(socket, correlation, &response, API_VERSION_METADATA).await;
+    }
+
+    async fn write_batch_response(
+        socket: &mut TcpStream,
+        correlation: i32,
+        request: &ProduceRequest,
+        error_code: i16,
+    ) {
+        let response = ProduceResponse::default().with_responses(
+            request
+                .topic_data
+                .iter()
+                .map(|topic| {
+                    TopicProduceResponse::default()
+                        .with_name(topic.name.clone())
+                        .with_partition_responses(
+                            topic
+                                .partition_data
+                                .iter()
+                                .map(|partition| {
+                                    PartitionProduceResponse::default()
+                                        .with_index(partition.index)
+                                        .with_error_code(error_code)
+                                })
+                                .collect(),
+                        )
+                })
+                .collect(),
+        );
+        write_response(socket, correlation, &response, API_VERSION_PRODUCE).await;
+    }
+
+    fn ack_topic(topic: &'static str, partitions: &[(i32, i16)]) -> TopicProduceResponse {
+        TopicProduceResponse::default()
+            .with_name(StrBytes::from_static_str(topic).into())
+            .with_partition_responses(
+                partitions
+                    .iter()
+                    .map(|&(partition, code)| {
+                        PartitionProduceResponse::default()
+                            .with_index(partition)
+                            .with_error_code(code)
+                    })
+                    .collect(),
+            )
+    }
+
+    fn assert_partition_batch(partition: &PartitionProduceData, expected: &[&str]) {
+        let mut encoded = partition.records.clone().unwrap();
+        let decoded = RecordBatchDecoder::decode(&mut encoded).unwrap();
+        assert_eq!(decoded.records.len(), expected.len());
+        assert!(
+            !encoded.has_remaining(),
+            "one partition must form one batch"
+        );
+        for (index, (record, expected)) in decoded.records.iter().zip(expected).enumerate() {
+            assert_eq!(record.offset, i64::try_from(index).unwrap());
+            assert_eq!(record.sequence, i32::try_from(index).unwrap() - 1);
+            assert_eq!(record.key.as_deref(), Some(expected.as_bytes()));
+            assert_eq!(record.value.as_deref(), Some(expected.as_bytes()));
+            assert_eq!(
+                record
+                    .headers
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_deref()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("first", Some(expected.as_bytes())),
+                    ("second", Some(b"tail".as_slice())),
+                ]
+            );
+        }
+    }
+
+    fn batch_record(
+        topic: &'static str,
+        partition: i32,
+        value: &'static str,
+    ) -> Record<'static, &'static str, &'static str> {
+        Record::from_key_value(topic, value, value)
+            .with_partition(partition)
+            .with_header("first", value)
+            .with_header("second", "tail")
     }
 
     async fn write_produce_response(
@@ -973,20 +1588,9 @@ mod tests {
 
     #[cfg(not(feature = "gzip"))]
     #[test]
-    fn build_single_produce_request_returns_error_when_codec_feature_is_disabled() {
-        let err = build_single_produce_request(
-            1,
-            "client-a",
-            1,
-            30_000,
-            Compression::GZIP,
-            "topic-a",
-            0,
-            b"key",
-            b"value",
-            &[],
-        )
-        .expect_err("disabled gzip support should return an error");
+    fn build_produce_request_returns_error_when_codec_feature_is_disabled() {
+        let err = build_test_request(Compression::GZIP)
+            .expect_err("disabled gzip support should return an error");
 
         assert!(matches!(
             err,
@@ -996,26 +1600,121 @@ mod tests {
 
     #[cfg(feature = "compression")]
     #[test]
-    fn build_single_produce_request_supports_enabled_compression_codecs() {
+    fn build_produce_request_supports_enabled_compression_codecs() {
         for compression in [
             Compression::GZIP,
             Compression::SNAPPY,
             Compression::LZ4,
             Compression::ZSTD,
         ] {
-            build_single_produce_request(
-                1,
-                "client-a",
-                1,
-                30_000,
-                compression,
-                "topic-a",
-                0,
-                b"key",
-                b"value",
-                &[],
-            )
-            .unwrap_or_else(|err| panic!("{compression:?} should encode successfully: {err}"));
+            let (_, mut request) = build_test_request(compression)
+                .unwrap_or_else(|err| panic!("{compression:?} should encode successfully: {err}"));
+            let mut records = request.topic_data[0].partition_data[0]
+                .records
+                .take()
+                .unwrap();
+            let decoded = RecordBatchDecoder::decode(&mut records).unwrap();
+            assert_eq!(decoded.compression, to_kp_compression(compression));
+            assert_eq!(decoded.records.len(), 3);
+            assert!(
+                !records.has_remaining(),
+                "one partition must form one batch"
+            );
         }
+    }
+
+    #[test]
+    fn build_produce_request_uses_one_batch_with_contiguous_offsets_and_sequences() {
+        let (_, mut request) = build_test_request(Compression::NONE).unwrap();
+        let mut records = request.topic_data[0].partition_data[0]
+            .records
+            .take()
+            .unwrap();
+        let decoded = RecordBatchDecoder::decode(&mut records).unwrap();
+        assert_eq!(decoded.records.len(), 3);
+        for (index, record) in decoded.records.iter().enumerate() {
+            assert_eq!(record.offset, i64::try_from(index).unwrap());
+            assert_eq!(record.sequence, i32::try_from(index).unwrap() - 1);
+            assert_eq!(record.producer_id, -1);
+        }
+        assert_eq!(decoded.records[2].key, None);
+        assert_eq!(decoded.records[2].value, None);
+        assert!(
+            !records.has_remaining(),
+            "one partition must form one batch"
+        );
+    }
+
+    #[test]
+    fn produce_response_preserves_first_error_and_invalidates_all_stale_topics() {
+        let mut state = NativeProducerState {
+            topics: HashMap::from([
+                ("topic-a".to_owned(), TopicRoute::default()),
+                ("topic-b".to_owned(), TopicRoute::default()),
+                ("topic-c".to_owned(), TopicRoute::default()),
+            ]),
+            ..NativeProducerState::default()
+        };
+        let response = ProduceResponse::default().with_responses(
+            [("topic-a", 7), ("topic-b", 6), ("topic-c", 5)]
+                .into_iter()
+                .map(|(topic, code)| {
+                    TopicProduceResponse::default()
+                        .with_name(StrBytes::from_static_str(topic).into())
+                        .with_partition_responses(vec![
+                            PartitionProduceResponse::default()
+                                .with_index(0)
+                                .with_error_code(code),
+                        ])
+                })
+                .collect(),
+        );
+        let request = ProduceRequest::default().with_topic_data(
+            [
+                ("topic-a", vec![0]),
+                ("topic-b", vec![0]),
+                ("topic-c", vec![0, 1]),
+            ]
+            .into_iter()
+            .map(|(topic, partitions)| {
+                TopicProduceData::default()
+                    .with_name(StrBytes::from_static_str(topic).into())
+                    .with_partition_data(
+                        partitions
+                            .into_iter()
+                            .map(|partition| PartitionProduceData::default().with_index(partition))
+                            .collect(),
+                    )
+            })
+            .collect(),
+        );
+        let validation = check_produce_response(response, &request, &mut state);
+        assert!(
+            validation.malformed,
+            "topic-c partition 1 was not acknowledged"
+        );
+        assert!(matches!(
+            validation.result,
+            Err(Error::Kafka(KafkaCode::RequestTimedOut))
+        ));
+        assert!(state.topics.contains_key("topic-a"));
+        assert!(!state.topics.contains_key("topic-b"));
+        assert!(!state.topics.contains_key("topic-c"));
+    }
+
+    fn build_test_request(compression: Compression) -> Result<(RequestHeader, ProduceRequest)> {
+        let mut broker = BrokerRecords {
+            host: "broker:9092".to_owned(),
+            topics: Vec::new(),
+            topic_indices: HashMap::new(),
+        };
+        for record in [
+            test_record(),
+            test_record(),
+            Record::from_key_value("topic-a", "", ""),
+        ] {
+            add_record_to_broker(&mut broker, 0, &record)?;
+        }
+        build_produce_request(1, "client-a", 1, 30_000, compression, broker.topics)
     }
 }
