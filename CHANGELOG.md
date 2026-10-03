@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Batch producers stream buffered records into encoding, retain failed or ambiguous deliveries, retire only uniquely confirmed partitions, and require explicit flush or clear before accepting more records after failure.
 - ListOffsets now preserves broker timestamps and maps directly to the existing public offset types without intermediate per-partition vectors.
 - Async polls now propagate codec and unsupported-compression partition errors before delivering messages or advancing offsets, while preserving Kafka error retry classification.
 - The standalone `security-ring` feature now enables TLS and SASL modules, public configuration APIs, and secure builder paths without requiring `security`.
