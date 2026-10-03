@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- ListOffsets now preserves broker timestamps and maps directly to the existing public offset types without intermediate per-partition vectors.
 - Async polls now propagate codec and unsupported-compression partition errors before delivering messages or advancing offsets, while preserving Kafka error retry classification.
 - The standalone `security-ring` feature now enables TLS and SASL modules, public configuration APIs, and secure builder paths without requiring `security`.
 - Async producers borrow cached partition routes and invalidate topic metadata after leader errors without automatically resending failed records.

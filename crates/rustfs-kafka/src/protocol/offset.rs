@@ -1,14 +1,10 @@
-use kafka_protocol::messages::{
-    ApiKey, BrokerId, ListOffsetsRequest, ListOffsetsResponse, RequestHeader, TopicName,
-};
+use kafka_protocol::messages::{ApiKey, BrokerId, ListOffsetsRequest, RequestHeader, TopicName};
 use kafka_protocol::protocol::StrBytes;
 
 use kafka_protocol::messages::list_offsets_request::ListOffsetsPartition;
 use kafka_protocol::messages::list_offsets_request::ListOffsetsTopic;
 
-use super::{API_VERSION_LIST_OFFSETS, HeaderResponse};
-use crate::error::KafkaCode;
-use crate::utils::PartitionOffset;
+use super::API_VERSION_LIST_OFFSETS;
 
 pub fn build_list_offsets_request(
     correlation_id: i32,
@@ -47,69 +43,4 @@ pub fn build_list_offsets_request(
         .with_topics(topics);
 
     (header, request)
-}
-
-pub fn convert_list_offsets_response(
-    kp_resp: ListOffsetsResponse,
-    correlation_id: i32,
-) -> OffsetResponseData {
-    OffsetResponseData {
-        header: HeaderResponse {
-            correlation: correlation_id,
-        },
-        topic_partitions: kp_resp
-            .topics
-            .into_iter()
-            .map(|t| TopicPartitionOffsetResponse {
-                topic: t.name.to_string(),
-                partitions: t
-                    .partitions
-                    .into_iter()
-                    .map(|p| PartitionOffsetResponse {
-                        partition: p.partition_index,
-                        error: p.error_code,
-                        offset: vec![p.offset],
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
-}
-
-// --------------------------------------------------------------------
-// Data types (moved from old protocol/offset.rs)
-// --------------------------------------------------------------------
-
-#[derive(Default, Debug)]
-#[allow(dead_code)]
-pub struct OffsetResponseData {
-    pub header: HeaderResponse,
-    pub topic_partitions: Vec<TopicPartitionOffsetResponse>,
-}
-
-#[derive(Default, Debug)]
-pub struct TopicPartitionOffsetResponse {
-    pub topic: String,
-    pub partitions: Vec<PartitionOffsetResponse>,
-}
-
-#[derive(Default, Debug)]
-pub struct PartitionOffsetResponse {
-    pub partition: i32,
-    pub error: i16,
-    pub offset: Vec<i64>,
-}
-
-impl PartitionOffsetResponse {
-    pub fn to_offset(&self) -> Result<PartitionOffset, KafkaCode> {
-        if let Some(code) = KafkaCode::from_protocol(self.error) {
-            Err(code)
-        } else {
-            let offset = self.offset.first().copied().unwrap_or(-1);
-            Ok(PartitionOffset {
-                partition: self.partition,
-                offset,
-            })
-        }
-    }
 }
