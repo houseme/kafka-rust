@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Sync connection checkout no longer clones all hosts or reconnects the whole pool, and first checkout avoids a second connection when idle timeout is zero.
 - Removed explicit rust-version inheritance from both child crate manifests.
 - Kafka integration cleanup now includes the ZooKeeper profile when switching versions or exiting the test matrix.
 - Documented producer routing, consumer progress and retry behavior, TLS feature selection, benchmark scope, and current transaction and group lifecycle limitations.
