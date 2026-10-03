@@ -723,7 +723,7 @@ mod proptests {
             if let Some(kafka_code) = KafkaCode::from_protocol(code) {
                 let err = Error::Kafka(kafka_code);
                 let msg = err.to_string();
-                assert!(!msg.is_empty());
+                assert_ne!(msg, "");
             }
         }
     }

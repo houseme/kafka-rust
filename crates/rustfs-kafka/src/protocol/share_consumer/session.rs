@@ -503,6 +503,6 @@ mod tests {
 
         let options = session.acknowledge_fetch_response(&response, SHARE_ACK_TYPE_ACCEPT);
 
-        assert!(options.topics.is_empty());
+        assert_eq!(options.topics.len(), 0);
     }
 }

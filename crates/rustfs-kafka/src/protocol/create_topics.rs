@@ -181,7 +181,7 @@ mod tests {
         let config = TopicConfig::new("simple");
         assert_eq!(config.num_partitions, 1);
         assert_eq!(config.replication_factor, 1);
-        assert!(config.configs.is_empty());
+        assert_eq!(config.configs.len(), 0);
     }
 
     #[test]

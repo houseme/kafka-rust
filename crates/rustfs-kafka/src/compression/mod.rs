@@ -84,7 +84,7 @@ mod proptests {
                 _ => return Ok(()),
             };
             let debug_str = format!("{compression:?}");
-            assert!(!debug_str.is_empty());
+            assert_ne!(debug_str, "");
             let as_i32 = compression as i32;
             assert!((0..=4).contains(&as_i32));
         }

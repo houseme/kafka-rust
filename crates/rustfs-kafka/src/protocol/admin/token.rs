@@ -850,7 +850,7 @@ mod tests {
         assert!(request.owner_principal_type.is_none());
         assert!(request.owner_principal_name.is_none());
         assert_eq!(request.max_lifetime_ms, -1);
-        assert!(request.renewers.is_empty());
+        assert_eq!(request.renewers.len(), 0);
     }
 
     #[test]
