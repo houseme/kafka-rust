@@ -296,10 +296,14 @@ impl KafkaConnection {
     }
 
     pub fn send(&mut self, msg: &[u8]) -> Result<usize> {
-        self.stream.write(msg).map_err(|e| {
-            self.state = ConnectionState::Terminated;
-            From::from(e)
-        })
+        self.stream
+            .write_all(msg)
+            .and_then(|()| self.stream.flush())
+            .map_err(|e| {
+                self.state = ConnectionState::Terminated;
+                crate::error::Error::from(e)
+            })?;
+        Ok(msg.len())
     }
 
     pub(crate) fn is_terminated(&self) -> bool {
@@ -407,5 +411,170 @@ impl KafkaConnection {
         }
 
         KafkaConnection::from_stream(stream, id, host, rw_timeout)
+    }
+}
+
+#[cfg(all(test, feature = "security"))]
+mod tests {
+    use std::collections::VecDeque;
+    use std::io::{self, ErrorKind};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::error::{ConnectionError, Error};
+
+    #[derive(Default)]
+    struct WriteTrace {
+        written: Vec<u8>,
+        flushes: usize,
+    }
+
+    struct ScriptedTlsStream {
+        write_results: VecDeque<io::Result<usize>>,
+        flush_error: Option<ErrorKind>,
+        trace: Arc<Mutex<WriteTrace>>,
+    }
+
+    impl Read for ScriptedTlsStream {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for ScriptedTlsStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let len = self.write_results.pop_front().unwrap_or(Ok(buf.len()))?;
+            self.trace
+                .lock()
+                .unwrap()
+                .written
+                .extend_from_slice(&buf[..len]);
+            Ok(len)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.trace.lock().unwrap().flushes += 1;
+            match self.flush_error {
+                Some(kind) => Err(kind.into()),
+                None => Ok(()),
+            }
+        }
+    }
+
+    impl TlsStream for ScriptedTlsStream {
+        fn is_secured(&self) -> bool {
+            true
+        }
+
+        fn set_read_timeout(&mut self, _dur: Option<Duration>) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn set_write_timeout(&mut self, _dur: Option<Duration>) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn shutdown(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn scripted_connection(
+        write_results: impl IntoIterator<Item = io::Result<usize>>,
+        flush_error: Option<ErrorKind>,
+    ) -> (KafkaConnection, Arc<Mutex<WriteTrace>>) {
+        let trace = Arc::new(Mutex::new(WriteTrace::default()));
+        let stream = ScriptedTlsStream {
+            write_results: write_results.into_iter().collect(),
+            flush_error,
+            trace: Arc::clone(&trace),
+        };
+        let connection = KafkaConnection::from_stream(
+            KafkaStream::Tls(Box::new(stream)),
+            1,
+            "broker:9092",
+            None,
+        )
+        .unwrap();
+        (connection, trace)
+    }
+
+    fn io_error_kind(error: Error) -> ErrorKind {
+        match error {
+            Error::Connection(ConnectionError::Io(error)) => error.kind(),
+            error => panic!("expected connection I/O error, got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn send_completes_partial_writes_before_flushing() {
+        let (mut connection, trace) = scripted_connection([Ok(2), Ok(3)], None);
+        let message = b"kafka-frame";
+
+        assert_eq!(connection.send(message).unwrap(), message.len());
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.written, message);
+        assert_eq!(trace.flushes, 1);
+        assert!(!connection.is_terminated());
+    }
+
+    #[test]
+    fn send_retries_interrupted_writes_without_terminating_connection() {
+        let (mut connection, trace) = scripted_connection(
+            [
+                Err(ErrorKind::Interrupted.into()),
+                Ok(2),
+                Err(ErrorKind::Interrupted.into()),
+            ],
+            None,
+        );
+        let message = b"kafka-frame";
+
+        assert_eq!(connection.send(message).unwrap(), message.len());
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.written, message);
+        assert_eq!(trace.flushes, 1);
+        assert!(!connection.is_terminated());
+    }
+
+    #[test]
+    fn send_terminates_connection_when_write_returns_zero() {
+        let (mut connection, trace) = scripted_connection([Ok(2), Ok(0)], None);
+
+        let error = connection.send(b"kafka-frame").unwrap_err();
+
+        assert_eq!(io_error_kind(error), ErrorKind::WriteZero);
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.written, b"ka");
+        assert_eq!(trace.flushes, 0);
+        assert!(connection.is_terminated());
+    }
+
+    #[test]
+    fn send_terminates_connection_on_error_after_partial_write() {
+        let (mut connection, trace) =
+            scripted_connection([Ok(2), Err(ErrorKind::BrokenPipe.into())], None);
+
+        let error = connection.send(b"kafka-frame").unwrap_err();
+
+        assert_eq!(io_error_kind(error), ErrorKind::BrokenPipe);
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.written, b"ka");
+        assert_eq!(trace.flushes, 0);
+        assert!(connection.is_terminated());
+    }
+
+    #[test]
+    fn send_terminates_connection_when_flush_fails() {
+        let (mut connection, trace) = scripted_connection([], Some(ErrorKind::TimedOut));
+        let message = b"kafka-frame";
+
+        let error = connection.send(message).unwrap_err();
+
+        assert_eq!(io_error_kind(error), ErrorKind::TimedOut);
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.written, message);
+        assert_eq!(trace.flushes, 1);
+        assert!(connection.is_terminated());
     }
 }
