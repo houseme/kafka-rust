@@ -176,7 +176,7 @@ fn decode_partition_records(
     records: Option<Bytes>,
     high_watermark: i64,
 ) -> Result<OwnedData, Arc<Error>> {
-    let Some(mut records_bytes) = records else {
+    let Some(records_bytes) = records else {
         return Ok(OwnedData {
             highwatermark_offset: high_watermark,
             messages: vec![],
@@ -189,35 +189,7 @@ fn decode_partition_records(
         });
     }
 
-    let raw_records = records_bytes.clone();
-    let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
-        Ok(record_set) => record_set,
-        Err(decode_error) => {
-            let message = decode_error.to_string();
-            let decode_error = map_record_decode_error(&message);
-            if matches!(
-                decode_error,
-                crate::error::Error::Protocol(crate::error::ProtocolError::UnsupportedCompression)
-            ) {
-                return Err(Arc::new(decode_error));
-            }
-
-            let messages = decode_records_safe(raw_records).map_err(Arc::new)?;
-            return Ok(OwnedData {
-                highwatermark_offset: high_watermark,
-                messages,
-            });
-        }
-    };
-
-    let mut messages = Vec::new();
-    for record in &record_set.records {
-        messages.push(OwnedMessage {
-            offset: record.offset,
-            key: record.key.clone().unwrap_or_default(),
-            value: record.value.clone().unwrap_or_default(),
-        });
-    }
+    let messages = decode_records_safe(records_bytes).map_err(Arc::new)?;
 
     Ok(OwnedData {
         highwatermark_offset: high_watermark,
@@ -225,34 +197,29 @@ fn decode_partition_records(
     })
 }
 
-/// Safe entry point for fuzzing fetch response data — catches all panics.
+fn decode_record_batches(mut records: Bytes) -> Result<Vec<OwnedMessage>, Error> {
+    let mut messages = Vec::new();
+    // Each partition can contain several batches, including empty batches left
+    // by compaction. Decode all of them before accepting the partition data.
+    while !records.is_empty() {
+        let record_set = RecordBatchDecoder::decode(&mut records)
+            .map_err(|err| map_record_decode_error(&err.to_string()))?;
+        messages.reserve(record_set.records.len());
+        messages.extend(record_set.records.into_iter().map(|record| OwnedMessage {
+            offset: record.offset,
+            key: record.key.unwrap_or_default(),
+            value: record.value.unwrap_or_default(),
+        }));
+    }
+    Ok(messages)
+}
+
+/// Decode all fetched record batches, mapping decoder panics to codec errors.
 pub(crate) fn decode_records_safe(
     records: Bytes,
 ) -> Result<Vec<OwnedMessage>, crate::error::Error> {
-    const MAX_INPUT_SIZE: usize = 1_048_576;
-    if records.len() > MAX_INPUT_SIZE {
-        return Err(crate::error::Error::codec());
-    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut buf = records;
-        match RecordBatchDecoder::decode(&mut buf) {
-            Ok(record_set) => {
-                let messages: Vec<OwnedMessage> = record_set
-                    .records
-                    .iter()
-                    .map(|r| OwnedMessage {
-                        offset: r.offset,
-                        key: r.key.clone().unwrap_or_default(),
-                        value: r.value.clone().unwrap_or_default(),
-                    })
-                    .collect();
-                Ok(messages)
-            }
-            Err(e) => {
-                let message = e.to_string();
-                Err(map_record_decode_error(&message))
-            }
-        }
+        decode_record_batches(records)
     }));
     match result {
         Ok(r) => r,
@@ -274,7 +241,6 @@ fn is_disabled_compression_feature_error(message: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "compression")]
     use kafka_protocol::records::{
         Compression as KpCompression, Record, RecordBatchEncoder, RecordEncodeOptions,
         TimestampType,
@@ -443,7 +409,7 @@ mod tests {
                             .with_partition_index(0)
                             .with_error_code(0)
                             .with_high_watermark(1)
-                            .with_records(Some(encoded_records(compression))),
+                            .with_records(Some(encoded_records(compression, 0))),
                     ]),
             ]);
 
@@ -458,8 +424,96 @@ mod tests {
         }
     }
 
+    #[test]
+    fn partition_decoder_returns_records_from_every_batch() {
+        let mut batches = bytes::BytesMut::new();
+        batches.extend_from_slice(&encoded_records(KpCompression::None, 4));
+        batches.extend_from_slice(&encoded_records(KpCompression::None, 5));
+        let batches = batches.freeze();
+
+        let data = decode_partition_records(Some(batches.clone()), 6).unwrap();
+        assert_eq!(data.highwatermark_offset, 6);
+        assert_eq!(
+            data.messages
+                .iter()
+                .map(|message| message.offset)
+                .collect::<Vec<_>>(),
+            [4, 5]
+        );
+        assert_eq!(decode_records_safe(batches).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn partition_decoder_continues_after_an_empty_compacted_batch() {
+        // A complete magic=2 batch with a valid CRC32C and recordsCount=0.
+        let empty_batch: [u8; 61] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 255, 255, 255, 255, 2, 235, 224, 2, 3, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0,
+        ];
+        let mut batches = bytes::BytesMut::from(&empty_batch[..]);
+        batches.extend_from_slice(&encoded_records(KpCompression::None, 5));
+
+        let data = decode_partition_records(Some(batches.freeze()), 6).unwrap();
+        assert_eq!(data.messages.len(), 1);
+        assert_eq!(data.messages[0].offset, 5);
+    }
+
+    #[test]
+    fn partition_decoder_rejects_a_corrupt_or_truncated_later_batch() {
+        let first = encoded_records(KpCompression::None, 4);
+        let mut corrupt = bytes::BytesMut::from(&encoded_records(KpCompression::None, 5)[..]);
+        let last_index = corrupt.len() - 1;
+        corrupt[last_index] ^= 1;
+        for tail in [corrupt.freeze(), Bytes::from_static(&[0; 7])] {
+            let mut batches = bytes::BytesMut::from(&first[..]);
+            batches.extend_from_slice(&tail);
+            let batches = batches.freeze();
+
+            assert!(decode_partition_records(Some(batches.clone()), 6).is_err());
+            assert!(decode_records_safe(batches).is_err());
+        }
+    }
+
+    #[test]
+    fn partition_decoder_accepts_record_data_larger_than_one_mib() {
+        let mut batches = bytes::BytesMut::new();
+        for offset in 0..16_384 {
+            batches.extend_from_slice(&encoded_records(KpCompression::None, offset));
+        }
+        assert!(batches.len() > 1_048_576);
+
+        let data = decode_partition_records(Some(batches.freeze()), 16_384).unwrap();
+        assert_eq!(data.messages.len(), 16_384);
+        assert_eq!(data.messages.last().unwrap().offset, 16_383);
+    }
+
     #[cfg(feature = "compression")]
-    fn encoded_records(compression: KpCompression) -> Bytes {
+    #[test]
+    fn partition_decoder_handles_batches_with_different_compression_codecs() {
+        let mut batches = bytes::BytesMut::new();
+        for (offset, compression) in [
+            KpCompression::None,
+            KpCompression::Gzip,
+            KpCompression::Snappy,
+            KpCompression::Lz4,
+            KpCompression::Zstd,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            batches.extend_from_slice(&encoded_records(
+                compression,
+                i64::try_from(offset).unwrap(),
+            ));
+        }
+
+        let data = decode_partition_records(Some(batches.freeze()), 5).unwrap();
+        assert_eq!(data.messages.len(), 5);
+        assert_eq!(data.messages.last().unwrap().offset, 4);
+    }
+
+    fn encoded_records(compression: KpCompression, offset: i64) -> Bytes {
         let record = Record {
             transactional: false,
             control: false,
@@ -468,7 +522,7 @@ mod tests {
             producer_id: -1,
             producer_epoch: -1,
             timestamp_type: TimestampType::Creation,
-            offset: 0,
+            offset,
             sequence: -1,
             timestamp: 0,
             key: Some(Bytes::from_static(b"key")),
