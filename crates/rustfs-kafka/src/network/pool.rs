@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use super::Pooled;
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 use super::SecurityConfig;
 use super::connection::KafkaConnection;
 
@@ -12,12 +12,12 @@ use super::connection::KafkaConnection;
 pub struct PoolConfig {
     rw_timeout: Option<Duration>,
     idle_timeout: Duration,
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     security_config: Option<SecurityConfig>,
 }
 
 impl PoolConfig {
-    #[cfg(not(feature = "security"))]
+    #[cfg(not(any(feature = "security", feature = "security-ring")))]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         KafkaConnection::new(id, host, self.rw_timeout).map(|c| {
             debug!("Established: {:?}", c);
@@ -25,7 +25,7 @@ impl PoolConfig {
         })
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     fn new_conn(&self, id: u32, host: &str) -> Result<KafkaConnection> {
         KafkaConnection::new(id, host, self.rw_timeout, self.security_config.as_ref()).map(|c| {
             debug!("Established: {:?}", c);
@@ -61,7 +61,7 @@ pub struct Connections {
 }
 
 impl Connections {
-    #[cfg(not(feature = "security"))]
+    #[cfg(not(any(feature = "security", feature = "security-ring")))]
     pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
         Connections {
             conns: Vec::new(),
@@ -75,12 +75,12 @@ impl Connections {
         }
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     pub fn new(rw_timeout: Option<Duration>, idle_timeout: Duration) -> Connections {
         Self::new_with_security(rw_timeout, idle_timeout, None)
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     pub fn new_with_security(
         rw_timeout: Option<Duration>,
         idle_timeout: Duration,

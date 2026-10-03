@@ -7,10 +7,10 @@ use crate::protocol;
 #[cfg(feature = "producer_timestamp")]
 use crate::protocol::produce::ProducerTimestamp;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 use crate::client::SecurityConfig;
 
-#[cfg(not(feature = "security"))]
+#[cfg(not(any(feature = "security", feature = "security-ring")))]
 type SecurityConfig = ();
 
 use super::config::{Config, DEFAULT_ACK_TIMEOUT_MILLIS, DEFAULT_REQUIRED_ACKS};
@@ -65,7 +65,7 @@ impl Builder {
     }
 
     /// Specifies the security config to use.
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig) -> Self {
         self.security_config = Some(security);
@@ -165,12 +165,12 @@ impl<P> Builder<P> {
         }
     }
 
-    #[cfg(not(feature = "security"))]
+    #[cfg(not(any(feature = "security", feature = "security-ring")))]
     fn new_kafka_client(hosts: Vec<String>, _: Option<SecurityConfig>) -> KafkaClient {
         KafkaClient::new(hosts)
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     fn new_kafka_client(hosts: Vec<String>, security: Option<SecurityConfig>) -> KafkaClient {
         if let Some(security) = security {
             KafkaClient::new_secure(hosts, security)
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(builder.transactional_id.as_deref(), Some("transaction-id"));
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[test]
     fn custom_partitioner_preserves_security_configuration() {
         let builder = Producer::from_hosts(Vec::new())

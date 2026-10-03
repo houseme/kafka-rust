@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- The standalone `security-ring` feature now enables TLS and SASL modules, public configuration APIs, and secure builder paths without requiring `security`.
 - Async producers borrow cached partition routes and invalidate topic metadata after leader errors without automatically resending failed records.
 - Async consumers restore committed or fallback starting offsets, propagate OffsetFetch top-level errors, and advance progress only after every broker response succeeds.
 - Producer and batch producer builders retain TLS, client ID, and timestamp configuration when selecting a custom partitioner.

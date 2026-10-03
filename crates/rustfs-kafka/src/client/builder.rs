@@ -6,7 +6,7 @@ use crate::client::{ClientConfig, GroupOffsetStorage, KafkaClient};
 use crate::compression::Compression;
 use crate::protocol::api_versions::ApiVersionCache;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 use crate::network::SecurityConfig;
 
 use crate::network::Connections;
@@ -31,7 +31,7 @@ use crate::network::Connections;
 pub struct KafkaClientBuilder {
     hosts: Vec<String>,
     client_id: String,
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     security: Option<SecurityConfig>,
     compression: Compression,
     fetch_max_wait_time_millis: u64,
@@ -50,7 +50,7 @@ impl KafkaClientBuilder {
         Self {
             hosts: Vec::new(),
             client_id: String::new(),
-            #[cfg(feature = "security")]
+            #[cfg(any(feature = "security", feature = "security-ring"))]
             security: None,
             compression: super::DEFAULT_COMPRESSION,
             fetch_max_wait_time_millis: super::DEFAULT_FETCH_MAX_WAIT_TIME_MILLIS,
@@ -80,7 +80,7 @@ impl KafkaClientBuilder {
     }
 
     /// Sets the TLS security configuration.
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     pub fn with_security(mut self, config: SecurityConfig) -> Self {
         self.security = Some(config);
         self
@@ -210,10 +210,10 @@ impl KafkaClientBuilder {
             Some(config.connection.rw_timeout)
         };
 
-        #[cfg(not(feature = "security"))]
+        #[cfg(not(any(feature = "security", feature = "security-ring")))]
         let conn_pool = Connections::new(rw_timeout, config.connection.idle_timeout);
 
-        #[cfg(feature = "security")]
+        #[cfg(any(feature = "security", feature = "security-ring"))]
         let conn_pool = match self.security {
             Some(security) => Connections::new_with_security(
                 rw_timeout,

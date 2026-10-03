@@ -211,10 +211,10 @@ fn to_option(data: &[u8]) -> Option<&[u8]> {
 
 use crate::protocol;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 use crate::client::SecurityConfig;
 
-#[cfg(not(feature = "security"))]
+#[cfg(not(any(feature = "security", feature = "security-ring")))]
 type SecurityConfig = ();
 
 /// Builder for constructing a `BatchProducer`.
@@ -260,7 +260,7 @@ impl BatchProducerBuilder {
 
 impl BatchProducerBuilder {
     /// Specifies the security config to use.
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[must_use]
     pub fn with_security(mut self, security: SecurityConfig) -> Self {
         self.security_config = Some(security);
@@ -352,12 +352,12 @@ impl<P> BatchProducerBuilder<P> {
         }
     }
 
-    #[cfg(not(feature = "security"))]
+    #[cfg(not(any(feature = "security", feature = "security-ring")))]
     fn new_kafka_client(hosts: Vec<String>, _: Option<SecurityConfig>) -> KafkaClient {
         KafkaClient::new(hosts)
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     fn new_kafka_client(hosts: Vec<String>, security: Option<SecurityConfig>) -> KafkaClient {
         if let Some(security) = security {
             KafkaClient::new_secure(hosts, security)
@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(builder.batch_config.max_bytes, 8192);
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[test]
     fn custom_partitioner_preserves_batch_security_configuration() {
         let builder = BatchProducer::from_hosts(Vec::new())

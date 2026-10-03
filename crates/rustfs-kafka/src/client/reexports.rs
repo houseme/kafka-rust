@@ -114,7 +114,7 @@ pub use crate::protocol::telemetry::{
 pub use crate::protocol::{decode_response_payload, encode_request_frame};
 pub use crate::utils::PartitionOffset;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 pub use crate::network::{SaslConfig, SecurityConfig};
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 pub use crate::tls::TlsConfig;

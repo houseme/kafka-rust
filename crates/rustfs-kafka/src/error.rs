@@ -39,7 +39,7 @@ pub enum ConnectionError {
     Io(#[from] io::Error),
 
     /// TLS-related error (available when `security` feature is enabled).
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[error("TLS error: {0}")]
     Tls(String),
 
@@ -169,7 +169,7 @@ impl From<Arc<Self>> for Error {
                 Self::Connection(ConnectionError::Io(e)) => {
                     Self::Connection(ConnectionError::Io(io::Error::new(e.kind(), e.to_string())))
                 }
-                #[cfg(feature = "security")]
+                #[cfg(any(feature = "security", feature = "security-ring"))]
                 Self::Connection(ConnectionError::Tls(s)) => {
                     Self::Connection(ConnectionError::Tls(s.clone()))
                 }
@@ -247,7 +247,7 @@ impl Error {
         Self::Consumer(ConsumerError::UnsetGroupId)
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn tls(msg: impl Into<String>) -> Self {
@@ -578,7 +578,7 @@ mod tests {
         );
         assert!(Error::Connection(ConnectionError::Timeout(Duration::from_secs(5))).is_retriable());
         assert!(Error::Connection(ConnectionError::NoHostReachable).is_retriable());
-        #[cfg(feature = "security")]
+        #[cfg(any(feature = "security", feature = "security-ring"))]
         assert!(!Error::Connection(ConnectionError::Tls("bad cert".into())).is_retriable());
     }
 

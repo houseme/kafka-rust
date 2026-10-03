@@ -6,13 +6,13 @@
 
 mod connection;
 mod pool;
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 mod sasl;
 
 pub(crate) use self::connection::KafkaConnection;
 pub use self::pool::Connections;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 pub use self::connection::{SaslConfig, SecurityConfig};
 
 /// A wrapper to track the last checkout time of a pooled item.

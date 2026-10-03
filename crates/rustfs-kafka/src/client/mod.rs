@@ -37,7 +37,7 @@
 //! for TLS-encrypted connections:
 //!
 //! ```no_run
-//! # #[cfg(feature = "security")]
+//! # #[cfg(any(feature = "security", feature = "security-ring"))]
 //! # {
 //! use rustfs_kafka::client::{KafkaClient, SecurityConfig};
 //!
@@ -161,7 +161,7 @@ impl KafkaClient {
     /// );
     /// client.load_metadata_all().unwrap();
     /// ```
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     #[must_use]
     pub fn new_secure(hosts: Vec<String>, security: SecurityConfig) -> KafkaClient {
         Self::builder()

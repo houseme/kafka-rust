@@ -22,7 +22,7 @@ pub mod producer;
 mod protocol;
 mod utils;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 mod tls;
 
 pub use self::error::{Error, Result};

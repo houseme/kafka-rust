@@ -4,16 +4,16 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use tracing::debug;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 use super::sasl;
 use crate::error::Result;
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 use crate::tls::{RustlsConnector, TlsConfig, TlsStream};
 
 // --------------------------------------------------------------------
 
 /// Security relevant configuration options for `KafkaClient`.
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 #[derive(Clone)]
 pub struct SecurityConfig {
     pub(crate) tls_config: TlsConfig,
@@ -21,7 +21,7 @@ pub struct SecurityConfig {
 }
 
 /// SASL configuration options for `KafkaClient`.
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 #[derive(Clone, Debug)]
 pub struct SaslConfig {
     pub(crate) mechanism: String,
@@ -29,7 +29,7 @@ pub struct SaslConfig {
     pub(crate) password: String,
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl SaslConfig {
     /// Creates a SASL configuration with explicit mechanism and credentials.
     #[must_use]
@@ -66,7 +66,7 @@ impl SaslConfig {
     }
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl SecurityConfig {
     /// Create a new `SecurityConfig` with default TLS settings.
     #[must_use]
@@ -135,14 +135,14 @@ impl SecurityConfig {
     }
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl fmt::Debug for SecurityConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -155,10 +155,10 @@ impl fmt::Debug for SecurityConfig {
 
 // --------------------------------------------------------------------
 
-#[cfg(not(feature = "security"))]
+#[cfg(not(any(feature = "security", feature = "security-ring")))]
 pub(crate) type KafkaStream = TcpStream;
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 pub(crate) enum KafkaStream {
     Plain(TcpStream),
     Tls(Box<dyn TlsStream>),
@@ -171,7 +171,7 @@ pub(crate) trait StreamOps {
     fn shutdown(&mut self, how: Shutdown) -> std::io::Result<()>;
 }
 
-#[cfg(not(feature = "security"))]
+#[cfg(not(any(feature = "security", feature = "security-ring")))]
 impl StreamOps for KafkaStream {
     fn is_secured(&self) -> bool {
         false
@@ -190,7 +190,7 @@ impl StreamOps for KafkaStream {
     }
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl StreamOps for KafkaStream {
     fn is_secured(&self) -> bool {
         match self {
@@ -221,7 +221,7 @@ impl StreamOps for KafkaStream {
     }
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl Read for KafkaStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -231,7 +231,7 @@ impl Read for KafkaStream {
     }
 }
 
-#[cfg(feature = "security")]
+#[cfg(any(feature = "security", feature = "security-ring"))]
 impl Write for KafkaStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
@@ -375,7 +375,7 @@ impl KafkaConnection {
         }))
     }
 
-    #[cfg(not(feature = "security"))]
+    #[cfg(not(any(feature = "security", feature = "security-ring")))]
     pub(crate) fn new(
         id: u32,
         host: &str,
@@ -384,7 +384,7 @@ impl KafkaConnection {
         KafkaConnection::from_stream(Self::new_tcp_stream(host)?, id, host, rw_timeout)
     }
 
-    #[cfg(feature = "security")]
+    #[cfg(any(feature = "security", feature = "security-ring"))]
     pub(crate) fn new(
         id: u32,
         host: &str,
@@ -414,7 +414,7 @@ impl KafkaConnection {
     }
 }
 
-#[cfg(all(test, feature = "security"))]
+#[cfg(all(test, any(feature = "security", feature = "security-ring")))]
 mod tests {
     use std::collections::VecDeque;
     use std::io::{self, ErrorKind};
