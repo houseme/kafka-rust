@@ -318,6 +318,9 @@ impl KafkaClient {
         self.conn_pool.idle_timeout()
     }
 
+    /// Configures Produce timestamps. `CreateTime` samples the current Unix time
+    /// once per call; None retains the zero timestamp. `LogAppendTime` is a broker
+    /// topic policy and is rejected as a client-side mode before sending.
     #[cfg(feature = "producer_timestamp")]
     #[inline]
     pub fn set_producer_timestamp(&mut self, producer_timestamp: Option<ProducerTimestamp>) {

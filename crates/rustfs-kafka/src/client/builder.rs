@@ -151,7 +151,9 @@ impl KafkaClientBuilder {
         self
     }
 
-    /// Sets the producer timestamp mode.
+    /// Sets the producer timestamp mode. `CreateTime` samples Unix milliseconds
+    /// once per Produce call; None retains zero. `LogAppendTime` is configured on
+    /// the broker topic and is rejected as a client-side setting when sending.
     #[cfg(feature = "producer_timestamp")]
     pub fn with_producer_timestamp(
         mut self,

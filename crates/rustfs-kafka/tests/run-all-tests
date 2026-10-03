@@ -132,7 +132,7 @@ for ver in "${versions[@]}"; do
             fi
             export KAFKA_CLIENT_COMPRESSION=$compression
             echo "Testing: KAFKA_VER=$KAFKA_VER, COMPRESSION=$compression, SECURE=$secure_label"
-            cargo test -p rustfs-kafka --features "integration_tests,compression"
+            cargo test -p rustfs-kafka --features "integration_tests,compression,producer_timestamp"
         done
 
         docker compose --profile zk down

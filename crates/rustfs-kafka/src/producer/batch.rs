@@ -475,6 +475,8 @@ impl<P> BatchProducerBuilder<P> {
                 true,
             ),
         };
+        #[cfg(feature = "producer_timestamp")]
+        crate::client::produce_ops::validate_producer_timestamp(client.producer_timestamp())?;
         client.set_compression(self.compression);
         client.set_connection_idle_timeout(self.conn_idle_timeout);
         if let Some(client_id) = self.client_id {
@@ -533,6 +535,25 @@ mod tests {
         assert_eq!(builder.batch_config.batch_size, 100);
         assert_eq!(builder.batch_config.linger_ms, 20);
         assert_eq!(builder.batch_config.max_bytes, 8192);
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn batch_constructor_rejects_an_inherited_log_append_time_mode() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client = KafkaClient::builder()
+            .with_hosts(vec![listener.local_addr().unwrap().to_string()])
+            .with_producer_timestamp(Some(crate::client::ProducerTimestamp::LogAppendTime))
+            .build();
+        let result = BatchProducer::from_client(client).create();
+        assert!(matches!(result, Err(Error::Config(message))
+            if message.contains("message.timestamp.type=LogAppendTime")));
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
     }
 
     #[cfg(any(feature = "security", feature = "security-ring"))]

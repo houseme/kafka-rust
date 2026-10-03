@@ -156,6 +156,8 @@ impl<P: Partitioner> TransactionalProducer<P> {
         V: AsBytes,
     {
         self.require_active()?;
+        #[cfg(feature = "producer_timestamp")]
+        crate::client::produce_ops::validate_producer_timestamp(self.client.producer_timestamp())?;
 
         let key = if rec.key.as_bytes().is_empty() {
             None
@@ -474,6 +476,8 @@ impl<P: Partitioner> TransactionalBuilder<P> {
             Some(client) => client,
             None => KafkaClient::new(self.hosts),
         };
+        #[cfg(feature = "producer_timestamp")]
+        crate::client::produce_ops::validate_producer_timestamp(client.producer_timestamp())?;
 
         if let Some(client_id) = self.client_id {
             client.set_client_id(client_id);
@@ -652,6 +656,87 @@ mod tests {
                 Err(Error::Config(_))
             ));
         }
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn invalid_timestamp_mode_is_rejected_before_transaction_initialization() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client = KafkaClient::builder()
+            .with_hosts(vec![listener.local_addr().unwrap().to_string()])
+            .with_producer_timestamp(Some(crate::client::ProducerTimestamp::LogAppendTime))
+            .build();
+        let result = TransactionalProducer::from_client(client)
+            .with_transactional_id("txn-test")
+            .create();
+        assert!(matches!(result, Err(Error::Config(message))
+            if message.contains("message.timestamp.type=LogAppendTime")));
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn active_transaction_can_recover_after_rejecting_a_changed_timestamp_mode() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (check_tx, check_rx) = std::sync::mpsc::channel();
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            initialize_mock(&mut stream, address);
+            check_rx.recv().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let mut byte = [0];
+            let error = stream.peek(&mut byte).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            checked_tx.send(()).unwrap();
+            acknowledge_add(&mut stream, 0);
+            let header = read_produce(&mut stream, 0);
+            write_response(&mut stream, &header, &produce_response(0));
+            acknowledge_end(&mut stream, true, 0);
+        });
+        let mut producer = mock_producer(address);
+        producer.begin().unwrap();
+        let sequences = producer.sequence_numbers.clone();
+        let partitions = producer.current_txn_partitions.clone();
+        let identity = (producer.producer_id(), producer.producer_epoch());
+        producer
+            .client_mut()
+            .set_producer_timestamp(Some(crate::client::ProducerTimestamp::LogAppendTime));
+        assert!(matches!(
+            producer.send(&Record::from_value("topic-a", "value")),
+            Err(Error::Config(_))
+        ));
+        assert_eq!(producer.status, TransactionStatus::Active);
+        assert_eq!(producer.sequence_numbers, sequences);
+        assert_eq!(producer.current_txn_partitions, partitions);
+        assert_eq!(
+            (producer.producer_id(), producer.producer_epoch()),
+            identity
+        );
+        check_tx.send(()).unwrap();
+        checked_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        producer.client_mut().set_producer_timestamp(None);
+        producer
+            .send(&Record::from_value("topic-a", "value"))
+            .unwrap();
+        assert_eq!(producer.sequence_numbers[&("topic-a".into(), 0)], 1);
+        producer.commit().unwrap();
+        assert_eq!(producer.status, TransactionStatus::Idle);
+        server.join().unwrap();
     }
 
     use bytes::{Buf, Bytes, BytesMut};

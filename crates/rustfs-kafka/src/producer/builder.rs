@@ -60,6 +60,10 @@ impl Builder {
         if let Some(ref c) = b.client {
             b.compression = c.compression();
             b.conn_idle_timeout = c.connection_idle_timeout();
+            #[cfg(feature = "producer_timestamp")]
+            {
+                b.producer_timestamp = c.producer_timestamp();
+            }
         }
         b
     }
@@ -111,7 +115,8 @@ impl Builder {
     }
 
     #[cfg(feature = "producer_timestamp")]
-    /// Sets the producer timestamp mode.
+    /// Enables current Unix millisecond timestamps with `CreateTime`.
+    /// `LogAppendTime` is configured on the broker/topic and is rejected by `create`.
     #[must_use]
     pub fn with_timestamp(mut self, timestamp: ProducerTimestamp) -> Self {
         self.producer_timestamp = Some(timestamp);
@@ -185,6 +190,8 @@ impl<P> Builder<P> {
     ///
     /// Returns an error if timeout conversion fails, metadata loading fails, or producer state initialization fails.
     pub fn create(self) -> Result<Producer<P>> {
+        #[cfg(feature = "producer_timestamp")]
+        crate::client::produce_ops::validate_producer_timestamp(self.producer_timestamp)?;
         let (mut client, need_metadata) = match self.client {
             Some(client) => (client, false),
             None => (
@@ -261,6 +268,29 @@ mod tests {
         assert!(matches!(
             builder.producer_timestamp,
             Some(ProducerTimestamp::LogAppendTime)
+        ));
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn create_rejects_log_append_time_before_loading_metadata() {
+        let result = Producer::from_hosts(Vec::new())
+            .with_timestamp(ProducerTimestamp::LogAppendTime)
+            .create();
+        assert!(matches!(result, Err(crate::error::Error::Config(message))
+            if message.contains("message.timestamp.type=LogAppendTime")));
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn from_client_preserves_create_time_timestamp_configuration() {
+        let client = KafkaClient::builder()
+            .with_producer_timestamp(Some(ProducerTimestamp::CreateTime))
+            .build();
+        let producer = Producer::from_client(client).create().unwrap();
+        assert!(matches!(
+            producer.client().producer_timestamp(),
+            Some(ProducerTimestamp::CreateTime)
         ));
     }
 }

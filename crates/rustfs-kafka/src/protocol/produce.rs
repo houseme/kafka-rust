@@ -26,6 +26,12 @@ pub(crate) struct TransactionContext<'a> {
     pub(crate) sequence: i32,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ProduceRequestOptions<'a> {
+    pub(crate) timestamp: i64,
+    pub(crate) transaction: Option<TransactionContext<'a>>,
+}
+
 #[tracing::instrument(skip(messages), fields(correlation_id = correlation_id))]
 pub fn build_produce_request(
     correlation_id: i32,
@@ -35,14 +41,14 @@ pub fn build_produce_request(
     compression: Compression,
     messages: &[ProduceMessageRef<'_>],
 ) -> Result<(RequestHeader, ProduceRequest)> {
-    build_produce_request_with_context(
+    build_produce_request_with_options(
         correlation_id,
         client_id,
         required_acks,
         timeout_ms,
         compression,
         messages,
-        None,
+        ProduceRequestOptions::default(),
     )
 }
 
@@ -53,33 +59,37 @@ pub(crate) fn build_transactional_produce_request(
     compression: Compression,
     message: ProduceMessageRef<'_>,
     context: TransactionContext<'_>,
+    timestamp: i64,
 ) -> Result<(RequestHeader, ProduceRequest)> {
     if context.producer_id < 0 || context.producer_epoch < 0 || context.sequence < 0 {
         return Err(Error::Config(
             "invalid transactional producer identity or sequence".into(),
         ));
     }
-    build_produce_request_with_context(
+    build_produce_request_with_options(
         correlation_id,
         client_id,
         -1,
         timeout_ms,
         compression,
         &[message],
-        Some(context),
+        ProduceRequestOptions {
+            timestamp,
+            transaction: Some(context),
+        },
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_produce_request_with_context(
+pub(crate) fn build_produce_request_with_options(
     correlation_id: i32,
     client_id: &str,
     required_acks: i16,
     timeout_ms: i32,
     compression: Compression,
     messages: &[ProduceMessageRef<'_>],
-    context: Option<TransactionContext<'_>>,
+    options: ProduceRequestOptions<'_>,
 ) -> Result<(RequestHeader, ProduceRequest)> {
+    let context = options.transaction;
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
         .with_request_api_key(ApiKey::Produce as i16)
@@ -116,7 +126,7 @@ fn build_produce_request_with_context(
             // keeps one batch per partition while retaining base_sequence = -1
             // for a non-idempotent producer.
             sequence: context.map_or(offset - 1, |context| context.sequence),
-            timestamp: 0,
+            timestamp: options.timestamp,
             key: key.map(bytes::Bytes::copy_from_slice),
             value: value.map(bytes::Bytes::copy_from_slice),
             headers: kp_headers,
@@ -207,7 +217,10 @@ pub fn convert_produce_response(
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
 pub enum ProducerTimestamp {
+    /// Sample the current Unix time in milliseconds once per produce call.
     CreateTime = 0,
+    /// Broker/topic policy, rejected as a client-side produce mode.
+    /// Configure `message.timestamp.type=LogAppendTime` on the topic instead.
     LogAppendTime = 8,
 }
 
@@ -331,9 +344,114 @@ mod tests {
                 for (index, record) in decoded[0].records.iter().enumerate() {
                     assert_eq!(record.offset, i64::try_from(index).unwrap());
                     assert_eq!(record.value.as_deref().unwrap(), expected_values[index]);
+                    assert_eq!(record.timestamp, 0);
+                    assert_eq!(record.timestamp_type, TimestampType::Creation);
                 }
             }
         }
+    }
+
+    #[test]
+    fn sampled_timestamp_is_encoded_for_every_partition_and_codec() {
+        let timestamp = 1_700_000_000_123;
+        let messages: [ProduceMessageRef<'_>; 3] = [
+            ("topic-a", 0, None, Some(b"first"), &[]),
+            ("topic-a", 1, None, Some(b"other-partition"), &[]),
+            ("topic-a", 0, None, Some(b"second"), &[]),
+        ];
+        for compression in enabled_codecs() {
+            let (_, request) = build_produce_request_with_options(
+                1,
+                "client-a",
+                1,
+                30_000,
+                compression,
+                &messages,
+                ProduceRequestOptions {
+                    timestamp,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            for topic in request.topic_data {
+                for partition in topic.partition_data {
+                    let batches = kafka_protocol::records::RecordBatchDecoder::decode_all(
+                        &mut partition.records.unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(batches.len(), 1);
+                    for record in &batches[0].records {
+                        assert_eq!(record.timestamp, timestamp);
+                        assert_eq!(record.timestamp_type, TimestampType::Creation);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sampled_timestamp_preserves_transactional_identity_and_headers() {
+        let headers = [(
+            "header".to_owned(),
+            bytes::Bytes::from_static(b"header-value"),
+        )];
+        let timestamp = 1_700_000_000_123;
+        for compression in enabled_codecs() {
+            let (_, request) = build_transactional_produce_request(
+                1,
+                "client-a",
+                30_000,
+                compression,
+                ("topic-a", 0, Some(b"key"), Some(b"value"), &headers),
+                TransactionContext {
+                    transactional_id: "transaction-id",
+                    producer_id: 42,
+                    producer_epoch: 3,
+                    sequence: 7,
+                },
+                timestamp,
+            )
+            .unwrap();
+            assert_eq!(
+                request.transactional_id.as_ref().unwrap().as_str(),
+                "transaction-id"
+            );
+            assert_eq!(request.acks, -1);
+            let mut bytes = request.topic_data[0].partition_data[0]
+                .records
+                .clone()
+                .unwrap();
+            let batches =
+                kafka_protocol::records::RecordBatchDecoder::decode_all(&mut bytes).unwrap();
+            let record = &batches[0].records[0];
+            assert!(record.transactional);
+            assert_eq!(record.producer_id, 42);
+            assert_eq!(record.producer_epoch, 3);
+            assert_eq!(record.sequence, 7);
+            assert_eq!(record.timestamp, timestamp);
+            assert_eq!(record.timestamp_type, TimestampType::Creation);
+            assert_eq!(
+                record.headers[&StrBytes::from_static_str("header")].as_deref(),
+                Some(&b"header-value"[..])
+            );
+            assert_eq!(record.key.as_deref(), Some(&b"key"[..]));
+            assert_eq!(record.value.as_deref(), Some(&b"value"[..]));
+        }
+    }
+
+    fn enabled_codecs() -> impl Iterator<Item = Compression> {
+        [
+            Compression::NONE,
+            #[cfg(feature = "gzip")]
+            Compression::GZIP,
+            #[cfg(feature = "snappy")]
+            Compression::SNAPPY,
+            #[cfg(feature = "lz4")]
+            Compression::LZ4,
+            #[cfg(feature = "zstd")]
+            Compression::ZSTD,
+        ]
+        .into_iter()
     }
 
     #[cfg(not(feature = "gzip"))]

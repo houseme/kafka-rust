@@ -5,7 +5,7 @@
 //! acknowledged produce modes with optional metrics recording.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::compression::Compression;
 use crate::error::{Error, KafkaCode, Result};
@@ -34,6 +34,7 @@ struct ProduceRequestContext<'a> {
     required_acks: i16,
     ack_timeout_ms: i32,
     compression: Compression,
+    timestamp: i64,
     api_versions: &'a ApiVersionCache,
     no_acks: bool,
 }
@@ -54,6 +55,7 @@ where
 {
     #[cfg(feature = "metrics")]
     let start = Instant::now();
+    let timestamp = sample_producer_timestamp(config.producer_timestamp)?;
     let correlation = state.next_correlation_id();
 
     // Collect messages into (broker, Vec<(topic, partition, key, value, headers)>)
@@ -94,6 +96,7 @@ where
         required_acks: acks as i16,
         ack_timeout_ms: protocol::to_millis_i32(ack_timeout)?,
         compression: config.compression,
+        timestamp,
         api_versions,
         no_acks: acks as i16 == 0,
     };
@@ -139,14 +142,29 @@ fn produce_messages_inner(
             .conn_pool
             .get_conn(&host, now)
             .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-        let (mut header, request) = crate::protocol::produce::build_produce_request(
-            ctx.correlation_id,
-            ctx.client_id,
-            ctx.required_acks,
-            ctx.ack_timeout_ms,
-            ctx.compression,
-            &msgs,
-        )?;
+        let (mut header, request) = if ctx.timestamp == 0 {
+            protocol::produce::build_produce_request(
+                ctx.correlation_id,
+                ctx.client_id,
+                ctx.required_acks,
+                ctx.ack_timeout_ms,
+                ctx.compression,
+                &msgs,
+            )?
+        } else {
+            protocol::produce::build_produce_request_with_options(
+                ctx.correlation_id,
+                ctx.client_id,
+                ctx.required_acks,
+                ctx.ack_timeout_ms,
+                ctx.compression,
+                &msgs,
+                protocol::produce::ProduceRequestOptions {
+                    timestamp: ctx.timestamp,
+                    ..Default::default()
+                },
+            )?
+        };
         let api_version = transport::apply_request_api_version(
             ctx.api_versions,
             &host,
@@ -181,6 +199,7 @@ pub(crate) fn produce_transactional_message(
     context: protocol::produce::TransactionContext<'_>,
     message: &ProduceMessage<'_, '_>,
 ) -> Result<()> {
+    let timestamp = sample_producer_timestamp(client.config.producer_timestamp)?;
     let host = client
         .state
         .find_broker(message.topic, message.partition)
@@ -200,6 +219,7 @@ pub(crate) fn produce_transactional_message(
             message.headers,
         ),
         context,
+        timestamp,
     )?;
     let version = transport::apply_request_api_version(
         &client.api_versions,
@@ -224,6 +244,42 @@ pub(crate) fn produce_transactional_message(
     result
 }
 
+pub(crate) fn validate_producer_timestamp(
+    timestamp: Option<protocol::produce::ProducerTimestamp>,
+) -> Result<()> {
+    if matches!(
+        timestamp,
+        Some(protocol::produce::ProducerTimestamp::LogAppendTime)
+    ) {
+        return Err(Error::Config(
+            "LogAppendTime is a broker/topic policy, not a producer timestamp mode; configure message.timestamp.type=LogAppendTime on the topic and use CreateTime or None on the producer".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn sample_producer_timestamp(
+    timestamp: Option<protocol::produce::ProducerTimestamp>,
+) -> Result<i64> {
+    validate_producer_timestamp(timestamp)?;
+    if matches!(
+        timestamp,
+        Some(protocol::produce::ProducerTimestamp::CreateTime)
+    ) {
+        unix_timestamp_millis(SystemTime::now())
+    } else {
+        Ok(0)
+    }
+}
+
+fn unix_timestamp_millis(time: SystemTime) -> Result<i64> {
+    let elapsed = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::Config("system clock is before the Unix epoch".into()))?;
+    i64::try_from(elapsed.as_millis())
+        .map_err(|_| Error::Config("Unix timestamp exceeds Kafka's i64 milliseconds range".into()))
+}
+
 fn validate_transactional_produce_response(
     response: &kafka_protocol::messages::ProduceResponse,
     message: &ProduceMessage<'_, '_>,
@@ -246,4 +302,212 @@ fn validate_transactional_produce_response(
         return Err(Error::codec());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::thread::JoinHandle;
+
+    use bytes::{Bytes, BytesMut};
+    use kafka_protocol::messages::{
+        ApiKey, ProduceRequest, ProduceResponse, RequestHeader, ResponseHeader,
+    };
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
+    use kafka_protocol::records::{Record, RecordBatchDecoder, TimestampType};
+
+    use super::*;
+    use crate::client::KafkaClient;
+    use crate::protocol::metadata::{
+        BrokerMetadata, MetadataResponseData, PartitionMetadata, TopicMetadata,
+    };
+    use crate::protocol::produce::ProducerTimestamp;
+
+    #[test]
+    fn default_timestamp_mode_keeps_zero_in_produce_wire_records() {
+        let records = capture_produced_records(None);
+        assert_eq!(records.len(), 3);
+        for record in records {
+            assert_eq!(record.timestamp, 0);
+            assert_eq!(record.timestamp_type, TimestampType::Creation);
+        }
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn create_time_is_sampled_once_for_all_messages_and_brokers() {
+        let before = unix_timestamp_millis(SystemTime::now()).unwrap();
+        let records = capture_produced_records(Some(ProducerTimestamp::CreateTime));
+        let after = unix_timestamp_millis(SystemTime::now()).unwrap();
+        assert_eq!(records.len(), 3);
+        let timestamp = records[0].timestamp;
+        assert!(timestamp > 0 && timestamp >= before && timestamp <= after);
+        for record in records {
+            assert_eq!(record.timestamp, timestamp);
+            assert_eq!(record.timestamp_type, TimestampType::Creation);
+        }
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn log_append_time_is_rejected_before_opening_a_broker_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = KafkaClient::builder()
+            .with_hosts(vec![address.to_string()])
+            .with_producer_timestamp(Some(ProducerTimestamp::LogAppendTime))
+            .build();
+        configure_metadata(&mut client, &[address]);
+        let result = client.produce_messages(
+            RequiredAcks::One,
+            Duration::from_secs(1),
+            &[ProduceMessage {
+                topic: "topic-a",
+                partition: 0,
+                key: None,
+                value: Some(b"value"),
+                headers: &[],
+            }],
+        );
+        assert!(matches!(result, Err(Error::Config(message))
+            if message.contains("message.timestamp.type=LogAppendTime")));
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn timestamps_before_the_unix_epoch_return_a_configuration_error() {
+        assert!(matches!(
+            unix_timestamp_millis(UNIX_EPOCH - Duration::from_millis(1)),
+            Err(Error::Config(_))
+        ));
+        assert_eq!(sample_producer_timestamp(None).unwrap(), 0);
+    }
+
+    fn capture_produced_records(mode: Option<ProducerTimestamp>) -> Vec<Record> {
+        let (first, first_server) = mock_produce_broker();
+        let (second, second_server) = mock_produce_broker();
+        let builder = KafkaClient::builder()
+            .with_hosts(vec![first.to_string(), second.to_string()])
+            .with_conn_rw_timeout(5);
+        #[cfg(feature = "producer_timestamp")]
+        let builder = builder.with_producer_timestamp(mode);
+        #[cfg(not(feature = "producer_timestamp"))]
+        assert!(mode.is_none());
+        let mut client = builder.build();
+        configure_metadata(&mut client, &[first, second]);
+        let messages = [
+            ProduceMessage {
+                topic: "topic-a",
+                partition: 0,
+                key: None,
+                value: Some(b"first"),
+                headers: &[],
+            },
+            ProduceMessage {
+                topic: "topic-a",
+                partition: 1,
+                key: None,
+                value: Some(b"other-partition"),
+                headers: &[],
+            },
+            ProduceMessage {
+                topic: "topic-a",
+                partition: 0,
+                key: None,
+                value: Some(b"second"),
+                headers: &[],
+            },
+        ];
+        let confirms = client
+            .produce_messages(RequiredAcks::One, Duration::from_secs(1), &messages)
+            .unwrap();
+        assert_eq!(confirms.len(), 2);
+        let mut records = first_server.join().unwrap();
+        records.extend(second_server.join().unwrap());
+        records
+    }
+
+    fn configure_metadata(client: &mut KafkaClient, addresses: &[SocketAddr]) {
+        client.state.update_metadata(MetadataResponseData {
+            brokers: addresses
+                .iter()
+                .enumerate()
+                .map(|(index, address)| BrokerMetadata {
+                    node_id: i32::try_from(index).unwrap() + 1,
+                    host: address.ip().to_string(),
+                    port: i32::from(address.port()),
+                })
+                .collect(),
+            topics: vec![TopicMetadata {
+                topic: "topic-a".into(),
+                partitions: (0..addresses.len())
+                    .map(|index| PartitionMetadata {
+                        id: i32::try_from(index).unwrap(),
+                        leader: i32::try_from(index).unwrap() + 1,
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+
+    fn mock_produce_broker() -> (SocketAddr, JoinHandle<Vec<Record>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut size = [0; 4];
+            stream.read_exact(&mut size).unwrap();
+            let mut payload = vec![0; usize::try_from(i32::from_be_bytes(size)).unwrap()];
+            stream.read_exact(&mut payload).unwrap();
+            let version = i16::from_be_bytes(payload[2..4].try_into().unwrap());
+            let mut payload = Bytes::from(payload);
+            let header =
+                RequestHeader::decode(&mut payload, ProduceRequest::header_version(version))
+                    .unwrap();
+            assert_eq!(header.request_api_key, ApiKey::Produce as i16);
+            let request = ProduceRequest::decode(&mut payload, version).unwrap();
+            assert!(payload.is_empty());
+            let mut records = Vec::new();
+            let responses = request.topic_data.into_iter().map(|topic| {
+                kafka_protocol::messages::produce_response::TopicProduceResponse::default()
+                    .with_name(topic.name)
+                    .with_partition_responses(topic.partition_data.into_iter().map(|partition| {
+                        let mut bytes = partition.records.unwrap();
+                        for batch in RecordBatchDecoder::decode_all(&mut bytes).unwrap() {
+                            records.extend(batch.records);
+                        }
+                        kafka_protocol::messages::produce_response::PartitionProduceResponse::default()
+                            .with_index(partition.index).with_base_offset(0)
+                    }).collect())
+            }).collect();
+            let response = ProduceResponse::default().with_responses(responses);
+            let mut payload = BytesMut::new();
+            ResponseHeader::default()
+                .with_correlation_id(header.correlation_id)
+                .encode(&mut payload, ProduceResponse::header_version(version))
+                .unwrap();
+            response.encode(&mut payload, version).unwrap();
+            stream
+                .write_all(&i32::try_from(payload.len()).unwrap().to_be_bytes())
+                .unwrap();
+            stream.write_all(&payload).unwrap();
+            records
+        });
+        (address, server)
+    }
 }
