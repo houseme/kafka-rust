@@ -47,7 +47,6 @@ struct TopicRoute {
 }
 
 struct BrokerRecords<'a> {
-    host: String,
     topics: Vec<TopicRecords<'a>>,
     topic_indices: HashMap<&'a str, usize>,
 }
@@ -383,13 +382,12 @@ impl NativeProducer {
                 correlation_id,
             )
             .await?;
-            let broker_index = match broker_indices.get(leader_host.as_str()) {
+            let broker_index = match broker_indices.get(leader_host) {
                 Some(&index) => index,
                 None => {
                     let index = brokers.len();
-                    broker_indices.insert(leader_host.clone(), index);
+                    broker_indices.insert(leader_host.to_owned(), index);
                     brokers.push(BrokerRecords {
-                        host: leader_host,
                         topics: Vec::new(),
                         topic_indices: HashMap::new(),
                     });
@@ -399,11 +397,15 @@ impl NativeProducer {
             add_record_to_broker(&mut brokers[broker_index], partition, record)?;
         }
 
-        let client_id = client.client_id().to_owned();
+        let client_id = StrBytes::from_string(client.client_id().to_owned());
         // Encode every batch before sending any Produce request, so codec errors
         // cannot cause partial delivery to the brokers processed earlier.
         let mut requests = Vec::with_capacity(brokers.len());
-        for (index, broker) in brokers.into_iter().enumerate() {
+        // The index owns each unique host once. Restore first-seen broker order
+        // before moving those host strings into the requests.
+        let mut broker_hosts: Vec<_> = broker_indices.into_iter().collect();
+        broker_hosts.sort_unstable_by_key(|(_, index)| *index);
+        for ((host, index), broker) in broker_hosts.into_iter().zip(brokers) {
             let request_correlation = if index == 0 {
                 correlation_id
             } else {
@@ -417,7 +419,7 @@ impl NativeProducer {
                 self.compression,
                 broker.topics,
             )?;
-            requests.push((broker.host, header, request));
+            requests.push((host, header, request));
         }
 
         for (host, header, request) in requests {
@@ -569,31 +571,37 @@ fn check_produce_response(
     ProduceResponseValidation { result, malformed }
 }
 
-async fn resolve_partition_and_leader(
+async fn resolve_partition_and_leader<'s>(
     client: &mut AsyncKafkaClient,
-    state: &mut NativeProducerState,
+    state: &'s mut NativeProducerState,
     topic: &str,
     requested_partition: i32,
     correlation_id: i32,
-) -> Result<(i32, String)> {
-    for _ in 0..2 {
-        if let Some((partition, leader_host)) =
-            try_resolve_from_cache(state, topic, requested_partition)
-        {
-            return Ok((partition, leader_host));
+) -> Result<(i32, &'s str)> {
+    let (partition, leader_id) = 'resolved: {
+        for _ in 0..2 {
+            if let Some(route) = try_resolve_from_cache(state, topic, requested_partition) {
+                break 'resolved route;
+            }
+
+            refresh_topic_metadata(client, state, topic, correlation_id).await?;
         }
 
-        refresh_topic_metadata(client, state, topic, correlation_id).await?;
-    }
-
-    Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+        return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
+    };
+    // Borrow the host only after all asynchronous metadata refreshes complete.
+    let leader_host = state
+        .brokers
+        .get(&leader_id)
+        .ok_or(Error::Kafka(KafkaCode::UnknownTopicOrPartition))?;
+    Ok((partition, leader_host.as_str()))
 }
 
 fn try_resolve_from_cache(
     state: &mut NativeProducerState,
     topic: &str,
     requested_partition: i32,
-) -> Option<(i32, String)> {
+) -> Option<(i32, i32)> {
     let NativeProducerState {
         brokers,
         topics,
@@ -610,8 +618,9 @@ fn try_resolve_from_cache(
     if leader_id < 0 {
         return None;
     }
-    let leader_host = brokers.get(&leader_id)?.clone();
-    Some((partition, leader_host))
+    brokers
+        .contains_key(&leader_id)
+        .then_some((partition, leader_id))
 }
 
 fn pick_round_robin_partition(
@@ -645,9 +654,8 @@ async fn refresh_topic_metadata(
     correlation_id: i32,
 ) -> Result<()> {
     let request_host = pick_request_host(client).ok_or_else(no_host_reachable_error)?;
-    let client_id = client.client_id().to_owned();
+    let (header, request) = build_metadata_request(correlation_id, client.client_id(), topic);
     let conn = client.get_connection(&request_host).await?;
-    let (header, request) = build_metadata_request(correlation_id, &client_id, topic);
 
     send_kp_request(conn, &header, &request, API_VERSION_METADATA).await?;
     let response = get_kp_response::<MetadataResponse>(conn, API_VERSION_METADATA).await?;
@@ -715,14 +723,14 @@ fn build_metadata_request(
 
 fn build_produce_request(
     correlation_id: i32,
-    client_id: &str,
+    client_id: &StrBytes,
     required_acks: i16,
     timeout_ms: i32,
     compression: Compression,
     topics: Vec<TopicRecords<'_>>,
 ) -> Result<(RequestHeader, ProduceRequest)> {
     let header = RequestHeader::default()
-        .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
+        .with_client_id(Some(client_id.clone()))
         .with_request_api_key(ApiKey::Produce as i16)
         .with_request_api_version(API_VERSION_PRODUCE)
         .with_correlation_id(correlation_id);
@@ -857,7 +865,7 @@ mod tests {
         for (requested, expected) in [(1, 1), (-1, 0), (-1, 1), (-1, 0)] {
             assert_eq!(
                 try_resolve_from_cache(&mut state, "topic-a", requested),
-                Some((expected, "broker:9092".to_owned()))
+                Some((expected, 0))
             );
         }
     }
@@ -1052,6 +1060,90 @@ mod tests {
             .await
             .expect("six records across two brokers must complete with two Produce requests");
         }
+    }
+
+    #[tokio::test]
+    async fn send_all_reuses_cached_host_across_broker_ids_topics_and_round_robin_calls() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                for (topic, leaders) in [("topic-a", [1, 0]), ("topic-b", [0, 1])] {
+                    let correlation = read_topic_metadata_request(&mut socket, topic).await;
+                    // Distinct broker IDs advertise the same endpoint. Metadata for
+                    // topic-b replaces the cached host strings while the batch grows.
+                    write_topic_metadata_response(
+                        &mut socket,
+                        correlation,
+                        topic,
+                        &[addr, addr],
+                        &leaders,
+                    )
+                    .await;
+                }
+                let (correlation, request) = read_batch_request(&mut socket, 1).await;
+                assert_eq!(request.topic_data.len(), 2);
+                let topic_a = &request.topic_data[0];
+                assert_eq!(topic_a.name.as_str(), "topic-a");
+                assert_eq!(topic_a.partition_data.len(), 2);
+                assert_eq!(topic_a.partition_data[0].index, 0);
+                assert_partition_batch(&topic_a.partition_data[0], &["a0", "a2"]);
+                assert_eq!(topic_a.partition_data[1].index, 1);
+                assert_partition_batch(&topic_a.partition_data[1], &["a1"]);
+                let topic_b = &request.topic_data[1];
+                assert_eq!(topic_b.name.as_str(), "topic-b");
+                assert_eq!(topic_b.partition_data.len(), 2);
+                assert_eq!(topic_b.partition_data[0].index, 1);
+                assert_partition_batch(&topic_b.partition_data[0], &["b1"]);
+                assert_eq!(topic_b.partition_data[1].index, 0);
+                assert_partition_batch(&topic_b.partition_data[1], &["b0"]);
+                write_batch_response(&mut socket, correlation, &request, 0).await;
+
+                // Both topic routes are cached: the next frame must be Produce,
+                // sharing this socket and still grouping by host instead of node ID.
+                let (correlation, request) = read_batch_request(&mut socket, 1).await;
+                assert_eq!(request.topic_data.len(), 2);
+                let topic_a = &request.topic_data[0];
+                assert_eq!(topic_a.partition_data.len(), 2);
+                assert_eq!(topic_a.partition_data[0].index, 0);
+                assert_partition_batch(&topic_a.partition_data[0], &["next0", "explicit", "after"]);
+                assert_eq!(topic_a.partition_data[1].index, 1);
+                assert_partition_batch(&topic_a.partition_data[1], &["next1"]);
+                let topic_b = &request.topic_data[1];
+                assert_eq!(topic_b.partition_data.len(), 2);
+                assert_eq!(topic_b.partition_data[0].index, 0);
+                assert_partition_batch(&topic_b.partition_data[0], &["nextb0"]);
+                assert_eq!(topic_b.partition_data[1].index, 1);
+                assert_partition_batch(&topic_b.partition_data[1], &["nextb1"]);
+                write_batch_response(&mut socket, correlation, &request, 0).await;
+            });
+            let producer = test_producer(addr, RequiredAcks::One).await;
+            producer
+                .send_all(&[
+                    batch_record("topic-a", 0, "a0"),
+                    batch_record("topic-b", 1, "b1"),
+                    batch_record("topic-a", 1, "a1"),
+                    batch_record("topic-b", 0, "b0"),
+                    batch_record("topic-a", 0, "a2"),
+                ])
+                .await
+                .unwrap();
+            producer
+                .send_all(&[
+                    batch_record("topic-a", -1, "next0"),
+                    batch_record("topic-b", -1, "nextb0"),
+                    batch_record("topic-a", -1, "next1"),
+                    batch_record("topic-b", -1, "nextb1"),
+                    batch_record("topic-a", 0, "explicit"),
+                    batch_record("topic-a", -1, "after"),
+                ])
+                .await
+                .unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .expect("cached hosts must survive metadata replacement and preserve grouped routing");
     }
 
     #[tokio::test]
@@ -1704,7 +1796,6 @@ mod tests {
 
     fn build_test_request(compression: Compression) -> Result<(RequestHeader, ProduceRequest)> {
         let mut broker = BrokerRecords {
-            host: "broker:9092".to_owned(),
             topics: Vec::new(),
             topic_indices: HashMap::new(),
         };
@@ -1715,6 +1806,13 @@ mod tests {
         ] {
             add_record_to_broker(&mut broker, 0, &record)?;
         }
-        build_produce_request(1, "client-a", 1, 30_000, compression, broker.topics)
+        build_produce_request(
+            1,
+            &StrBytes::from_static_str("client-a"),
+            1,
+            30_000,
+            compression,
+            broker.topics,
+        )
     }
 }
