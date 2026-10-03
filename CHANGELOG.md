@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sticky partitioning now maintains per-topic state, reselects unavailable partitions, and avoids per-message mutex locking.
 - Sync consumers honor pause/resume in normal and retry fetches, accept committed offsets at the earliest retained boundary, and cap retry buffer growth without overflow.
 - OffsetFetch top-level errors now participate in retry and coordinator rediscovery; unavailable coordinator connections return an error instead of panicking.
 - Fetch decoding now consumes every batch, including empty compacted batches, rejects corrupt tails, and moves decoded payloads without redundant Bytes clones.
