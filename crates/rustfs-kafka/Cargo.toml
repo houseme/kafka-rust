@@ -10,7 +10,6 @@ license.workspace = true
 readme = "readme.md"
 repository.workspace = true
 description.workspace = true
-rust-version.workspace = true
 
 [lints]
 workspace = true
