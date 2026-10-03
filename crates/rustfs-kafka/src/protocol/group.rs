@@ -5,17 +5,17 @@
 //! and `LeaveGroup`.
 
 use bytes::{Buf, BytesMut};
-use kafka_protocol::messages::{RequestHeader, ResponseHeader};
+use kafka_protocol::messages::{ApiKey, RequestHeader};
+use kafka_protocol::protocol::Encodable;
 use kafka_protocol::protocol::StrBytes;
-use kafka_protocol::protocol::{Decodable, Encodable};
 
 use crate::error::{Error, Result};
 use crate::network::KafkaConnection;
 
-pub const API_KEY_JOIN_GROUP: i16 = 11;
-pub const API_KEY_SYNC_GROUP: i16 = 12;
-pub const API_KEY_HEARTBEAT: i16 = 13;
-pub const API_KEY_LEAVE_GROUP: i16 = 14;
+pub const API_KEY_JOIN_GROUP: i16 = ApiKey::JoinGroup as i16;
+pub const API_KEY_SYNC_GROUP: i16 = ApiKey::SyncGroup as i16;
+pub const API_KEY_HEARTBEAT: i16 = ApiKey::Heartbeat as i16;
+pub const API_KEY_LEAVE_GROUP: i16 = ApiKey::LeaveGroup as i16;
 
 pub const API_VERSION_JOIN_GROUP: i16 = 1;
 pub const API_VERSION_SYNC_GROUP: i16 = 1;
@@ -56,24 +56,13 @@ fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
     Ok(s)
 }
 
-fn decode_bytes(bytes: &mut bytes::Bytes) -> Result<bytes::Bytes> {
-    if bytes.len() < 4 {
-        return Err(Error::codec());
-    }
-    let len = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-    ]))?;
-    bytes.advance(4);
-    if bytes.len() < len {
-        return Err(Error::codec());
-    }
-    Ok(bytes.split_to(len))
-}
-
 fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<bytes::Bytes> {
     let mut header_buf = BytesMut::new();
+    let header_version = ApiKey::try_from(header.request_api_key)
+        .map_err(|()| Error::codec())?
+        .request_header_version(api_version);
     header
-        .encode(&mut header_buf, api_version)
+        .encode(&mut header_buf, header_version)
         .map_err(|_| Error::codec())?;
 
     let total_len = crate::protocol::usize_to_i32(header_buf.len() + body.len())?;
@@ -84,16 +73,6 @@ fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<
     out.extend_from_slice(body);
 
     Ok(out.freeze())
-}
-
-fn read_response(conn: &mut KafkaConnection, _api_version: i16) -> Result<bytes::Bytes> {
-    let mut buf = [0u8; 4];
-    conn.read_exact(&mut buf)?;
-    let size = i32::from_be_bytes(buf);
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let mut bytes = resp_bytes;
-    let _header = ResponseHeader::decode(&mut bytes, 0).map_err(|_| Error::codec())?;
-    Ok(bytes)
 }
 
 // --------------------------------------------------------------------
@@ -189,70 +168,24 @@ pub fn fetch_join_group(
         protocol_type,
         protocols,
     )?;
-    conn.send(&request_bytes)?;
-
-    let mut bytes = read_response(conn, version)?;
-
-    let error_code = if bytes.len() < 2 {
-        return Err(Error::codec());
-    } else {
-        let v = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-        v
-    };
-
-    let generation_id = if bytes.len() < 4 {
-        return Err(Error::codec());
-    } else {
-        let v = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        bytes.advance(4);
-        v
-    };
-
-    let protocol_type = if bytes.is_empty() {
-        None
-    } else {
-        Some(decode_string(&mut bytes)?)
-    };
-
-    let protocol_name = if bytes.is_empty() {
-        None
-    } else {
-        Some(decode_string(&mut bytes)?)
-    };
-
-    let leader_id = decode_string(&mut bytes)?;
-    let member_id = decode_string(&mut bytes)?;
-
-    let num_members = if bytes.len() < 4 {
-        return Err(Error::codec());
-    } else {
-        let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-        ]))?;
-        bytes.advance(4);
-        v
-    };
-
-    let mut members = Vec::with_capacity(num_members);
-    for _ in 0..num_members {
-        let mid = decode_string(&mut bytes)?;
-        let metadata = decode_bytes(&mut bytes)?;
-        members.push(GroupMember {
-            member_id: mid,
-            group_instance_id: None,
-            metadata,
-        });
-    }
-
+    conn.send_request(&request_bytes, correlation_id, version)?;
+    let response = conn.read_response::<kafka_protocol::messages::JoinGroupResponse>(version)?;
     Ok(JoinGroupResponseData {
-        error_code,
-        generation_id,
-        protocol_type,
-        protocol_name,
-        leader_id,
-        member_id,
-        members,
+        error_code: response.error_code,
+        generation_id: response.generation_id,
+        protocol_type: response.protocol_type.map(|value| value.to_string()),
+        protocol_name: response.protocol_name.map(|value| value.to_string()),
+        leader_id: response.leader.to_string(),
+        member_id: response.member_id.to_string(),
+        members: response
+            .members
+            .into_iter()
+            .map(|member| GroupMember {
+                member_id: member.member_id.to_string(),
+                group_instance_id: member.group_instance_id.map(|value| value.to_string()),
+                metadata: member.metadata,
+            })
+            .collect(),
     })
 }
 
@@ -328,23 +261,11 @@ pub fn fetch_sync_group(
         group_instance_id,
         group_assignment,
     )?;
-    conn.send(&request_bytes)?;
-
-    let mut bytes = read_response(conn, version)?;
-
-    let error_code = if bytes.len() < 2 {
-        return Err(Error::codec());
-    } else {
-        let v = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-        v
-    };
-
-    let assignment = decode_bytes(&mut bytes)?;
-
+    conn.send_request(&request_bytes, correlation_id, version)?;
+    let response = conn.read_response::<kafka_protocol::messages::SyncGroupResponse>(version)?;
     Ok(SyncGroupResponseData {
-        error_code,
-        assignment,
+        error_code: response.error_code,
+        assignment: response.assignment,
     })
 }
 
@@ -402,19 +323,11 @@ pub fn fetch_heartbeat(
         member_id,
         group_instance_id,
     )?;
-    conn.send(&request_bytes)?;
-
-    let mut bytes = read_response(conn, version)?;
-
-    let error_code = if bytes.len() < 2 {
-        return Err(Error::codec());
-    } else {
-        let v = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-        v
-    };
-
-    Ok(HeartbeatResponseData { error_code })
+    conn.send_request(&request_bytes, correlation_id, version)?;
+    let response = conn.read_response::<kafka_protocol::messages::HeartbeatResponse>(version)?;
+    Ok(HeartbeatResponseData {
+        error_code: response.error_code,
+    })
 }
 
 // --------------------------------------------------------------------
@@ -477,19 +390,11 @@ pub fn fetch_leave_group(
 ) -> Result<LeaveGroupResponseData> {
     let version = API_VERSION_LEAVE_GROUP;
     let request_bytes = build_leave_group_request(correlation_id, client_id, group_id, members)?;
-    conn.send(&request_bytes)?;
-
-    let mut bytes = read_response(conn, version)?;
-
-    let error_code = if bytes.len() < 2 {
-        return Err(Error::codec());
-    } else {
-        let v = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-        v
-    };
-
-    Ok(LeaveGroupResponseData { error_code })
+    conn.send_request(&request_bytes, correlation_id, version)?;
+    let response = conn.read_response::<kafka_protocol::messages::LeaveGroupResponse>(version)?;
+    Ok(LeaveGroupResponseData {
+        error_code: response.error_code,
+    })
 }
 
 // --------------------------------------------------------------------
@@ -611,6 +516,14 @@ impl MemberAssignment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kafka_protocol::messages::{
+        HeartbeatRequest, HeartbeatResponse, JoinGroupRequest, JoinGroupResponse,
+        LeaveGroupRequest, LeaveGroupResponse, ResponseHeader, SyncGroupRequest, SyncGroupResponse,
+    };
+    use kafka_protocol::protocol::{Decodable, HeaderVersion};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
 
     #[test]
     fn test_member_assignment_roundtrip() {
@@ -711,5 +624,141 @@ mod tests {
         }];
         let req = build_leave_group_request(1, "client", "group", &members);
         assert!(req.is_ok());
+    }
+
+    fn group_response<R: Encodable + HeaderVersion>(correlation: i32, body: &R) -> BytesMut {
+        let mut bytes = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(correlation)
+            .encode(&mut bytes, R::header_version(1))
+            .unwrap();
+        body.encode(&mut bytes, 1).unwrap();
+        bytes
+    }
+
+    fn group_request_reply(key: ApiKey, correlation: i32, bytes: &mut bytes::Bytes) -> BytesMut {
+        let reply = match key {
+            ApiKey::JoinGroup => {
+                let request = JoinGroupRequest::decode(bytes, 1).unwrap();
+                assert_eq!(request.protocol_type.as_str(), "consumer");
+                group_response(correlation, &JoinGroupResponse::default()
+                    .with_generation_id(7)
+                    .with_protocol_name(Some(StrBytes::from_static_str("range")))
+                    .with_leader(StrBytes::from_static_str("leader"))
+                    .with_member_id(StrBytes::from_static_str("member"))
+                    .with_members(vec![kafka_protocol::messages::join_group_response::JoinGroupResponseMember::default()
+                        .with_member_id(StrBytes::from_static_str("member"))
+                        .with_metadata(bytes::Bytes::from_static(b"metadata"))]))
+            }
+            ApiKey::SyncGroup => {
+                SyncGroupRequest::decode(bytes, 1).unwrap();
+                group_response(
+                    correlation,
+                    &SyncGroupResponse::default()
+                        .with_throttle_time_ms(37)
+                        .with_error_code(25)
+                        .with_assignment(bytes::Bytes::from_static(b"assignment")),
+                )
+            }
+            ApiKey::Heartbeat => {
+                HeartbeatRequest::decode(bytes, 1).unwrap();
+                group_response(
+                    correlation,
+                    &HeartbeatResponse::default()
+                        .with_throttle_time_ms(37)
+                        .with_error_code(25),
+                )
+            }
+            ApiKey::LeaveGroup => {
+                LeaveGroupRequest::decode(bytes, 1).unwrap();
+                group_response(
+                    correlation,
+                    &LeaveGroupResponse::default()
+                        .with_throttle_time_ms(37)
+                        .with_error_code(25),
+                )
+            }
+            _ => unreachable!(),
+        };
+        assert!(bytes.is_empty());
+        reply
+    }
+
+    fn serve_group_v1_requests(listener: &TcpListener) {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        for key in [
+            ApiKey::JoinGroup,
+            ApiKey::SyncGroup,
+            ApiKey::Heartbeat,
+            ApiKey::LeaveGroup,
+        ] {
+            let mut size = [0; 4];
+            stream.read_exact(&mut size).unwrap();
+            let mut bytes = vec![0; usize::try_from(i32::from_be_bytes(size)).unwrap()];
+            stream.read_exact(&mut bytes).unwrap();
+            let mut bytes = bytes::Bytes::from(bytes);
+            let header = RequestHeader::decode(&mut bytes, key.request_header_version(1)).unwrap();
+            assert_eq!(header.request_api_key, key as i16);
+            assert_eq!(header.request_api_version, 1);
+            let reply = group_request_reply(key, header.correlation_id, &mut bytes);
+            stream
+                .write_all(&i32::try_from(reply.len()).unwrap().to_be_bytes())
+                .unwrap();
+            stream.write_all(&reply).unwrap();
+        }
+    }
+
+    #[test]
+    fn group_v1_responses_use_generated_layouts_and_request_correlation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || serve_group_v1_requests(&listener));
+        let mut client = crate::client::KafkaClient::builder()
+            .with_conn_rw_timeout(2)
+            .build();
+        let conn = client.get_conn_mut(&host).unwrap();
+        let joined = fetch_join_group(
+            conn,
+            1,
+            "client",
+            "group",
+            10_000,
+            30_000,
+            "",
+            None,
+            "consumer",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(joined.generation_id, 7);
+        assert_eq!(joined.protocol_type, None);
+        assert_eq!(joined.protocol_name.as_deref(), Some("range"));
+        assert_eq!(joined.leader_id, "leader");
+        assert_eq!(joined.member_id, "member");
+        assert_eq!(joined.members[0].metadata.as_ref(), b"metadata");
+        let synced = fetch_sync_group(conn, 2, "client", "group", 7, "member", None, &[]).unwrap();
+        assert_eq!(synced.error_code, 25);
+        assert_eq!(synced.assignment.as_ref(), b"assignment");
+        assert_eq!(
+            fetch_heartbeat(conn, 3, "client", "group", 7, "member", None)
+                .unwrap()
+                .error_code,
+            25
+        );
+        let members = [LeaveMemberRequest {
+            member_id: "member".into(),
+            group_instance_id: None,
+        }];
+        assert_eq!(
+            fetch_leave_group(conn, 4, "client", "group", &members)
+                .unwrap()
+                .error_code,
+            25
+        );
+        assert!(!conn.is_terminated());
+        server.join().unwrap();
     }
 }

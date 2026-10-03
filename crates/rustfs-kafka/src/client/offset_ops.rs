@@ -24,33 +24,6 @@ pub(crate) struct OffsetRequestContext<'a> {
     pub(crate) api_versions: &'a ApiVersionCache,
 }
 
-fn decode_find_coordinator_response(
-    conn: &mut crate::network::KafkaConnection,
-    requested_version: i16,
-) -> Result<kafka_protocol::messages::FindCoordinatorResponse> {
-    use kafka_protocol::messages::{FindCoordinatorResponse, ResponseHeader};
-    use kafka_protocol::protocol::{Decodable, HeaderVersion};
-
-    let size = transport::get_response_size(conn)?;
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-
-    let mut candidate_versions = vec![requested_version, 6, 5, 4, 3, 2, 1, 0];
-    candidate_versions.dedup();
-
-    for version in candidate_versions {
-        let mut bytes = resp_bytes.clone();
-        let header_version = FindCoordinatorResponse::header_version(version);
-        if ResponseHeader::decode(&mut bytes, header_version).is_err() {
-            continue;
-        }
-        if let Ok(resp) = FindCoordinatorResponse::decode(&mut bytes, version) {
-            return Ok(resp);
-        }
-    }
-
-    Err(Error::codec())
-}
-
 pub(crate) fn commit_offsets_kp<'a, J, I>(
     offsets: I,
     group: &str,
@@ -131,7 +104,11 @@ fn get_group_coordinator(
         );
         transport::kp_send_request(conn, &header, &request, api_version)
             .map_err(|e| e.with_broker_context(&host, "FindCoordinator"))?;
-        let kp_resp = decode_find_coordinator_response(conn, api_version)
+        let kp_resp =
+            transport::kp_get_response::<kafka_protocol::messages::FindCoordinatorResponse>(
+                conn,
+                api_version,
+            )
             .map_err(|e| e.with_broker_context(&host, "FindCoordinator"))?;
         let r =
             crate::protocol::consumer::convert_find_coordinator_response(&kp_resp, correlation_id);

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync typed responses now validate pending correlation IDs, request versions, and complete payloads, closing invalid connections. Removed speculative Fetch/FindCoordinator decoding, corrected Group API keys and generated v1 layouts, validated SASL replies, rejected unknown Fetch inputs before IO, and corrected per-topic Fetch metrics.
 - Sync consumers publish fetched offsets, retry buffer changes, and retry queue updates only after every partition response succeeds; failed or incomplete retry fetches keep their pending retry.
 - Transactional producers now use generated transaction codecs, discover transaction coordinators, send producer identity and sequence context, preserve sequences across commit and abort, and block unsafe reuse after RPC failures. Added real-broker isolation and fencing coverage.
 - Async typed requests now track pending correlations, reject mismatched or trailing response data, retire failed or cancelled connections, and avoid replaying low-level Produce after a sending attempt.

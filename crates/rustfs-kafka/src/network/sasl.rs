@@ -18,9 +18,9 @@ use pbkdf2::pbkdf2_hmac_array;
 use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::connection::KafkaStream;
 use super::connection::SaslConfig;
-use crate::error::{Error, KafkaCode, ProtocolError, Result};
+use super::connection::{KafkaStream, StreamOps};
+use crate::error::{Error, KafkaCode, Result};
 
 const API_VERSION_SASL_HANDSHAKE: i16 = 1;
 const API_VERSION_SASL_AUTHENTICATE: i16 = 1;
@@ -36,6 +36,16 @@ pub(crate) fn perform_sasl_authentication(
     stream: &mut KafkaStream,
     sasl: &SaslConfig,
 ) -> Result<()> {
+    let result = perform_sasl_authentication_inner(stream, sasl);
+    if result.is_err() {
+        // Failed authentication never hands a reusable stream to its caller,
+        // including broker rejections and errors outside the frame decoder.
+        let _ = StreamOps::shutdown(stream, std::net::Shutdown::Both);
+    }
+    result
+}
+
+fn perform_sasl_authentication_inner(stream: &mut KafkaStream, sasl: &SaslConfig) -> Result<()> {
     let mechanism = sasl.mechanism().to_owned();
     let correlation_id = 1;
 
@@ -54,7 +64,7 @@ pub(crate) fn perform_sasl_authentication(
         API_VERSION_SASL_HANDSHAKE,
     )?;
     let handshake_response: SaslHandshakeResponse =
-        get_kp_response_from_stream(stream, API_VERSION_SASL_HANDSHAKE)?;
+        get_kp_response_from_stream(stream, API_VERSION_SASL_HANDSHAKE, correlation_id)?;
 
     if handshake_response.error_code != 0 {
         return Err(map_kafka_code_or_unknown(handshake_response.error_code));
@@ -115,7 +125,7 @@ fn perform_sasl_plain_authenticate(
         API_VERSION_SASL_AUTHENTICATE,
     )?;
     let auth_response: SaslAuthenticateResponse =
-        get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE)?;
+        get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE, correlation_id)?;
 
     if auth_response.error_code != 0 {
         return Err(map_kafka_code_or_unknown(auth_response.error_code));
@@ -150,7 +160,7 @@ fn perform_sasl_scram_authenticate(
         API_VERSION_SASL_AUTHENTICATE,
     )?;
     let auth_response_1: SaslAuthenticateResponse =
-        get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE)?;
+        get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE, correlation_id)?;
     if auth_response_1.error_code != 0 {
         return Err(map_kafka_code_or_unknown(auth_response_1.error_code));
     }
@@ -215,7 +225,7 @@ fn perform_sasl_scram_authenticate(
         API_VERSION_SASL_AUTHENTICATE,
     )?;
     let auth_response_2: SaslAuthenticateResponse =
-        get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE)?;
+        get_kp_response_from_stream(stream, API_VERSION_SASL_AUTHENTICATE, correlation_id + 1)?;
     if auth_response_2.error_code != 0 {
         return Err(map_kafka_code_or_unknown(auth_response_2.error_code));
     }
@@ -358,22 +368,129 @@ where
     stream.flush().map_err(Error::from)
 }
 
-fn get_kp_response_from_stream<R>(stream: &mut KafkaStream, api_version: i16) -> Result<R>
+fn get_kp_response_from_stream<R>(
+    stream: &mut KafkaStream,
+    api_version: i16,
+    correlation_id: i32,
+) -> Result<R>
 where
     R: Decodable + HeaderVersion,
 {
-    let mut size_buf = [0u8; 4];
-    stream.read_exact(&mut size_buf).map_err(Error::from)?;
-    let size = i32::from_be_bytes(size_buf);
-    if size < 0 {
-        return Err(Error::Protocol(ProtocolError::Codec));
+    let result = (|| {
+        let mut size_buf = [0u8; 4];
+        stream.read_exact(&mut size_buf)?;
+        let size = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes(size_buf))?;
+        let mut payload = vec![0u8; size];
+        stream.read_exact(&mut payload)?;
+        crate::protocol::decode_response_payload_checked(
+            Bytes::from(payload),
+            api_version,
+            correlation_id,
+        )
+    })();
+    if result.is_err() {
+        let _ = StreamOps::shutdown(stream, std::net::Shutdown::Both);
     }
-
-    let mut payload = vec![0u8; usize::try_from(size).map_err(|_| Error::codec())?];
-    stream.read_exact(&mut payload).map_err(Error::from)?;
-    crate::protocol::decode_response_payload(Bytes::from(payload), api_version)
+    result
 }
 
 fn map_kafka_code_or_unknown(code: i16) -> Error {
     Error::from_protocol(code).unwrap_or(Error::Kafka(KafkaCode::Unknown))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use kafka_protocol::messages::ResponseHeader;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    #[test]
+    fn invalid_handshake_frames_close_stream_without_sending_credentials() {
+        for defect in [
+            "wrong-correlation",
+            "trailing-data",
+            "negative-size",
+            "short-body",
+            "truncated-frame",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut size = [0; 4];
+                stream.read_exact(&mut size).unwrap();
+                let mut bytes = vec![0; usize::try_from(i32::from_be_bytes(size)).unwrap()];
+                stream.read_exact(&mut bytes).unwrap();
+                let mut bytes = Bytes::from(bytes);
+                let header = RequestHeader::decode(
+                    &mut bytes,
+                    SaslHandshakeRequest::header_version(API_VERSION_SASL_HANDSHAKE),
+                )
+                .unwrap();
+                assert_eq!(header.request_api_key, ApiKey::SaslHandshake as i16);
+                let request =
+                    SaslHandshakeRequest::decode(&mut bytes, API_VERSION_SASL_HANDSHAKE).unwrap();
+                assert_eq!(request.mechanism.as_str(), "PLAIN");
+                assert!(bytes.is_empty());
+                let mut response = BytesMut::new();
+                ResponseHeader::default()
+                    .with_correlation_id(
+                        header.correlation_id + i32::from(defect == "wrong-correlation"),
+                    )
+                    .encode(
+                        &mut response,
+                        SaslHandshakeResponse::header_version(API_VERSION_SASL_HANDSHAKE),
+                    )
+                    .unwrap();
+                if defect != "short-body" {
+                    SaslHandshakeResponse::default()
+                        .with_mechanisms(vec![StrBytes::from_static_str("PLAIN")])
+                        .encode(&mut response, API_VERSION_SASL_HANDSHAKE)
+                        .unwrap();
+                }
+                if defect == "trailing-data" {
+                    response.extend_from_slice(&[0]);
+                }
+                let size = if defect == "negative-size" {
+                    -1
+                } else {
+                    i32::try_from(response.len()).unwrap() + i32::from(defect == "truncated-frame")
+                };
+                stream.write_all(&size.to_be_bytes()).unwrap();
+                if size >= 0 {
+                    stream.write_all(&response).unwrap();
+                }
+                if defect == "truncated-frame" {
+                    stream.shutdown(std::net::Shutdown::Write).unwrap();
+                }
+                let mut credential_byte = [0];
+                assert_eq!(
+                    stream
+                        .read(&mut credential_byte)
+                        .unwrap_or_else(|err| panic!(
+                            "{defect}: expected closed handshake stream: {err}"
+                        )),
+                    0,
+                    "invalid handshake caused credential transmission"
+                );
+            });
+            let stream = TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut stream = KafkaStream::Plain(stream);
+            let sasl = SaslConfig::plain("username".into(), "password".into());
+            let result = perform_sasl_authentication(&mut stream, &sasl);
+            assert!(result.is_err(), "accepted invalid {defect}");
+            // Match KafkaConnection::new: failed authentication drops its owned
+            // stream, including when the peer half-closes a truncated response.
+            drop(stream);
+            server.join().unwrap();
+        }
+    }
 }

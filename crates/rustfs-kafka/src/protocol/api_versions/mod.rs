@@ -199,20 +199,8 @@ fn fetch_api_versions_response_raw(
     let out =
         crate::protocol::encode_request_frame(&header, &request, API_VERSIONS_REQUEST_VERSION)?;
 
-    conn.send(&out)?;
-
-    let size = {
-        let mut buf = [0u8; 4];
-        conn.read_exact(&mut buf)?;
-        i32::from_be_bytes(buf)
-    };
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-    let kp_resp = crate::protocol::decode_response_payload::<ApiVersionsResponse>(
-        resp_bytes,
-        API_VERSIONS_REQUEST_VERSION,
-    )?;
-
-    Ok(kp_resp)
+    conn.send_request(&out, correlation_id, API_VERSIONS_REQUEST_VERSION)?;
+    conn.read_response::<ApiVersionsResponse>(API_VERSIONS_REQUEST_VERSION)
 }
 
 /// Stores negotiated API versions per broker.

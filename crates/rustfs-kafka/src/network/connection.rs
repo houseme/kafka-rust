@@ -256,6 +256,7 @@ pub struct KafkaConnection {
     host: String,
     stream: KafkaStream,
     state: ConnectionState,
+    pending_response: Option<(i32, i16)>,
 }
 
 /// Connection health state for detecting broken connections.
@@ -301,9 +302,47 @@ impl KafkaConnection {
             .and_then(|()| self.stream.flush())
             .map_err(|e| {
                 self.state = ConnectionState::Terminated;
+                self.pending_response = None;
                 crate::error::Error::from(e)
             })?;
         Ok(msg.len())
+    }
+
+    pub(crate) fn send_request(
+        &mut self,
+        frame: &[u8],
+        correlation_id: i32,
+        api_version: i16,
+    ) -> Result<()> {
+        self.send(frame)?;
+        // A Produce with acks=0 has no response. The next typed request replaces
+        // that context; raw send never inspects bytes to guess a request header.
+        self.pending_response = Some((correlation_id, api_version));
+        Ok(())
+    }
+
+    pub(crate) fn read_response<R>(&mut self, api_version: i16) -> Result<R>
+    where
+        R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+    {
+        let result = (|| {
+            let (correlation_id, requested_version) = self
+                .pending_response
+                .take()
+                .ok_or_else(crate::error::Error::codec)?;
+            if requested_version != api_version {
+                return Err(crate::error::Error::codec());
+            }
+            let mut size = [0; 4];
+            self.read_exact(&mut size)?;
+            let len = crate::protocol::non_negative_i32_to_u64(i32::from_be_bytes(size))?;
+            let bytes = self.read_exact_alloc(len)?;
+            crate::protocol::decode_response_payload_checked(bytes, api_version, correlation_id)
+        })();
+        if result.is_err() {
+            let _ = self.shutdown();
+        }
+        result
     }
 
     pub(crate) fn is_terminated(&self) -> bool {
@@ -327,6 +366,7 @@ impl KafkaConnection {
 
     pub(crate) fn shutdown(&mut self) -> Result<()> {
         self.state = ConnectionState::Terminated;
+        self.pending_response = None;
         let r = StreamOps::shutdown(&mut self.stream, Shutdown::Both);
         debug!("Shut down: {:?} => {:?}", self, r);
         r.map_err(From::from)
@@ -345,6 +385,7 @@ impl KafkaConnection {
             host: host.to_owned(),
             stream,
             state: ConnectionState::Connected,
+            pending_response: None,
         })
     }
 

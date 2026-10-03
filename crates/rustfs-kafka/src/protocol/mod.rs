@@ -166,8 +166,30 @@ where
 /// # Errors
 ///
 /// Returns an error if the response header or body cannot be decoded for the
-/// selected API version.
-pub fn decode_response_payload<R>(mut bytes: bytes::Bytes, api_version: i16) -> Result<R>
+/// selected API version, or if the payload contains trailing bytes.
+pub fn decode_response_payload<R>(bytes: bytes::Bytes, api_version: i16) -> Result<R>
+where
+    R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+{
+    decode_response_payload_inner(bytes, api_version, None)
+}
+
+pub(crate) fn decode_response_payload_checked<R>(
+    bytes: bytes::Bytes,
+    api_version: i16,
+    correlation_id: i32,
+) -> Result<R>
+where
+    R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
+{
+    decode_response_payload_inner(bytes, api_version, Some(correlation_id))
+}
+
+fn decode_response_payload_inner<R>(
+    mut bytes: bytes::Bytes,
+    api_version: i16,
+    correlation_id: Option<i32>,
+) -> Result<R>
 where
     R: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
 {
@@ -175,10 +197,16 @@ where
     use kafka_protocol::protocol::Decodable;
 
     let response_header_version = R::header_version(api_version);
-    let _resp_header =
+    let resp_header =
         ResponseHeader::decode(&mut bytes, response_header_version).map_err(|_| Error::codec())?;
-
-    R::decode(&mut bytes, api_version).map_err(|_| Error::codec())
+    if correlation_id.is_some_and(|expected| resp_header.correlation_id != expected) {
+        return Err(Error::codec());
+    }
+    let response = R::decode(&mut bytes, api_version).map_err(|_| Error::codec())?;
+    if !bytes.is_empty() {
+        return Err(Error::codec());
+    }
+    Ok(response)
 }
 
 // --------------------------------------------------------------------
@@ -485,5 +513,36 @@ mod frame_tests {
             Some("test-client".to_owned())
         );
         assert!(!bytes.has_remaining());
+    }
+
+    #[test]
+    fn public_and_checked_decoders_require_a_complete_payload_at_its_version() {
+        use kafka_protocol::messages::{FetchResponse, ResponseHeader};
+
+        for version in [4, 12] {
+            let mut bytes = bytes::BytesMut::new();
+            ResponseHeader::default()
+                .with_correlation_id(42)
+                .encode(&mut bytes, FetchResponse::header_version(version))
+                .unwrap();
+            FetchResponse::default()
+                .encode(&mut bytes, version)
+                .unwrap();
+            let payload = bytes.clone().freeze();
+            assert!(decode_response_payload::<FetchResponse>(payload.clone(), version).is_ok());
+            assert!(
+                decode_response_payload_checked::<FetchResponse>(payload.clone(), version, 42)
+                    .is_ok()
+            );
+            assert!(
+                decode_response_payload_checked::<FetchResponse>(payload, version, 43).is_err()
+            );
+            bytes.extend_from_slice(&[0]);
+            let trailing = bytes.freeze();
+            assert!(decode_response_payload::<FetchResponse>(trailing.clone(), version).is_err());
+            assert!(
+                decode_response_payload_checked::<FetchResponse>(trailing, version, 42).is_err()
+            );
+        }
     }
 }

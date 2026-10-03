@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, KafkaCode, Result};
 
 use super::FetchPartition;
 use super::config::ClientConfig;
@@ -14,38 +14,6 @@ use super::state::ClientState;
 use super::transport;
 use crate::network::Connections;
 use crate::protocol::api_versions::ApiVersionCache;
-
-fn decode_fetch_response(
-    conn: &mut crate::network::KafkaConnection,
-    requested_version: i16,
-) -> Result<kafka_protocol::messages::FetchResponse> {
-    use kafka_protocol::messages::{FetchResponse, ResponseHeader};
-    use kafka_protocol::protocol::{Decodable, HeaderVersion};
-
-    let size = transport::get_response_size(conn)?;
-    let resp_bytes = conn.read_exact_alloc(crate::protocol::non_negative_i32_to_u64(size)?)?;
-
-    let mut candidates = Vec::with_capacity(1 + 18);
-    candidates.push(requested_version);
-    for v in (0..=17).rev() {
-        if v != requested_version {
-            candidates.push(v);
-        }
-    }
-
-    for version in candidates {
-        let mut bytes = resp_bytes.clone();
-        let header_version = FetchResponse::header_version(version);
-        if ResponseHeader::decode(&mut bytes, header_version).is_err() {
-            continue;
-        }
-        if let Ok(resp) = FetchResponse::decode(&mut bytes, version) {
-            return Ok(resp);
-        }
-    }
-
-    Err(Error::codec())
-}
 
 #[tracing::instrument(skip(conn_pool, state, config, input))]
 pub fn fetch_messages_kp<'a, I, J>(
@@ -66,18 +34,19 @@ where
     let mut broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>> = HashMap::new();
     for inp in input {
         let inp = inp.as_ref();
-        if let Some(broker) = state.find_broker(inp.topic, inp.partition) {
-            broker_partitions.entry(broker).or_default().push((
-                inp.topic,
-                inp.partition,
-                inp.offset,
-                if inp.max_bytes > 0 {
-                    inp.max_bytes
-                } else {
-                    config.fetch_max_bytes_per_partition()
-                },
-            ));
-        }
+        let broker = state
+            .find_broker(inp.topic, inp.partition)
+            .ok_or(Error::Kafka(KafkaCode::UnknownTopicOrPartition))?;
+        broker_partitions.entry(broker).or_default().push((
+            inp.topic,
+            inp.partition,
+            inp.offset,
+            if inp.max_bytes > 0 {
+                inp.max_bytes
+            } else {
+                config.fetch_max_bytes_per_partition()
+            },
+        ));
     }
 
     let result = fetch_messages_inner(
@@ -95,10 +64,10 @@ where
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         match &result {
             Ok(responses) => {
-                let mut total_bytes: usize = 0;
-                let mut total_messages: usize = 0;
                 for resp in responses {
                     for t in &resp.topics {
+                        let mut total_bytes: usize = 0;
+                        let mut total_messages: usize = 0;
                         for p in &t.partitions {
                             if let Ok(data) = p.data() {
                                 total_messages += data.messages.len();
@@ -158,10 +127,61 @@ fn fetch_messages_inner(
         );
         transport::kp_send_request(conn, &header, &request, api_version)
             .map_err(|e| e.with_broker_context(host, "Fetch"))?;
-        let kp_resp = decode_fetch_response(conn, api_version)
-            .map_err(|e| e.with_broker_context(host, "Fetch"))?;
+        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::FetchResponse>(
+            conn,
+            api_version,
+        )
+        .map_err(|e| e.with_broker_context(host, "Fetch"))?;
         let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
         res.push(owned);
     }
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::metadata::{
+        BrokerMetadata, MetadataResponseData, PartitionMetadata, TopicMetadata,
+    };
+    use std::io::ErrorKind;
+    use std::net::TcpListener;
+
+    #[test]
+    fn unknown_fetch_input_is_rejected_before_contacting_any_valid_broker() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = crate::client::KafkaClient::builder()
+            .with_conn_rw_timeout(1)
+            .build();
+        client.state.update_metadata(MetadataResponseData {
+            brokers: vec![BrokerMetadata {
+                node_id: 1,
+                host: "127.0.0.1".into(),
+                port: i32::from(address.port()),
+            }],
+            topics: vec![TopicMetadata {
+                topic: "known".into(),
+                partitions: vec![PartitionMetadata {
+                    id: 0,
+                    leader: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        for unknown in [
+            FetchPartition::new("unknown", 0, 0),
+            FetchPartition::new("known", 1, 0),
+        ] {
+            let result = client.fetch_messages([FetchPartition::new("known", 0, 0), unknown]);
+            assert!(matches!(
+                result,
+                Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+            ));
+            assert_eq!(listener.accept().unwrap_err().kind(), ErrorKind::WouldBlock);
+        }
+    }
 }

@@ -1012,8 +1012,20 @@ mod pause_resume_tests {
         consumer.state.retry_partitions.clear();
         let tp = topic_partition(&consumer, 0);
         consumer.state.retry_partitions.push_back(tp);
-        // No broker metadata means the client has no response for this retry.
-        assert!(consumer.poll().unwrap().is_empty());
+        // Missing metadata is rejected before the client can issue this retry.
+        assert!(matches!(
+            consumer.poll(),
+            Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+        ));
+        assert_eq!(fetch_progress(&consumer), before);
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+        let retry = Some(topic_partition(&consumer, 0));
+        assert!(
+            consumer
+                .process_fetch_responses(1, retry, Vec::new())
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(fetch_progress(&consumer), before);
         assert_eq!(consumer.state.retry_partitions.len(), 1);
     }
