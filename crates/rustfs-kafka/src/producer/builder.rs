@@ -156,12 +156,12 @@ impl<P> Builder<P> {
             conn_idle_timeout: self.conn_idle_timeout,
             required_acks: self.required_acks,
             partitioner,
-            security_config: None,
-            client_id: None,
+            security_config: self.security_config,
+            client_id: self.client_id,
             enable_idempotence: self.enable_idempotence,
             transactional_id: self.transactional_id,
             #[cfg(feature = "producer_timestamp")]
-            producer_timestamp: None,
+            producer_timestamp: self.producer_timestamp,
         }
     }
 
@@ -214,5 +214,53 @@ impl<P> Builder<P> {
             state,
             config: producer_config,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::producer::RoundRobinPartitioner;
+
+    #[test]
+    fn custom_partitioner_preserves_producer_configuration() {
+        let builder = Producer::from_hosts(vec!["broker:9092".to_owned()])
+            .with_client_id("custom-client".to_owned())
+            .with_ack_timeout(Duration::from_secs(7))
+            .with_connection_idle_timeout(Duration::from_secs(11))
+            .with_transactional_id("transaction-id")
+            .with_partitioner(RoundRobinPartitioner::new());
+
+        assert_eq!(builder.hosts, vec!["broker:9092"]);
+        assert_eq!(builder.client_id.as_deref(), Some("custom-client"));
+        assert_eq!(builder.ack_timeout, Duration::from_secs(7));
+        assert_eq!(builder.conn_idle_timeout, Duration::from_secs(11));
+        assert!(matches!(builder.required_acks, RequiredAcks::All));
+        assert!(builder.enable_idempotence);
+        assert_eq!(builder.transactional_id.as_deref(), Some("transaction-id"));
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn custom_partitioner_preserves_security_configuration() {
+        let builder = Producer::from_hosts(Vec::new())
+            .with_security(SecurityConfig::new().with_sasl_plain("user".into(), "password".into()))
+            .with_partitioner(RoundRobinPartitioner::new());
+
+        let security = builder.security_config.unwrap();
+        assert_eq!(security.sasl_config.unwrap().username(), "user");
+    }
+
+    #[cfg(feature = "producer_timestamp")]
+    #[test]
+    fn custom_partitioner_preserves_producer_timestamp() {
+        let builder = Producer::from_hosts(Vec::new())
+            .with_timestamp(ProducerTimestamp::LogAppendTime)
+            .with_partitioner(RoundRobinPartitioner::new());
+
+        assert!(matches!(
+            builder.producer_timestamp,
+            Some(ProducerTimestamp::LogAppendTime)
+        ));
     }
 }

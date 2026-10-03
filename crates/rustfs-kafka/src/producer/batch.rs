@@ -347,8 +347,8 @@ impl<P> BatchProducerBuilder<P> {
             required_acks: self.required_acks,
             partitioner,
             batch_config: self.batch_config,
-            security_config: None,
-            client_id: None,
+            security_config: self.security_config,
+            client_id: self.client_id,
         }
     }
 
@@ -413,6 +413,41 @@ impl<P> BatchProducerBuilder<P> {
 mod tests {
     use super::super::config::{DEFAULT_BATCH_SIZE, DEFAULT_LINGER_MS, DEFAULT_MAX_BATCH_BYTES};
     use super::*;
+
+    #[test]
+    fn custom_partitioner_preserves_batch_configuration() {
+        let builder = BatchProducer::from_hosts(vec!["broker:9092".to_owned()])
+            .with_client_id("batch-client".to_owned())
+            .with_ack_timeout(Duration::from_secs(7))
+            .with_connection_idle_timeout(Duration::from_secs(11))
+            .with_required_acks(RequiredAcks::All)
+            .with_batch_config(BatchConfig {
+                batch_size: 100,
+                linger_ms: 20,
+                max_bytes: 8192,
+            })
+            .with_partitioner(super::super::RoundRobinPartitioner::new());
+
+        assert_eq!(builder.hosts, vec!["broker:9092"]);
+        assert_eq!(builder.client_id.as_deref(), Some("batch-client"));
+        assert_eq!(builder.ack_timeout, Duration::from_secs(7));
+        assert_eq!(builder.conn_idle_timeout, Duration::from_secs(11));
+        assert!(matches!(builder.required_acks, RequiredAcks::All));
+        assert_eq!(builder.batch_config.batch_size, 100);
+        assert_eq!(builder.batch_config.linger_ms, 20);
+        assert_eq!(builder.batch_config.max_bytes, 8192);
+    }
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn custom_partitioner_preserves_batch_security_configuration() {
+        let builder = BatchProducer::from_hosts(Vec::new())
+            .with_security(SecurityConfig::new().with_sasl_plain("user".into(), "password".into()))
+            .with_partitioner(super::super::RoundRobinPartitioner::new());
+
+        let security = builder.security_config.unwrap();
+        assert_eq!(security.sasl_config.unwrap().username(), "user");
+    }
 
     #[test]
     fn test_batch_config_default() {

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Producer and batch producer builders retain TLS, client ID, and timestamp configuration when selecting a custom partitioner.
 - Sticky partitioning now maintains per-topic state, reselects unavailable partitions, and avoids per-message mutex locking.
 - Sync consumers honor pause/resume in normal and retry fetches, accept committed offsets at the earliest retained boundary, and cap retry buffer growth without overflow.
 - OffsetFetch top-level errors now participate in retry and coordinator rediscovery; unavailable coordinator connections return an error instead of panicking.
