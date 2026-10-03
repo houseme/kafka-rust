@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync consumers publish fetched offsets, retry buffer changes, and retry queue updates only after every partition response succeeds; failed or incomplete retry fetches keep their pending retry.
 - Fixed crate package readme paths so published packages use the intended crate readmes.
 
 ## [1.3.0] - 2026-09-04

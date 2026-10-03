@@ -131,12 +131,16 @@ impl State {
             })
     }
 
-    pub fn next_retry_partition(&mut self) -> Option<TopicPartition> {
-        let index = self
-            .retry_partitions
+    pub fn next_retry_partition(&self) -> Option<&TopicPartition> {
+        self.retry_partitions
             .iter()
-            .position(|tp| !self.paused_assignments.contains(tp))?;
-        self.retry_partitions.remove(index)
+            .find(|tp| !self.paused_assignments.contains(*tp))
+    }
+
+    pub fn complete_retry_partition(&mut self, partition: &TopicPartition) {
+        if let Some(index) = self.retry_partitions.iter().position(|tp| tp == partition) {
+            self.retry_partitions.remove(index);
+        }
     }
 
     /// Returns a wrapper around `self.fetch_offsets` for nice dumping

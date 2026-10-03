@@ -214,9 +214,9 @@ impl Consumer {
     /// the response cannot be decoded.
     #[tracing::instrument(skip(self))]
     pub fn poll(&mut self) -> Result<MessageSets> {
-        let (n, resps) = self.fetch_messages();
+        let (n, retry_partition, resps) = self.fetch_messages();
         let resps = resps?;
-        self.process_fetch_responses(n, resps)
+        self.process_fetch_responses(n, retry_partition, resps)
     }
 
     #[must_use]
@@ -287,10 +287,24 @@ impl Consumer {
         }
     }
 
-    fn fetch_messages(&mut self) -> (u32, Result<Vec<fetch_kp::OwnedFetchResponse>>) {
-        if let Some(tp) = self.state.next_retry_partition() {
+    fn fetch_messages(
+        &mut self,
+    ) -> (
+        u32,
+        Option<TopicPartition>,
+        Result<Vec<fetch_kp::OwnedFetchResponse>>,
+    ) {
+        let retry_partition = self.state.next_retry_partition().map(|tp| TopicPartition {
+            topic_ref: tp.topic_ref,
+            partition: tp.partition,
+        });
+        if let Some(tp) = retry_partition {
             let Some(s) = self.state.fetch_offsets.get(&tp) else {
-                return (1, Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition)));
+                return (
+                    1,
+                    Some(tp),
+                    Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition)),
+                );
             };
 
             let topic = self.state.topic_name(tp.topic_ref);
@@ -298,12 +312,10 @@ impl Consumer {
                 "fetching retry messages: (fetch-offset: {{\"{}:{}\": {:?}}})",
                 topic, tp.partition, s
             );
-            (
-                1,
-                self.client.fetch_messages_kp(std::iter::once(
-                    &FetchPartition::new(topic, tp.partition, s.offset).with_max_bytes(s.max_bytes),
-                )),
-            )
+            let result = self.client.fetch_messages_kp(std::iter::once(
+                &FetchPartition::new(topic, tp.partition, s.offset).with_max_bytes(s.max_bytes),
+            ));
+            (1, Some(tp), result)
         } else {
             let client = &mut self.client;
             let state = &self.state;
@@ -313,22 +325,25 @@ impl Consumer {
             );
             let reqs: Vec<FetchPartition<'_>> = state.fetch_requests().collect();
             if reqs.is_empty() {
-                return (0, Ok(Vec::new()));
+                return (0, None, Ok(Vec::new()));
             }
             #[allow(clippy::cast_possible_truncation)] // partition count won't exceed u32
             let num_partitions = reqs.len() as u32;
-            (num_partitions, client.fetch_messages_kp(reqs.iter()))
+            (num_partitions, None, client.fetch_messages_kp(reqs.iter()))
         }
     }
 
     fn process_fetch_responses(
         &mut self,
         num_partitions_queried: u32,
+        retry_partition: Option<TopicPartition>,
         resps: Vec<fetch_kp::OwnedFetchResponse>,
     ) -> Result<MessageSets> {
         let single_partition_consumer = self.single_partition_consumer();
         let mut empty = true;
-        let retry_partitions = &mut self.state.retry_partitions;
+        let mut fetch_updates: HashMap<TopicPartition, state::FetchState, state::PartitionHasher> =
+            HashMap::default();
+        let mut retry_updates = Vec::new();
 
         for resp in &resps {
             for t in &resp.topics {
@@ -344,32 +359,24 @@ impl Consumer {
                         partition: p.partition,
                     };
 
-                    let data = match p.data() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            if let Error::TopicPartitionError {
-                                error_code: KafkaCode::OffsetOutOfRange,
-                                ..
-                            } = e.as_ref()
-                            {
-                                if let Some(fetch_state) = self.state.fetch_offsets.get_mut(&tp) {
-                                    debug!(
-                                        "OffsetOutOfRange for {}:{}, resetting to highwatermark {}",
-                                        &t.topic, tp.partition, p.highwatermark
-                                    );
-                                    fetch_state.offset = p.highwatermark;
-                                }
-                                continue;
-                            }
-                            return Err(Error::from(Arc::clone(e)));
-                        }
+                    let Some(data) =
+                        self.stage_partition_data(&t.topic, &tp, p, &mut fetch_updates)?
+                    else {
+                        continue;
                     };
 
-                    let fetch_state = self
+                    let current = self
                         .state
                         .fetch_offsets
-                        .get_mut(&tp)
+                        .get(&tp)
                         .expect("non-requested partition");
+                    let fetch_state =
+                        fetch_updates
+                            .entry(tp)
+                            .or_insert_with(|| state::FetchState {
+                                offset: current.offset,
+                                max_bytes: current.max_bytes,
+                            });
                     if let Some(last_msg) = data.messages.last() {
                         fetch_state.offset = last_msg.offset + 1;
                         empty = false;
@@ -379,7 +386,7 @@ impl Consumer {
                             fetch_state.max_bytes = self.client.fetch_max_bytes_per_partition();
                             debug!(
                                 "reset max_bytes for {}:{} from {} to {}",
-                                &t.topic, tp.partition, prev_max_bytes, fetch_state.max_bytes
+                                &t.topic, p.partition, prev_max_bytes, fetch_state.max_bytes
                             );
                         }
                     } else {
@@ -387,7 +394,7 @@ impl Consumer {
                             "no data received for {}:{} (max_bytes: {} / fetch_offset: {} / \
                                 highwatermark_offset: {})",
                             &t.topic,
-                            tp.partition,
+                            p.partition,
                             fetch_state.max_bytes,
                             fetch_state.offset,
                             data.highwatermark_offset
@@ -401,14 +408,17 @@ impl Consumer {
                                     .min(self.config.retry_max_bytes_limit);
                                 debug!(
                                     "increased max_bytes for {}:{} from {} to {}",
-                                    &t.topic, tp.partition, prev_max_bytes, fetch_state.max_bytes
+                                    &t.topic, p.partition, prev_max_bytes, fetch_state.max_bytes
                                 );
                             } else if num_partitions_queried == 1 {
                                 return Err(Error::Kafka(KafkaCode::MessageSizeTooLarge));
                             }
                             if !single_partition_consumer {
-                                debug!("rescheduled for retry: {}:{}", &t.topic, tp.partition);
-                                retry_partitions.push_back(tp);
+                                debug!("rescheduled for retry: {}:{}", &t.topic, p.partition);
+                                retry_updates.push(TopicPartition {
+                                    topic_ref,
+                                    partition: p.partition,
+                                });
                             }
                         }
                     }
@@ -416,10 +426,58 @@ impl Consumer {
             }
         }
 
+        // Publish progress only after every partition has been validated. Failed polls
+        // must leave messages available and retain any outstanding retry obligation.
+        let completed_retry = retry_partition.filter(|tp| fetch_updates.contains_key(tp));
+        self.state.fetch_offsets.extend(fetch_updates);
+        if let Some(tp) = completed_retry {
+            self.state.complete_retry_partition(&tp);
+        }
+        self.state.retry_partitions.extend(retry_updates);
+
         Ok(MessageSets {
             responses: resps,
             empty,
         })
+    }
+
+    fn stage_partition_data<'a>(
+        &self,
+        topic: &str,
+        tp: &TopicPartition,
+        partition: &'a fetch_kp::OwnedPartition,
+        fetch_updates: &mut HashMap<TopicPartition, state::FetchState, state::PartitionHasher>,
+    ) -> Result<Option<&'a fetch_kp::OwnedData>> {
+        match partition.data() {
+            Ok(data) => Ok(Some(data)),
+            Err(error) => {
+                if let Error::TopicPartitionError {
+                    error_code: KafkaCode::OffsetOutOfRange,
+                    ..
+                } = error.as_ref()
+                {
+                    if let Some(current) = self.state.fetch_offsets.get(tp) {
+                        let fetch_state = fetch_updates
+                            .entry(TopicPartition {
+                                topic_ref: tp.topic_ref,
+                                partition: tp.partition,
+                            })
+                            .or_insert_with(|| state::FetchState {
+                                offset: current.offset,
+                                max_bytes: current.max_bytes,
+                            });
+                        debug!(
+                            "OffsetOutOfRange for {}:{}, resetting to highwatermark {}",
+                            topic, partition.partition, partition.highwatermark
+                        );
+                        fetch_state.offset = partition.highwatermark;
+                    }
+                    Ok(None)
+                } else {
+                    Err(Error::from(Arc::clone(error)))
+                }
+            }
+        }
     }
 
     /// Retrieves the offset of the last "consumed" message in the
@@ -756,8 +814,9 @@ mod pause_resume_tests {
         consumer.pause("t", &[0, 1]);
         assert_eq!(consumer.paused_partitions().count(), 2);
         assert!(consumer.poll().unwrap().is_empty());
-        let (count, responses) = consumer.fetch_messages();
+        let (count, retry, responses) = consumer.fetch_messages();
         assert_eq!(count, 0);
+        assert!(retry.is_none());
         assert!(responses.unwrap().is_empty());
         consumer.resume("t", &[1]);
         assert_eq!(requested_partitions(&consumer), vec![1]);
@@ -784,8 +843,10 @@ mod pause_resume_tests {
         consumer.pause("t", &[0]);
         assert_eq!(
             consumer.state.next_retry_partition(),
-            Some(topic_partition(&consumer, 1))
+            Some(&topic_partition(&consumer, 1))
         );
+        let completed = topic_partition(&consumer, 1);
+        consumer.state.complete_retry_partition(&completed);
         assert_eq!(consumer.state.retry_partitions.len(), 1);
         assert_eq!(consumer.state.next_retry_partition(), None);
         consumer.pause("t", &[1]);
@@ -794,8 +855,10 @@ mod pause_resume_tests {
         consumer.resume("t", &[0]);
         assert_eq!(
             consumer.state.next_retry_partition(),
-            Some(topic_partition(&consumer, 0))
+            Some(&topic_partition(&consumer, 0))
         );
+        let completed = topic_partition(&consumer, 0);
+        consumer.state.complete_retry_partition(&completed);
         assert!(consumer.state.retry_partitions.is_empty());
     }
 
@@ -804,23 +867,10 @@ mod pause_resume_tests {
         let mut consumer = make_consumer();
         let tp = topic_partition(&consumer, 0);
         consumer.state.fetch_offsets.get_mut(&tp).unwrap().max_bytes = 1_500_000_000;
-        let response = fetch_kp::OwnedFetchResponse {
-            correlation_id: 1,
-            topics: vec![fetch_kp::OwnedTopic {
-                topic: "t".to_owned(),
-                partitions: vec![fetch_kp::OwnedPartition {
-                    partition: 0,
-                    highwatermark: 20,
-                    data: Ok(fetch_kp::OwnedData {
-                        highwatermark_offset: 20,
-                        messages: Vec::new(),
-                    }),
-                }],
-            }],
-        };
+        let response = fetch_response(vec![partition_data(0, 20, &[])]);
         assert!(
             consumer
-                .process_fetch_responses(1, vec![response])
+                .process_fetch_responses(1, None, vec![response])
                 .unwrap()
                 .is_empty()
         );
@@ -832,6 +882,252 @@ mod pause_resume_tests {
                 .unwrap()
                 .max_bytes,
             i32::MAX
+        );
+    }
+
+    fn fetch_progress(consumer: &Consumer) -> Vec<(i32, i64, i32)> {
+        let mut progress: Vec<_> = consumer
+            .state
+            .fetch_offsets
+            .iter()
+            .map(|(tp, state)| (tp.partition, state.offset, state.max_bytes))
+            .collect();
+        progress.sort_unstable();
+        progress
+    }
+
+    fn partition_data(
+        partition: i32,
+        highwatermark: i64,
+        offsets: &[i64],
+    ) -> fetch_kp::OwnedPartition {
+        fetch_kp::OwnedPartition {
+            partition,
+            highwatermark,
+            data: Ok(fetch_kp::OwnedData {
+                highwatermark_offset: highwatermark,
+                messages: offsets
+                    .iter()
+                    .map(|&offset| Message {
+                        offset,
+                        key: bytes::Bytes::new(),
+                        value: bytes::Bytes::new(),
+                    })
+                    .collect(),
+            }),
+        }
+    }
+
+    fn partition_error(
+        partition: i32,
+        highwatermark: i64,
+        error_code: KafkaCode,
+    ) -> fetch_kp::OwnedPartition {
+        fetch_kp::OwnedPartition {
+            partition,
+            highwatermark,
+            data: Err(Arc::new(Error::TopicPartitionError {
+                topic_name: "t".to_owned(),
+                partition_id: partition,
+                error_code,
+            })),
+        }
+    }
+
+    fn fetch_response(partitions: Vec<fetch_kp::OwnedPartition>) -> fetch_kp::OwnedFetchResponse {
+        fetch_kp::OwnedFetchResponse {
+            correlation_id: 1,
+            topics: vec![fetch_kp::OwnedTopic {
+                topic: "t".to_owned(),
+                partitions,
+            }],
+        }
+    }
+
+    #[test]
+    fn later_partition_error_does_not_skip_undelivered_messages() {
+        let mut consumer = make_consumer();
+        let before = fetch_progress(&consumer);
+        let response = fetch_response(vec![
+            partition_data(0, 30, &[10, 11]),
+            partition_error(1, 30, KafkaCode::NotLeaderForPartition),
+        ]);
+
+        assert!(
+            consumer
+                .process_fetch_responses(2, None, vec![response])
+                .is_err()
+        );
+        assert_eq!(fetch_progress(&consumer), before);
+        assert!(consumer.state.retry_partitions.is_empty());
+    }
+
+    #[test]
+    fn later_message_size_error_does_not_publish_retry_growth() {
+        let mut consumer = make_consumer();
+        let before = fetch_progress(&consumer);
+        let response = fetch_response(vec![
+            partition_data(0, 30, &[]),
+            partition_error(1, 30, KafkaCode::MessageSizeTooLarge),
+        ]);
+
+        assert!(
+            consumer
+                .process_fetch_responses(2, None, vec![response])
+                .is_err()
+        );
+        assert_eq!(fetch_progress(&consumer), before);
+        assert!(consumer.state.retry_partitions.is_empty());
+    }
+
+    #[test]
+    fn local_message_size_error_retains_retry_obligation() {
+        let mut consumer = make_consumer();
+        let tp = topic_partition(&consumer, 0);
+        consumer.state.retry_partitions.push_back(tp);
+        consumer.config.retry_max_bytes_limit = 1024;
+        let before = fetch_progress(&consumer);
+        let retry = Some(topic_partition(&consumer, 0));
+        let response = fetch_response(vec![partition_data(0, 30, &[])]);
+
+        assert!(matches!(
+            consumer.process_fetch_responses(1, retry, vec![response]),
+            Err(Error::Kafka(KafkaCode::MessageSizeTooLarge))
+        ));
+        assert_eq!(fetch_progress(&consumer), before);
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+    }
+
+    #[test]
+    fn poll_failure_and_missing_response_retain_retry_obligation() {
+        let mut consumer = make_consumer();
+        let missing = topic_partition(&consumer, 999);
+        consumer.state.retry_partitions.push_back(missing);
+        let before = fetch_progress(&consumer);
+
+        assert!(consumer.poll().is_err());
+        assert_eq!(fetch_progress(&consumer), before);
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+
+        consumer.state.retry_partitions.clear();
+        let tp = topic_partition(&consumer, 0);
+        consumer.state.retry_partitions.push_back(tp);
+        // No broker metadata means the client has no response for this retry.
+        assert!(consumer.poll().unwrap().is_empty());
+        assert_eq!(fetch_progress(&consumer), before);
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+    }
+
+    #[test]
+    fn partition_error_keeps_retry_until_successful_publication() {
+        let mut consumer = make_consumer();
+        let tp = topic_partition(&consumer, 0);
+        consumer.state.retry_partitions.push_back(tp);
+        let before = fetch_progress(&consumer);
+        let failed = fetch_response(vec![partition_error(
+            0,
+            30,
+            KafkaCode::NotLeaderForPartition,
+        )]);
+        let retry = Some(topic_partition(&consumer, 0));
+        assert!(
+            consumer
+                .process_fetch_responses(1, retry, vec![failed])
+                .is_err()
+        );
+        assert_eq!(fetch_progress(&consumer), before);
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+
+        let retry = Some(topic_partition(&consumer, 0));
+        let response = fetch_response(vec![partition_data(0, 30, &[10, 11])]);
+
+        let messages = consumer
+            .process_fetch_responses(1, retry, vec![response])
+            .unwrap();
+        assert!(!messages.is_empty());
+        let progress = consumer
+            .state
+            .fetch_offsets
+            .get(&topic_partition(&consumer, 0))
+            .unwrap();
+        assert_eq!(progress.offset, 12);
+        assert_eq!(
+            progress.max_bytes,
+            consumer.client.fetch_max_bytes_per_partition()
+        );
+        assert!(consumer.state.retry_partitions.is_empty());
+    }
+
+    #[test]
+    fn successful_empty_retry_replaces_obligation_after_growth() {
+        let mut consumer = make_consumer();
+        let tp = topic_partition(&consumer, 0);
+        consumer.state.retry_partitions.push_back(tp);
+        let retry = Some(topic_partition(&consumer, 0));
+        let response = fetch_response(vec![partition_data(0, 30, &[])]);
+
+        assert!(
+            consumer
+                .process_fetch_responses(1, retry, vec![response])
+                .unwrap()
+                .is_empty()
+        );
+        let progress = consumer
+            .state
+            .fetch_offsets
+            .get(&topic_partition(&consumer, 0))
+            .unwrap();
+        assert_eq!(progress.offset, 10);
+        assert_eq!(progress.max_bytes, 2048);
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
+        assert_eq!(
+            consumer.state.next_retry_partition(),
+            Some(&topic_partition(&consumer, 0))
+        );
+    }
+
+    #[test]
+    fn offset_out_of_range_reset_is_published_only_with_successful_poll() {
+        let mut consumer = make_consumer();
+        let before = fetch_progress(&consumer);
+        let failed = fetch_response(vec![
+            partition_error(0, 20, KafkaCode::OffsetOutOfRange),
+            partition_error(1, 30, KafkaCode::NotLeaderForPartition),
+        ]);
+        assert!(
+            consumer
+                .process_fetch_responses(2, None, vec![failed])
+                .is_err()
+        );
+        assert_eq!(fetch_progress(&consumer), before);
+
+        let successful = fetch_response(vec![
+            partition_error(0, 20, KafkaCode::OffsetOutOfRange),
+            partition_data(1, 30, &[11, 12]),
+        ]);
+        assert!(
+            !consumer
+                .process_fetch_responses(2, None, vec![successful])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 0))
+                .unwrap()
+                .offset,
+            20
+        );
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 1))
+                .unwrap()
+                .offset,
+            13
         );
     }
 }
