@@ -76,7 +76,7 @@ pub enum RetryPolicy {
         max_attempts: u32,
     },
 
-    /// Exponential backoff with jitter.
+    /// Exponential backoff capped at the configured maximum.
     Exponential {
         /// Initial backoff duration.
         initial: Duration,
@@ -124,10 +124,23 @@ impl RetryPolicy {
                 if attempt >= *max_attempts {
                     return None;
                 }
-                let exp = i32::try_from(attempt).unwrap_or(i32::MAX);
-                let delay = initial.mul_f64(multiplier.powi(exp));
-                let delay = delay.min(*max);
-                Some(delay)
+                if !multiplier.is_finite() || *multiplier <= 0.0 {
+                    return None;
+                }
+                if initial.is_zero() || max.is_zero() {
+                    return Some(Duration::ZERO);
+                }
+                let seconds = initial.as_secs_f64() * multiplier.powf(f64::from(attempt));
+                if !seconds.is_finite() || seconds >= max.as_secs_f64() {
+                    return Some(*max);
+                }
+                // Duration conversion can overflow before the cap is applied.
+                // Cap in floating-point first, then use the fallible conversion.
+                Some(
+                    Duration::try_from_secs_f64(seconds)
+                        .unwrap_or(*max)
+                        .min(*max),
+                )
             }
         }
     }
@@ -179,7 +192,6 @@ pub(crate) struct ClientConfig {
     pub retry: RetryConfig,
     pub connection: ConnectionConfig,
     pub offset_storage: Option<GroupOffsetStorage>,
-    #[allow(unused)]
     pub producer_timestamp: Option<ProducerTimestamp>,
 }
 
@@ -281,5 +293,64 @@ mod tests {
     fn test_retry_config_default() {
         let config = RetryConfig::default();
         assert_eq!(config.policy.max_attempts(), DEFAULT_RETRY_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn exponential_retry_caps_overflowing_attempts_without_panicking() {
+        let policy = RetryPolicy::Exponential {
+            initial: Duration::from_millis(1),
+            max: Duration::from_secs(30),
+            multiplier: 2.0,
+            max_attempts: u32::MAX,
+        };
+        assert_eq!(policy.next_delay(2048), Some(Duration::from_secs(30)));
+        assert_eq!(
+            policy.next_delay(u32::MAX - 1),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(policy.next_delay(u32::MAX), None);
+    }
+
+    #[test]
+    fn exponential_retry_rejects_invalid_multipliers() {
+        for multiplier in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -2.0, 0.0] {
+            let policy = RetryPolicy::Exponential {
+                initial: Duration::from_millis(100),
+                max: Duration::from_secs(30),
+                multiplier,
+                max_attempts: 10,
+            };
+            assert_eq!(policy.next_delay(0), None);
+            assert_eq!(policy.next_delay(9), None);
+        }
+    }
+
+    #[test]
+    fn exponential_retry_handles_zero_and_extreme_durations() {
+        for (initial, max, expected) in [
+            (Duration::ZERO, Duration::MAX, Duration::ZERO),
+            (Duration::MAX, Duration::ZERO, Duration::ZERO),
+            (Duration::MAX, Duration::MAX, Duration::MAX),
+        ] {
+            let policy = RetryPolicy::Exponential {
+                initial,
+                max,
+                multiplier: 2.0,
+                max_attempts: 2049,
+            };
+            assert_eq!(policy.next_delay(2048), Some(expected));
+        }
+    }
+
+    #[test]
+    fn exponential_retry_preserves_fractional_and_shrinking_delays() {
+        let policy = RetryPolicy::Exponential {
+            initial: Duration::from_millis(100),
+            max: Duration::from_secs(30),
+            multiplier: 0.5,
+            max_attempts: u32::MAX,
+        };
+        assert_eq!(policy.next_delay(1), Some(Duration::from_millis(50)));
+        assert_eq!(policy.next_delay(2048), Some(Duration::ZERO));
     }
 }

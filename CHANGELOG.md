@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Exponential retry safely caps large attempts and duration overflow, rejects non-finite or nonpositive multipliers, and supports zero or shrinking delays; its documentation now describes deterministic backoff.
 - Sync CreateTime uses one current Unix timestamp per Produce call, including compressed and transactional batches, while None retains zero. Producer constructors and active transactions reject client-side LogAppendTime before metadata or transaction IO; the integration matrix now checks CreateTime with ByTime queries.
 - Sync typed responses now validate pending correlation IDs, request versions, and complete payloads, closing invalid connections. Removed speculative Fetch/FindCoordinator decoding, corrected Group API keys and generated v1 layouts, validated SASL replies, rejected unknown Fetch inputs before IO, and corrected per-topic Fetch metrics.
 - Sync consumers publish fetched offsets, retry buffer changes, and retry queue updates only after every partition response succeeds; failed or incomplete retry fetches keep their pending retry.
