@@ -77,10 +77,19 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
 - Producer builders preserve TLS, client ID, and other configuration when a custom partitioner is selected.
 - Async producers borrow cached partition routes. A broker leader error invalidates the affected topic route;
   the next send refreshes metadata and the failed send returns its original error.
+- `AsyncProducer::send_all` batches records by broker, topic, and partition, sending one Produce request per broker.
+  It preserves partition order and supports the same compression and acknowledgement settings as `send`.
+- Batch producers retain unconfirmed records after failed flushes and retire only uniquely confirmed partitions.
+  Further `send` calls require an explicit `flush` or `clear` while a failed batch remains pending.
+- Async typed requests validate correlation and consume the complete response. Interrupted or failed connections
+  are discarded and reconnected on the next checkout; Produce errors are returned without automatic replay.
+- `list_offsets` preserves broker timestamps, and sync connection selection reconnects only the selected broker.
 
-The high-level `TransactionalProducer` currently sends ordinary Produce records without transaction context;
-applications cannot rely on abort to hide those records. `GroupCoordinator`'s background heartbeat thread currently
-does not send broker heartbeats. These existing limitations and follow-up work are tracked in
+`TransactionalProducer` uses a separate transaction coordinator and sends transaction IDs, producer identities,
+epochs, and sequences in transactional batches. Commit and abort preserve sequence state. A transaction RPC failure
+blocks further reuse; construct a new producer instead of retrying that instance. Transactional consumer-offset
+workflows and read-committed high-level consumers remain follow-up work. `GroupCoordinator`'s background heartbeat
+thread still does not send broker heartbeats. Further lifecycle work is tracked in
 [rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
 
 ## Documentation
@@ -91,6 +100,9 @@ does not send broker heartbeats. These existing limitations and follow-up work a
 - Async crate readme: [crates/rustfs-kafka-async/README.md](crates/rustfs-kafka-async/README.md)
 
 ## Local Development
+
+The child crate manifests omit explicit `rust-version` metadata. The workspace retains its compiler reference
+alongside the Rust 2024 edition and dependency declarations in `Cargo.toml`.
 
 ```bash
 cargo build

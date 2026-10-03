@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Documented native batching, explicit batch retry decisions, connection recovery, transactional producer boundaries, and child manifest metadata; placed the sync poll correction under Unreleased.
 - Sync connection checkout no longer clones all hosts or reconnects the whole pool, and first checkout avoids a second connection when idle timeout is zero.
 - Removed explicit rust-version inheritance from both child crate manifests.
 - Kafka integration cleanup now includes the ZooKeeper profile when switching versions or exiting the test matrix.
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync consumers publish fetched offsets, retry buffer changes, and retry queue updates only after every partition response succeeds; failed or incomplete retry fetches keep their pending retry.
 - Transactional producers now use generated transaction codecs, discover transaction coordinators, send producer identity and sequence context, preserve sequences across commit and abort, and block unsafe reuse after RPC failures. Added real-broker isolation and fencing coverage.
 - Async typed requests now track pending correlations, reject mismatched or trailing response data, retire failed or cancelled connections, and avoid replaying low-level Produce after a sending attempt.
 - Batch producers stream buffered records into encoding, retain failed or ambiguous deliveries, retire only uniquely confirmed partitions, and require explicit flush or clear before accepting more records after failure.
@@ -62,7 +64,6 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
-- Sync consumers publish fetched offsets, retry buffer changes, and retry queue updates only after every partition response succeeds; failed or incomplete retry fetches keep their pending retry.
 - Fixed crate package readme paths so published packages use the intended crate readmes.
 
 ## [1.3.0] - 2026-09-04

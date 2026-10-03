@@ -92,6 +92,12 @@ async fn main() -> rustfs_kafka::error::Result<()> {
 }
 ```
 
+For a batch, call `producer.send_all(&records).await?`. Records are grouped by broker, topic, and partition;
+each broker receives one Produce request and each partition retains input order. Empty batches succeed immediately.
+All batches are encoded before sending Produce, so a codec error sends no Produce requests. A failure after sending
+starts can leave earlier brokers with accepted records. The batch is not atomic across brokers; retrying the whole
+batch can duplicate delivery. Acknowledged sends require a complete, unique set of partition confirmations.
+
 ### Async Consumer
 
 ```rust,no_run
@@ -146,9 +152,49 @@ Async producer cache hits borrow partition routes instead of copying all partiti
 The failed call returns the broker error; the next send reloads metadata. Application retries still need to account
 for uncertain delivery after network errors.
 
-Existing high-level limitations remain: `TransactionalProducer` does not carry transaction context into Produce,
-and the automatic group heartbeat thread does not send broker heartbeats. Connection cancellation recovery,
-transactional delivery, group lifecycle, and batch flush failure semantics need further work tracked in
+Batch producer `flush` retains its buffer after transport failure. With acknowledgements enabled, it removes only
+partitions with unique successful confirmations; failed, missing, or duplicate confirmations keep those partitions
+pending. The returned confirmation list exposes broker partition errors. Automatic flush propagates them as errors.
+While unconfirmed records remain after a failure, `send` rejects new records before enqueuing them. Explicit `flush`
+retries pending records, and `clear` discards them. Earlier brokers may have accepted records before a transport
+failure, so explicit retries still require an application decision about duplicates. With `acks=0`, a successful
+complete write clears the batch without claiming broker confirmation.
+
+Async typed requests retain pending correlation IDs across send/receive, reject mismatched IDs or extra response
+bytes, and retire failed or cancelled connections before their next use. Raw `send` and `read_exact` preserve their
+individual IO semantics; callers own protocol boundaries across separate raw operations. Raw `request_response`
+protects the complete frame exchange and returns the payload for caller decoding. Low-level Produce failures after
+a sending attempt do not fail over to another broker automatically.
+
+`list_offsets` returns the broker's timestamp, including `-1` when no timestamp is available. `fetch_offsets` keeps
+its existing offset-only return type. Sync pool checkout selects the oldest connection, tries another on failure,
+and updates only the chosen connection's checkout time.
+
+### Transactional Producer
+
+Use `TransactionalProducer::from_client(client).with_transactional_id(id).create()` with a configured plain or
+secure client. The producer discovers a transaction coordinator independently from group coordinators and initializes
+a producer ID/epoch with a 60-second transaction timeout. `with_ack_timeout_ms` controls Produce acknowledgement
+timeout. `begin`, `send`, and `commit`/`abort` carry the actual transaction context; sequences advance after valid
+confirmation and remain continuous across successful transactions. Empty transactions complete locally, and a
+second `begin` while active returns an error.
+
+Initialization retries only explicit coordinator-loading, coordinator-unavailable, coordinator-moved, or
+concurrent-transaction rejections according to the client's retry policy. A moved coordinator is rediscovered.
+Transport and codec failures during initialization are returned.
+
+Before sending a record, a complete single-partition AddPartitions response that explicitly rejects the operation
+as a concurrent transaction can be retried within the configured policy. No Produce is sent before that partition
+is accepted. Other AddPartitions errors and unknown IO outcomes are returned without replaying records.
+
+After creation, any transaction RPC failure reports its error and blocks subsequent `begin`, `send`, `commit`, and `abort`
+on that instance. Recreate the producer with the same transaction ID to acquire a new epoch. The API does not
+silently replay an uncertain Produce or EndTxn operation. The producer exposes no transactional offset-commit
+workflow; high-level consumers currently read uncommitted data. Validate abort visibility using a Kafka
+`read_committed` consumer.
+
+The automatic group heartbeat thread still does not send broker heartbeats. Full group lifecycle, transactional
+consumer offsets, high-level read-committed consumers, and broader protocol-version negotiation remain tracked in
 [rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
 
 ## 5. TLS and Feature Flags
@@ -216,3 +262,12 @@ cargo bench -p rustfs-kafka --bench protocol_serialization
 
 These fixed-input benchmarks measure generated Produce frame encoding and multi-batch Fetch decoding. They
 provide codec timings and throughput, not private adapter allocation costs or end-to-end broker throughput.
+
+Compare sequential acknowledged sends with native batching against an existing plaintext topic:
+
+```bash
+cargo run -p rustfs-kafka-async --release --example batch-throughput -- localhost:9092 kafka-rust-test 128 16
+```
+
+The example sends 1 KiB values to partition 0 with `acks=all`, warms metadata and IO, and measures A1-B1-B2-A2.
+It reports no speedup conclusion when sequential baseline drift exceeds 15 percent.
