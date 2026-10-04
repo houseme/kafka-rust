@@ -13,7 +13,9 @@ use kafka_protocol::messages::{
 use kafka_protocol::messages::{FindCoordinatorResponse, MetadataResponse};
 use kafka_protocol::protocol::StrBytes;
 use rustfs_kafka::client::SecurityConfig;
-use rustfs_kafka::client::fetch_kp::{OwnedFetchResponse, convert_fetch_response};
+use rustfs_kafka::client::fetch_kp::{
+    FetchProgress, OwnedFetchResponse, convert_fetch_response_with_progress,
+};
 use rustfs_kafka::consumer::{FetchOffset, MessageSets};
 use rustfs_kafka::error::{ConsumerError, Error, KafkaCode, ProtocolError, Result};
 use std::collections::hash_map::Entry;
@@ -371,7 +373,7 @@ impl NativeConsumer {
                 .get(tp.0.as_str())
                 .and_then(|partitions| partitions.get(&tp.1))
                 .copied()
-                .unwrap_or(0);
+                .ok_or(Error::Protocol(ProtocolError::Codec))?;
             by_broker.entry(leader_host.as_str()).or_default().push((
                 tp.0.as_str(),
                 tp.1,
@@ -402,8 +404,9 @@ impl NativeConsumer {
                     return Err(error);
                 }
             };
-            let mut owned = convert_fetch_response(response, correlation);
-            if let Err(error) = validate_and_trim_fetch_response(&mut owned, &tps) {
+            let (mut owned, progress) =
+                convert_fetch_response_with_progress(response, correlation).into_parts();
+            if let Err(error) = validate_and_trim_fetch_response(&mut owned, &progress, &tps) {
                 if is_leader_error(&error) {
                     self.metadata_refresh_needed = true;
                     self.last_partial_metadata_refresh = None;
@@ -411,13 +414,18 @@ impl NativeConsumer {
                 return Err(error);
             }
 
-            owned_responses.push(owned);
+            owned_responses.push((owned, progress));
         }
 
         // A failed or cancelled poll must not consume messages it never returns.
         // Publish progress only once every broker response has been collected.
         publish_response_offsets(&mut self.offsets, &mut self.dirty_offsets, &owned_responses)?;
-        Ok(MessageSets::from_fetch_responses(owned_responses))
+        Ok(MessageSets::from_fetch_responses(
+            owned_responses
+                .into_iter()
+                .map(|(response, _)| response)
+                .collect(),
+        ))
     }
 
     fn next_correlation(&mut self) -> i32 {
@@ -1114,6 +1122,7 @@ impl RequestedFetchOffsets {
 
 fn validate_and_trim_fetch_response(
     response: &mut OwnedFetchResponse,
+    progress: &FetchProgress,
     requested: &[(&str, i32, i64, i32)],
 ) -> Result<()> {
     let mut grouped: HashMap<&str, Vec<(i32, i64)>> = HashMap::new();
@@ -1127,24 +1136,21 @@ fn validate_and_trim_fetch_response(
     for (topic, partitions) in grouped {
         remaining.insert(topic, RequestedFetchOffsets::new(partitions)?);
     }
-    for topic in &mut response.topics {
+    for (topic_index, topic) in response.topics.iter_mut().enumerate() {
         let mut partitions = remaining
             .remove(topic.topic.as_str())
             .ok_or(Error::Protocol(ProtocolError::Codec))?;
-        for partition in &mut topic.partitions {
+        for (partition_index, partition) in topic.partitions.iter_mut().enumerate() {
             let requested_offset = partitions
                 .take(partition.partition)
                 .ok_or(Error::Protocol(ProtocolError::Codec))?;
             if let Ok(data) = &mut partition.data {
                 // Validate even records that would be trimmed: malformed
                 // offsets cannot be hidden inside a whole batch's prefix.
-                if data
-                    .messages
-                    .iter()
-                    .any(|message| !(0..i64::MAX).contains(&message.offset))
-                {
-                    return Err(Error::Protocol(ProtocolError::Codec));
-                }
+                validate_partition_progress(
+                    data,
+                    progress.next_offset(topic_index, partition_index),
+                )?;
                 // Brokers may return a whole batch before fetch_offset.
                 data.messages
                     .retain(|message| message.offset >= requested_offset);
@@ -1159,6 +1165,16 @@ fn validate_and_trim_fetch_response(
     }
     // Malformed identities or numeric offsets take precedence over a broker's
     // retriable error; retrying must not hide a malformed response envelope.
+    // The shared decoder also rejects malformed batch headers and ordering.
+    for topic in &response.topics {
+        for partition in &topic.partitions {
+            if let Err(error) = &partition.data
+                && !matches!(error.as_ref(), Error::TopicPartitionError { .. })
+            {
+                return Err(fetch_partition_error(error));
+            }
+        }
+    }
     for topic in &response.topics {
         for partition in &topic.partitions {
             partition.data().map_err(fetch_partition_error)?;
@@ -1167,25 +1183,46 @@ fn validate_and_trim_fetch_response(
     Ok(())
 }
 
+fn validate_partition_progress(
+    data: &rustfs_kafka::client::fetch_kp::OwnedData,
+    next_offset: Option<i64>,
+) -> Result<()> {
+    if next_offset.is_some_and(|offset| offset < 0)
+        || data.messages.iter().any(|message| {
+            !(0..i64::MAX).contains(&message.offset)
+                || next_offset.is_none_or(|next| next <= message.offset)
+        })
+    {
+        return Err(Error::Protocol(ProtocolError::Codec));
+    }
+    Ok(())
+}
+
 fn publish_response_offsets(
     offsets: &mut TopicOffsets,
     dirty_offsets: &mut TopicOffsets,
-    responses: &[OwnedFetchResponse],
+    responses: &[(OwnedFetchResponse, FetchProgress)],
 ) -> Result<()> {
     // Stage every next offset before mutating either map. No await or fallible
     // protocol validation remains once publication starts.
     let mut staged: HashMap<&str, Vec<(i32, i64)>> = HashMap::new();
-    for response in responses {
-        for topic in &response.topics {
+    for (response, progress) in responses {
+        for (topic_index, topic) in response.topics.iter().enumerate() {
+            let current = offsets
+                .get(topic.topic.as_str())
+                .ok_or(Error::Protocol(ProtocolError::Codec))?;
             let mut updates = Vec::new();
-            for partition in &topic.partitions {
+            for (partition_index, partition) in topic.partitions.iter().enumerate() {
                 let data = partition.data().map_err(fetch_partition_error)?;
-                if let Some(last) = data.messages.last() {
-                    let next_offset = last
-                        .offset
-                        .checked_add(1)
-                        .filter(|offset| *offset > 0)
-                        .ok_or(Error::Protocol(ProtocolError::Codec))?;
+                let next_offset = progress.next_offset(topic_index, partition_index);
+                validate_partition_progress(data, next_offset)?;
+                let current_offset = current
+                    .get(&partition.partition)
+                    .ok_or(Error::Protocol(ProtocolError::Codec))?;
+                // Cached positions are the exact request positions: no broker
+                // response is published while other broker RPCs are pending.
+                // A whole older batch may safely have a cursor <= this position.
+                if let Some(next_offset) = next_offset.filter(|next| next > current_offset) {
                     if updates.is_empty() {
                         updates.reserve(topic.partitions.len());
                     }
@@ -1531,7 +1568,7 @@ mod tests {
         ])
     }
 
-    fn response_for_requested_layout(topic: &str, partitions: &[i32]) -> OwnedFetchResponse {
+    fn kp_response_for_requested_layout(topic: &str, partitions: &[i32]) -> FetchResponse {
         let partitions = partitions
             .iter()
             .rev()
@@ -1545,14 +1582,19 @@ mod tests {
                     )))
             })
             .collect();
-        convert_fetch_response(
-            FetchResponse::default().with_responses(vec![
-                FetchableTopicResponse::default()
-                    .with_topic(TopicName::from(StrBytes::from_string(topic.to_owned())))
-                    .with_partitions(partitions),
-            ]),
-            7,
-        )
+        FetchResponse::default().with_responses(vec![
+            FetchableTopicResponse::default()
+                .with_topic(TopicName::from(StrBytes::from_string(topic.to_owned())))
+                .with_partitions(partitions),
+        ])
+    }
+
+    fn response_for_requested_layout(
+        topic: &str,
+        partitions: &[i32],
+    ) -> (OwnedFetchResponse, FetchProgress) {
+        convert_fetch_response_with_progress(kp_response_for_requested_layout(topic, partitions), 7)
+            .into_parts()
     }
 
     #[test]
@@ -1613,8 +1655,8 @@ mod tests {
                 .map(|&partition| (TEST_TOPIC, partition, 40, FETCH_PARTITION_MAX_BYTES))
                 .collect();
             let mut response = response_for_requested_layout(TEST_TOPIC, &partitions);
-            validate_and_trim_fetch_response(&mut response, &requested).unwrap();
-            for partition in &response.topics[0].partitions {
+            validate_and_trim_fetch_response(&mut response.0, &response.1, &requested).unwrap();
+            for partition in &response.0.topics[0].partitions {
                 assert_eq!(
                     partition
                         .data()
@@ -1626,7 +1668,13 @@ mod tests {
                     [41]
                 );
             }
-            let mut offsets = HashMap::new();
+            let mut offsets = HashMap::from([(
+                TEST_TOPIC.to_owned(),
+                partitions
+                    .iter()
+                    .map(|&partition| (partition, 40))
+                    .collect(),
+            )]);
             let mut dirty = HashMap::new();
             publish_response_offsets(&mut offsets, &mut dirty, std::slice::from_ref(&response))
                 .unwrap();
@@ -1651,13 +1699,14 @@ mod tests {
                 .collect();
             for fault in 0..4 {
                 let mut response = response_for_requested_layout(TEST_TOPIC, &partitions);
-                let returned = &mut response.topics[0].partitions;
+                let returned = &mut response.0.topics[0].partitions;
                 match fault {
                     0 => {
                         returned.pop();
                     }
                     1 => {
                         let duplicate = response_for_requested_layout(TEST_TOPIC, &partitions)
+                            .0
                             .topics
                             .remove(0)
                             .partitions
@@ -1672,7 +1721,7 @@ mod tests {
                     }
                 }
                 assert!(matches!(
-                    validate_and_trim_fetch_response(&mut response, &requested),
+                    validate_and_trim_fetch_response(&mut response.0, &response.1, &requested),
                     Err(Error::Protocol(ProtocolError::Codec))
                 ));
             }
@@ -1687,14 +1736,16 @@ mod tests {
             (TEST_TOPIC, 2, 40, FETCH_PARTITION_MAX_BYTES),
             (OTHER_TOPIC, i32::MAX, 40, FETCH_PARTITION_MAX_BYTES),
         ];
-        let mut response = response_for_requested_layout(OTHER_TOPIC, &[0, i32::MAX]);
-        response
-            .topics
-            .extend(response_for_requested_layout(TEST_TOPIC, &[0, 2]).topics);
-        validate_and_trim_fetch_response(&mut response, &requested).unwrap();
+        let mut raw_response = kp_response_for_requested_layout(OTHER_TOPIC, &[0, i32::MAX]);
+        raw_response
+            .responses
+            .extend(kp_response_for_requested_layout(TEST_TOPIC, &[0, 2]).responses);
+        let mut response = convert_fetch_response_with_progress(raw_response, 7).into_parts();
+        validate_and_trim_fetch_response(&mut response.0, &response.1, &requested).unwrap();
         let mut other_broker = response_for_requested_layout(TEST_TOPIC, &[3]);
         validate_and_trim_fetch_response(
-            &mut other_broker,
+            &mut other_broker.0,
+            &other_broker.1,
             &[(TEST_TOPIC, 3, 40, FETCH_PARTITION_MAX_BYTES)],
         )
         .unwrap();
@@ -1725,7 +1776,7 @@ mod tests {
     fn grouped_publication_validates_every_topic_before_mutating_either_map() {
         let first = response_for_requested_layout(TEST_TOPIC, &[0, 1]);
         let mut later = response_for_requested_layout(OTHER_TOPIC, &[100]);
-        later.topics[0].partitions[0]
+        later.0.topics[0].partitions[0]
             .data
             .as_mut()
             .unwrap()
@@ -1733,7 +1784,10 @@ mod tests {
             .last_mut()
             .unwrap()
             .offset = i64::MAX;
-        let mut offsets = HashMap::from([(TEST_TOPIC.to_owned(), HashMap::from([(0, 9), (1, 9)]))]);
+        let mut offsets = HashMap::from([
+            (TEST_TOPIC.to_owned(), HashMap::from([(0, 9), (1, 9)])),
+            (OTHER_TOPIC.to_owned(), HashMap::from([(100, 9)])),
+        ]);
         let mut dirty = offsets.clone();
         let original = offsets.clone();
         assert!(matches!(
@@ -3445,3 +3499,7 @@ mod consumer_coordinator_recovery_tests;
 
 #[path = "consumer_routing.rs"]
 mod routing;
+
+#[cfg(test)]
+#[path = "consumer_fetch_progress_tests.rs"]
+mod consumer_fetch_progress_tests;

@@ -4,9 +4,15 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use kafka_protocol::messages::fetch_response::{FetchableTopicResponse, PartitionData};
+use kafka_protocol::messages::{FetchResponse, TopicName};
+use kafka_protocol::protocol::StrBytes;
+use kafka_protocol::records::{
+    Compression, Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType,
+};
 use rustfs_kafka::client::fetch_kp::{
-    OwnedData, OwnedFetchResponse, OwnedMessage, OwnedPartition, OwnedTopic,
+    FetchProgress, OwnedFetchResponse, convert_fetch_response_with_progress,
 };
 use rustfs_kafka::error::Result;
 
@@ -22,7 +28,7 @@ const VARIANT: &str = "candidate";
 
 struct ProgressFixture {
     native: Box<NativeConsumer>,
-    responses: Vec<OwnedFetchResponse>,
+    responses: Vec<(OwnedFetchResponse, FetchProgress)>,
     keys: Vec<(String, i32)>,
 }
 
@@ -43,7 +49,8 @@ fn progress_fixture(
         native
     });
     let mut keys = Vec::with_capacity(topic_count * partitions_per_topic);
-    let owned_topics = topics
+    let records = benchmark_record_batch();
+    let response_topics = topics
         .into_iter()
         .map(|topic| {
             let partitions = (0..partitions_per_topic)
@@ -55,31 +62,72 @@ fn progress_fixture(
                         (topic.clone(), partition),
                         "bench-broker.invalid:9092".to_owned(),
                     );
-                    OwnedPartition {
-                        partition,
-                        data: Ok(OwnedData {
-                            highwatermark_offset: NEXT_OFFSET,
-                            messages: vec![OwnedMessage {
-                                offset: MESSAGE_OFFSET,
-                                key: Bytes::from_static(b"k"),
-                                value: Bytes::from_static(b"v"),
-                            }],
-                        }),
-                        highwatermark: NEXT_OFFSET,
-                    }
+                    PartitionData::default()
+                        .with_partition_index(partition)
+                        .with_high_watermark(NEXT_OFFSET)
+                        .with_records(Some(records.clone()))
                 })
                 .collect();
-            OwnedTopic { topic, partitions }
+            FetchableTopicResponse::default()
+                .with_topic(TopicName::from(StrBytes::from_string(topic)))
+                .with_partitions(partitions)
         })
         .collect();
+    let (response, progress) = convert_fetch_response_with_progress(
+        FetchResponse::default().with_responses(response_topics),
+        7,
+    )
+    .into_parts();
+    let mut message_count = 0;
+    for (topic_index, topic) in response.topics.iter().enumerate() {
+        for (partition_index, partition) in topic.partitions.iter().enumerate() {
+            let messages = &partition.data().unwrap().messages;
+            assert_eq!(messages.len(), 1);
+            assert_eq!(messages[0].offset, MESSAGE_OFFSET);
+            assert_eq!(messages[0].key.as_ref(), b"k");
+            assert_eq!(messages[0].value.as_ref(), b"v");
+            assert_eq!(
+                progress.next_offset(topic_index, partition_index),
+                Some(NEXT_OFFSET)
+            );
+            message_count += messages.len();
+        }
+    }
+    assert_eq!(message_count, keys.len());
     ProgressFixture {
         native,
-        responses: vec![OwnedFetchResponse {
-            correlation_id: 7,
-            topics: owned_topics,
-        }],
+        responses: vec![(response, progress)],
         keys,
     }
+}
+
+fn benchmark_record_batch() -> Bytes {
+    let record = Record {
+        transactional: false,
+        control: false,
+        delete_horizon: false,
+        partition_leader_epoch: -1,
+        producer_id: -1,
+        producer_epoch: -1,
+        timestamp_type: TimestampType::Creation,
+        offset: MESSAGE_OFFSET,
+        sequence: -1,
+        timestamp: 0,
+        key: Some(Bytes::from_static(b"k")),
+        value: Some(Bytes::from_static(b"v")),
+        headers: Default::default(),
+    };
+    let mut bytes = BytesMut::new();
+    RecordBatchEncoder::encode(
+        &mut bytes,
+        &[record],
+        &RecordEncodeOptions {
+            version: 2,
+            compression: Compression::None,
+        },
+    )
+    .unwrap();
+    bytes.freeze()
 }
 
 fn verify_progress(fixture: &ProgressFixture, expected: i64) -> i64 {
@@ -262,11 +310,11 @@ fn progress_values(native: &NativeConsumer, key: &(String, i32)) -> (Option<i64>
 
 fn run_progress(
     native: &mut NativeConsumer,
-    responses: &mut [OwnedFetchResponse],
+    responses: &mut [(OwnedFetchResponse, FetchProgress)],
     requested: &[(&str, i32, i64, i32)],
 ) -> Result<()> {
-    for response in responses.iter_mut() {
-        super::validate_and_trim_fetch_response(response, requested)?;
+    for (response, progress) in responses.iter_mut() {
+        super::validate_and_trim_fetch_response(response, progress, requested)?;
     }
     super::publish_response_offsets(&mut native.offsets, &mut native.dirty_offsets, responses)
 }

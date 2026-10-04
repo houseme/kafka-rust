@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Native async consumers publish verified batch positions and pending commits only after all broker responses succeed, including safe control-only and compacted progress. Missing cached positions and malformed data return codec errors; added TCP cancellation/error coverage, secure transaction-marker recovery, and updated the actual progress CPU fixture.
 - Sync consumers use verified batch cursors to progress through control-only and compacted batches without growing retry buffers or marking business messages consumed. Complete response validation and decoder-error priority precede atomic cursor/retry publication; added TCP and real transaction coverage.
 - Fetch adapters filter transaction control records and retain verified batch cursors through empty and compacted batches. CRC/decompression, exact record framing, batch bounds and strict offset ordering are checked before accepting a partition; existing owned response fields remain unchanged.
 - Transaction integration fixtures now require complete read-only ListOffsets readiness after metadata leaders appear. Only expected fixture-partition leader errors are retried within a bounded budget; transport, codec, authentication, and transaction write failures remain immediate failures.
