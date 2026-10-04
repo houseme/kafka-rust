@@ -107,7 +107,39 @@ fn ensure_transaction_topics(client: &mut KafkaClient) {
                 })
             })
         }) {
-            return;
+            // A metadata leader can appear before the broker opens the new partition.
+            match client.list_offsets(&TOPICS, FetchOffset::Latest) {
+                Ok(offsets) => {
+                    assert_eq!(offsets.len(), TOPICS.len());
+                    for topic in TOPICS {
+                        let partitions = offsets
+                            .get(topic)
+                            .expect("transaction readiness response missing topic");
+                        assert_eq!(partitions.len(), 2);
+                        assert!(
+                            [0, 1].iter().all(|&expected| {
+                                partitions
+                                    .iter()
+                                    .filter(|partition| {
+                                        partition.partition == expected && partition.offset >= 0
+                                    })
+                                    .count()
+                                    == 1
+                            }),
+                            "transaction readiness response missing a valid partition offset: {topic}: {partitions:?}"
+                        );
+                    }
+                    return;
+                }
+                Err(rustfs_kafka::error::Error::TopicPartitionError {
+                    topic_name,
+                    partition_id: 0 | 1,
+                    error_code:
+                        rustfs_kafka::error::KafkaCode::LeaderNotAvailable
+                        | rustfs_kafka::error::KafkaCode::NotLeaderForPartition,
+                }) if TOPICS.contains(&topic_name.as_str()) => {}
+                Err(error) => panic!("transaction fixture ListOffsets readiness failed: {error:?}"),
+            }
         }
         assert!(
             Instant::now() < deadline,
