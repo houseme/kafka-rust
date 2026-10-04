@@ -7,19 +7,16 @@ use rustfs_kafka::client::{Compression, FetchOffset, KafkaClient, TopicConfig};
 #[cfg(any(feature = "security", feature = "security-ring"))]
 use rustfs_kafka::client::{SaslConfig, SecurityConfig};
 use rustfs_kafka::consumer::Consumer;
-use rustfs_kafka::error::Error;
+use rustfs_kafka::error::{Error, KafkaCode};
 use rustfs_kafka::producer::{Producer, Record, RequiredAcks};
 
 #[test]
 fn seek_into_record_batch_returns_only_requested_offsets_once() {
     let fixture = OffsetTopic::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
     let mut client = new_client();
-    wait_for_topic(&mut client, &fixture.name);
-    let mut producer = Producer::from_client(client)
-        .with_required_acks(RequiredAcks::All)
-        .with_ack_timeout(Duration::from_secs(5))
-        .create()
-        .unwrap();
+    wait_for_topic(&mut client, &fixture.name, deadline);
+    let mut producer = new_producer(client);
     let values: [&[u8]; 6] = [
         b"offset-0",
         b"offset-1",
@@ -34,12 +31,39 @@ fn seek_into_record_batch_returns_only_requested_offsets_once() {
         .collect();
 
     // A single send_all to one partition places all six records in one RecordBatch.
-    let confirms = producer.send_all(&records).unwrap();
-    assert_eq!(confirms.len(), 1);
-    assert_eq!(confirms[0].topic, fixture.name);
-    assert_eq!(confirms[0].partition_confirms.len(), 1);
-    assert_eq!(confirms[0].partition_confirms[0].partition, 0);
-    assert_eq!(confirms[0].partition_confirms[0].offset, Ok(0));
+    const MAX_PRODUCE_ATTEMPTS: usize = 5;
+    for attempt in 1..=MAX_PRODUCE_ATTEMPTS {
+        assert!(
+            Instant::now() < deadline,
+            "fixture Produce deadline expired"
+        );
+        let confirms = producer
+            .send_all(&records)
+            .expect("fixture Produce failed; only explicit leader rejection ACKs may be replayed");
+        assert_eq!(confirms.len(), 1);
+        assert_eq!(confirms[0].topic, fixture.name);
+        assert_eq!(confirms[0].partition_confirms.len(), 1);
+        assert_eq!(confirms[0].partition_confirms[0].partition, 0);
+        match confirms[0].partition_confirms[0].offset {
+            Ok(offset) => {
+                assert_eq!(offset, 0, "fixture batch must be appended exactly once");
+                break;
+            }
+            Err(code @ (KafkaCode::LeaderNotAvailable | KafkaCode::NotLeaderForPartition)) => {
+                // Only explicit leader errors enter this path. The readiness
+                // check requires an empty log before repeating the batch.
+                assert!(
+                    attempt < MAX_PRODUCE_ATTEMPTS && Instant::now() < deadline,
+                    "fixture leader rejected Produce after {attempt} attempts: {code:?}"
+                );
+                fixture_backoff();
+                let mut client = producer.into_client();
+                wait_for_topic(&mut client, &fixture.name, deadline);
+                producer = new_producer(client);
+            }
+            Err(code) => panic!("fixture Produce rejected the batch without retry: {code:?}"),
+        }
+    }
 
     let mut consumer = Consumer::from_client(producer.into_client())
         .with_topic_partitions(fixture.name.clone(), &[0])
@@ -104,6 +128,14 @@ fn assert_invalid_consumed_offsets(consumer: &mut Consumer, topic: &str, expecte
             "rejecting offset {offset} must preserve the consumed state"
         );
     }
+}
+
+fn new_producer(client: KafkaClient) -> Producer {
+    Producer::from_client(client)
+        .with_required_acks(RequiredAcks::All)
+        .with_ack_timeout(Duration::from_secs(5))
+        .create()
+        .unwrap()
 }
 
 fn new_client() -> KafkaClient {
@@ -190,22 +222,43 @@ impl Drop for OffsetTopic {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-fn wait_for_topic(client: &mut KafkaClient, topic: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+fn wait_for_topic(client: &mut KafkaClient, topic: &str, deadline: Instant) {
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "consumer offset fixture did not become ready"
+        );
         client.load_metadata(&[topic]).unwrap();
         if client.topics().partitions(topic).is_some_and(|partitions| {
             partitions
                 .partition(0)
                 .is_some_and(|partition| partition.is_available())
         }) {
-            return;
+            // Metadata can name a leader before that broker has opened the partition.
+            match client.list_offsets(&[topic], FetchOffset::Latest) {
+                Ok(offsets) => {
+                    assert_eq!(offsets.len(), 1);
+                    let partitions = offsets
+                        .get(topic)
+                        .expect("fixture offset response missing topic");
+                    assert_eq!(partitions.len(), 1);
+                    assert_eq!(partitions[0].partition, 0);
+                    assert_eq!(partitions[0].offset, 0, "fixture must still be empty");
+                    return;
+                }
+                Err(Error::TopicPartitionError {
+                    topic_name,
+                    partition_id: 0,
+                    error_code: KafkaCode::LeaderNotAvailable | KafkaCode::NotLeaderForPartition,
+                }) if topic_name == topic => {}
+                Err(error) => panic!("fixture ListOffsets readiness failed: {error:?}"),
+            }
         }
-        assert!(
-            Instant::now() < deadline,
-            "consumer offset fixture did not become ready"
-        );
-        std::thread::sleep(Duration::from_millis(100));
+        fixture_backoff();
     }
+}
+
+#[allow(clippy::disallowed_methods)]
+fn fixture_backoff() {
+    std::thread::sleep(Duration::from_millis(100));
 }

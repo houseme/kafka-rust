@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Fresh-topic consumer offset tests verify empty ListOffsets readiness and retry only complete leader-error Produce confirmations within a bounded budget, checking an empty log before repeating the batch. Transport and other errors fail immediately, retaining single-append and no-redelivery assertions.
 - Async consumers validate complete unique Fetch/OffsetFetch/OffsetCommit responses and numeric offsets before filtering batch prefixes or publishing progress. Malformed responses retain offsets and pending commits; topic-grouped progress maps and bounded dense request matching reduce repeated lookup work. Added secure within-batch committed-offset recovery and an ignored CPU microbenchmark of the production validation/publication path.
 - Sync OffsetFetch and OffsetCommit require unique, complete requested topic/partition acknowledgements, reject duplicate input targets before IO, and retire malformed connections without replaying commits. OffsetFetch processes valid top-level errors first and rejects successful committed offsets below the explicit unset sentinel -1.
 - Sync, async, batch, and transactional producers reject duplicate header keys before routing or IO because the current map-based record codec cannot preserve them. Added reusable header validation; unique headers retain their order and values, and local rejection preserves buffered obligations and active transaction state.
