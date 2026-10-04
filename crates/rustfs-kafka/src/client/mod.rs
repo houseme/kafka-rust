@@ -597,8 +597,24 @@ impl KafkaClient {
         J: AsRef<FetchPartition<'a>>,
         I: IntoIterator<Item = J>,
     {
+        self.fetch_messages_with_progress(input).map(|responses| {
+            responses
+                .into_iter()
+                .map(fetch_kp::FetchResponseWithProgress::into_owned)
+                .collect()
+        })
+    }
+
+    pub(crate) fn fetch_messages_with_progress<'a, I, J>(
+        &mut self,
+        input: I,
+    ) -> Result<Vec<fetch_kp::FetchResponseWithProgress>>
+    where
+        J: AsRef<FetchPartition<'a>>,
+        I: IntoIterator<Item = J>,
+    {
         let correlation = self.state.next_correlation_id();
-        fetch_ops::fetch_messages_kp(
+        fetch_ops::fetch_messages_with_progress(
             &mut self.conn_pool,
             &mut self.state,
             &self.config,

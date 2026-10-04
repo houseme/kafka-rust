@@ -1,7 +1,8 @@
 #![cfg(feature = "integration_tests")]
 //! Real-broker transaction tests. The fixture uses the same bootstrap and
-//! security environment as test_kafka, but reads with generated isolation=1
-//! Fetch requests instead of the high-level read-uncommitted consumer.
+//! security environment as test_kafka. Generated isolation=1 Fetch requests
+//! verify transaction visibility; the high-level read-uncommitted consumer
+//! independently verifies control filtering and forward progress.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,7 +17,8 @@ use kafka_protocol::records::RecordBatchDecoder;
 use rustfs_kafka::client::{Compression, FetchOffset, KafkaClient, RetryPolicy, TopicConfig};
 #[cfg(any(feature = "security", feature = "security-ring"))]
 use rustfs_kafka::client::{SaslConfig, SecurityConfig};
-use rustfs_kafka::producer::{Record, TransactionalProducer};
+use rustfs_kafka::consumer::Consumer;
+use rustfs_kafka::producer::{Producer, Record, RequiredAcks, TransactionalProducer};
 const API_VERSION_FETCH: i16 = 12;
 
 const TOPICS: [&str; 2] = ["kafka-rust-txn-test", "kafka-rust-txn-test2"];
@@ -508,6 +510,183 @@ fn wait_for_raw_appends(
     }
 }
 
+fn consumer_from_positions(starts: &HashMap<Position, i64>) -> Consumer {
+    let mut subscriptions: HashMap<&str, Vec<i32>> = HashMap::new();
+    for (topic, partition) in starts.keys() {
+        subscriptions.entry(topic).or_default().push(*partition);
+    }
+    let mut builder = Consumer::from_client(new_client())
+        .with_fallback_offset(FetchOffset::Latest)
+        .with_fetch_max_wait_time(Duration::from_millis(100));
+    for (topic, partitions) in subscriptions {
+        builder = builder.with_topic_partitions(topic.to_owned(), &partitions);
+    }
+    let mut consumer = builder.create().unwrap();
+    assert!(consumer.group().is_empty());
+    for ((topic, partition), &offset) in starts {
+        consumer.seek(topic, *partition, offset).unwrap();
+    }
+    consumer
+}
+
+fn assert_uncommitted_consumer_values(
+    starts: &HashMap<Position, i64>,
+    prefix: &str,
+    expected: &HashSet<VisibleValue>,
+) {
+    let mut consumer = consumer_from_positions(starts);
+    let mut actual = HashSet::new();
+    let mut last_business_offsets: HashMap<Position, i64> = HashMap::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for page in 0..256 {
+        assert!(
+            Instant::now() < deadline,
+            "high-level transaction reader timed out"
+        );
+        let sets = consumer.poll().unwrap();
+        for set in sets.iter_ref() {
+            for message in set.messages() {
+                assert_ne!(
+                    message.key.as_ref(),
+                    &[0, 0, 0, 0],
+                    "ABORT marker leaked to application"
+                );
+                assert_ne!(
+                    message.key.as_ref(),
+                    &[0, 0, 0, 1],
+                    "COMMIT marker leaked to application"
+                );
+                let value = std::str::from_utf8(&message.value).unwrap();
+                if value.starts_with(prefix) {
+                    let position = (set.topic().to_owned(), set.partition());
+                    let value = (position.0.clone(), position.1, value.to_owned());
+                    assert!(
+                        expected.contains(&value),
+                        "unexpected transaction payload: {value:?}"
+                    );
+                    assert!(
+                        actual.insert(value),
+                        "transaction payload was fetched twice"
+                    );
+                    last_business_offsets.insert(position, message.offset);
+                }
+            }
+        }
+        for (topic, partition) in starts.keys() {
+            assert_eq!(consumer.last_consumed_message(topic, *partition), None);
+        }
+        if &actual == expected {
+            break;
+        }
+        assert!(
+            page < 255,
+            "high-level transaction reader exceeded its page bound"
+        );
+    }
+    assert_eq!(
+        &actual, expected,
+        "read-uncommitted must retain aborted business payloads"
+    );
+    assert_eq!(last_business_offsets.len(), starts.len());
+    for ((topic, partition), offset) in last_business_offsets {
+        consumer.consume_message(&topic, partition, offset).unwrap();
+        assert_eq!(
+            consumer.last_consumed_message(&topic, partition),
+            Some(offset)
+        );
+    }
+}
+
+fn assert_marker_only_consumer_progress(client: &mut KafkaClient, prefix: &str) {
+    // The concurrent fencing case writes only TOPICS[0]/0. This partition's
+    // last append is the lifecycle case's final COMMIT marker.
+    let topic = TOPICS[1];
+    let partition = 1;
+    let latest = starting_offsets(client)[&(topic.to_owned(), partition)];
+    let marker_offset = latest.checked_sub(1).unwrap();
+    let data = fetch_partition_page(client, topic, partition, marker_offset, 0);
+    let mut records = data.records.clone().unwrap();
+    let mut found = false;
+    while !records.is_empty() {
+        for record in RecordBatchDecoder::decode(&mut records).unwrap().records {
+            if record.offset == marker_offset {
+                assert!(record.control);
+                assert_eq!(record.key.as_deref(), Some(&[0, 0, 0, 1][..]));
+                found = true;
+            }
+        }
+    }
+    assert!(found, "Latest-1 must identify a real COMMIT control record");
+    let generated = FetchResponse::default().with_responses(vec![
+        kafka_protocol::messages::fetch_response::FetchableTopicResponse::default()
+            .with_topic(StrBytes::from_string(topic.to_owned()).into())
+            .with_partitions(vec![data]),
+    ]);
+    let (decoded, progress) =
+        rustfs_kafka::client::fetch_kp::convert_fetch_response_with_progress(generated, 0)
+            .into_parts();
+    assert!(
+        decoded.topics[0].partitions[0]
+            .data()
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+    assert_eq!(progress.next_offset(0, 0), Some(latest));
+
+    let mut consumer = consumer_from_positions(&HashMap::from([(
+        (topic.to_owned(), partition),
+        marker_offset,
+    )]));
+    assert!(
+        consumer.poll().unwrap().is_empty(),
+        "marker-only Fetch must be successful and empty"
+    );
+    assert_eq!(consumer.last_consumed_message(topic, partition), None);
+    let value = format!("{prefix}-ordinary-after-marker");
+    let mut producer = Producer::from_client(new_client())
+        .with_required_acks(RequiredAcks::All)
+        .with_ack_timeout(Duration::from_secs(10))
+        .create()
+        .unwrap();
+    producer
+        .send(&Record::from_key_value(topic, prefix, value.as_str()).with_partition(partition))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let message_offset = loop {
+        assert!(
+            Instant::now() < deadline,
+            "ordinary payload after marker did not become readable"
+        );
+        let sets = consumer.poll().unwrap();
+        if sets.is_empty() {
+            continue;
+        }
+        let mut sets = sets.iter_ref();
+        let set = sets.next().unwrap();
+        assert!(sets.next().is_none());
+        assert_eq!(set.topic(), topic);
+        assert_eq!(set.partition(), partition);
+        let messages = set.messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].offset, latest);
+        assert_eq!(messages[0].value.as_ref(), value.as_bytes());
+        break messages[0].offset;
+    };
+    assert_eq!(consumer.last_consumed_message(topic, partition), None);
+    consumer
+        .consume_message(topic, partition, message_offset)
+        .unwrap();
+    assert_eq!(
+        consumer.last_consumed_message(topic, partition),
+        Some(message_offset)
+    );
+    assert!(
+        consumer.poll().unwrap().is_empty(),
+        "the new business payload must be fetched only once"
+    );
+}
+
 #[test]
 fn transaction_commit_abort_and_reuse_have_read_committed_visibility() {
     let prefix = unique_prefix("lifecycle");
@@ -573,6 +752,9 @@ fn transaction_commit_abort_and_reuse_have_read_committed_visibility() {
     let visible = wait_for_values(&mut reader, &starts, &prefix, &expected);
     assert!(visible.values.is_disjoint(&aborted));
     assert_eq!(visible.transactional_records, 8);
+    let uncommitted_expected = expected.union(&aborted).cloned().collect();
+    assert_uncommitted_consumer_values(&starts, &prefix, &uncommitted_expected);
+    assert_marker_only_consumer_progress(&mut reader, &prefix);
     eprintln!("transaction proof prefix={prefix}, committed=8, aborted=4, topics={TOPICS:?}");
 }
 

@@ -3,7 +3,7 @@
 //! Implements the logic for sending fetch requests to Kafka brokers,
 //! grouping partitions by their leader broker, and aggregating responses.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::error::{Error, KafkaCode, Result};
@@ -16,14 +16,14 @@ use crate::network::Connections;
 use crate::protocol::api_versions::ApiVersionCache;
 
 #[tracing::instrument(skip(conn_pool, state, config, input))]
-pub fn fetch_messages_kp<'a, I, J>(
+pub(crate) fn fetch_messages_with_progress<'a, I, J>(
     conn_pool: &mut Connections,
     state: &mut ClientState,
     config: &ClientConfig,
     api_versions: &ApiVersionCache,
     correlation: i32,
     input: I,
-) -> Result<Vec<super::fetch_kp::OwnedFetchResponse>>
+) -> Result<Vec<super::fetch_kp::FetchResponseWithProgress>>
 where
     J: AsRef<FetchPartition<'a>>,
     I: IntoIterator<Item = J>,
@@ -65,7 +65,7 @@ where
         match &result {
             Ok(responses) => {
                 for resp in responses {
-                    for t in &resp.topics {
+                    for t in &resp.response().topics {
                         let mut total_bytes: usize = 0;
                         let mut total_messages: usize = 0;
                         for p in &t.partitions {
@@ -103,7 +103,7 @@ fn fetch_messages_inner(
     min_bytes: i32,
     api_versions: &ApiVersionCache,
     broker_partitions: HashMap<&str, Vec<(&str, i32, i64, i32)>>,
-) -> Result<Vec<crate::protocol::fetch::OwnedFetchResponse>> {
+) -> Result<Vec<crate::protocol::fetch::FetchResponseWithProgress>> {
     let now = Instant::now();
     let mut res = Vec::with_capacity(broker_partitions.len());
     for (host, partitions) in broker_partitions {
@@ -132,10 +132,46 @@ fn fetch_messages_inner(
             api_version,
         )
         .map_err(|e| e.with_broker_context(host, "Fetch"))?;
-        let owned = crate::protocol::fetch::convert_fetch_response(kp_resp, correlation_id);
+        let owned =
+            crate::protocol::fetch::convert_fetch_response_with_progress(kp_resp, correlation_id);
+        if let Err(error) = validate_response_targets(owned.response(), &partitions) {
+            let _ = conn.shutdown();
+            return Err(error.with_broker_context(host, "Fetch"));
+        }
+        if owned.response().topics.iter().flat_map(|topic| &topic.partitions)
+            .any(|partition| matches!(partition.data(), Err(error) if matches!(error.as_ref(), Error::Protocol(_))))
+        {
+            let _ = conn.shutdown();
+        }
         res.push(owned);
     }
     Ok(res)
+}
+
+fn validate_response_targets(
+    response: &crate::protocol::fetch::OwnedFetchResponse,
+    requested: &[(&str, i32, i64, i32)],
+) -> Result<()> {
+    let mut remaining: HashSet<(&str, i32)> = requested
+        .iter()
+        .map(|&(topic, partition, _, _)| (topic, partition))
+        .collect();
+    let mut topics = HashSet::new();
+    for topic in &response.topics {
+        if !topics.insert(topic.topic.as_str()) || topic.partitions.is_empty() {
+            return Err(Error::codec());
+        }
+        for partition in &topic.partitions {
+            if !remaining.remove(&(topic.topic.as_str(), partition.partition)) {
+                return Err(Error::codec());
+            }
+        }
+    }
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::codec())
+    }
 }
 
 #[cfg(test)]

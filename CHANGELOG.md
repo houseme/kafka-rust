@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync consumers use verified batch cursors to progress through control-only and compacted batches without growing retry buffers or marking business messages consumed. Complete response validation and decoder-error priority precede atomic cursor/retry publication; added TCP and real transaction coverage.
 - Fetch adapters filter transaction control records and retain verified batch cursors through empty and compacted batches. CRC/decompression, exact record framing, batch bounds and strict offset ordering are checked before accepting a partition; existing owned response fields remain unchanged.
 - Transaction integration fixtures now require complete read-only ListOffsets readiness after metadata leaders appear. Only expected fixture-partition leader errors are retried within a bounded budget; transport, codec, authentication, and transaction write failures remain immediate failures.
 - Native async routing validates metadata and FindCoordinator v3 descriptors before publishing caches. Partial snapshots keep healthy routes and probe missing routes with the configured backoff; full snapshots end probing. Leader failures force metadata rediscovery, while coordinator transport failures and final coordinator rejections invalidate coordinator state without dropping progress or changing retry budgets.
