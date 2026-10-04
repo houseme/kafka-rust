@@ -1,9 +1,10 @@
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
+use kafka_protocol::compression::{self as compression, Decompressor};
 use kafka_protocol::messages::{
     ApiKey, BrokerId, FetchRequest, FetchResponse, RequestHeader, TopicName,
 };
 use kafka_protocol::protocol::StrBytes;
-use kafka_protocol::records::RecordBatchDecoder;
+use kafka_protocol::records::{Compression as RecordCompression, RecordBatchDecoder};
 
 use super::API_VERSION_FETCH;
 use crate::error::{Error, KafkaCode};
@@ -12,6 +13,7 @@ use std::sync::Arc;
 // Re-exports of sub-types from kafka_protocol for convenience
 use kafka_protocol::messages::fetch_request::FetchPartition as KpFetchPartition;
 use kafka_protocol::messages::fetch_request::FetchTopic as KpFetchTopic;
+#[cfg(test)]
 use kafka_protocol::messages::fetch_response::PartitionData as KpPartitionData;
 
 // ---------------------------------------------------------------------------
@@ -66,6 +68,60 @@ pub struct OwnedFetchResponse {
     pub correlation_id: i32,
     /// Topics included in this fetch response.
     pub topics: Vec<OwnedTopic>,
+}
+
+/// Verified next fetch offsets, aligned with an owned response's topic and
+/// partition positions. Offsets come from fully validated batch headers,
+/// including batches with no application records.
+#[derive(Debug)]
+pub struct FetchProgress {
+    next_offsets: Vec<Vec<Option<i64>>>,
+}
+
+impl FetchProgress {
+    /// Returns the verified next offset for the partition at these positions.
+    ///
+    /// `None` means the partition contained no batches, had a broker or decoding
+    /// error, or the supplied positions are outside the corresponding response.
+    /// These are response indices, rather than Kafka topic or partition IDs.
+    #[must_use]
+    pub fn next_offset(&self, topic_index: usize, partition_index: usize) -> Option<i64> {
+        self.next_offsets
+            .get(topic_index)?
+            .get(partition_index)
+            .copied()
+            .flatten()
+    }
+}
+
+/// Owned fetch data accompanied by progress from fully validated record batches.
+///
+/// Use [`Self::into_parts`] to preserve progress for empty, control, and compacted
+/// batches without adding fields to the existing owned response types.
+#[derive(Debug)]
+pub struct FetchResponseWithProgress {
+    response: OwnedFetchResponse,
+    progress: FetchProgress,
+}
+
+impl FetchResponseWithProgress {
+    /// Borrows the owned response without discarding its associated progress.
+    #[must_use]
+    pub fn response(&self) -> &OwnedFetchResponse {
+        &self.response
+    }
+
+    /// Splits the response and its progress, preserving their positional alignment.
+    #[must_use]
+    pub fn into_parts(self) -> (OwnedFetchResponse, FetchProgress) {
+        (self.response, self.progress)
+    }
+
+    /// Returns the existing owned response representation and discards progress.
+    #[must_use]
+    pub fn into_owned(self) -> OwnedFetchResponse {
+        self.response
+    }
 }
 
 impl OwnedPartition {
@@ -137,94 +193,320 @@ pub fn build_fetch_request(
 /// Every record batch is decoded and validated before accepting a partition,
 /// including batches following empty compacted batches. Partition-level broker
 /// errors, malformed records, and unavailable compression codecs are retained
-/// in each partition's data result. Decoder panics become codec errors.
+/// in each partition's data result. Control records are excluded from application
+/// messages. Decoder panics become codec errors. Use
+/// [`convert_fetch_response_with_progress`] when advancing a consumer position.
 #[must_use]
 pub fn convert_fetch_response(kp_resp: FetchResponse, correlation_id: i32) -> OwnedFetchResponse {
-    let topics = kp_resp
-        .responses
-        .into_iter()
-        .map(|t| {
-            let topic_name = t.topic.to_string();
-            let partitions: Vec<OwnedPartition> = t
-                .partitions
-                .into_iter()
-                .map(|p: KpPartitionData| {
-                    let data = if p.error_code != 0 {
-                        Err(Arc::new(Error::TopicPartitionError {
-                            topic_name: topic_name.clone(),
-                            partition_id: p.partition_index,
-                            error_code: KafkaCode::from_protocol(p.error_code)
-                                .unwrap_or(KafkaCode::Unknown),
-                        }))
-                    } else {
-                        decode_partition_records(p.records, p.high_watermark)
-                    };
-                    OwnedPartition {
-                        partition: p.partition_index,
-                        data,
-                        highwatermark: p.high_watermark,
-                    }
-                })
-                .collect();
-            OwnedTopic {
-                topic: topic_name,
-                partitions,
-            }
-        })
-        .collect();
+    convert_fetch_response_inner::<false>(kp_resp, correlation_id).into_owned()
+}
 
-    OwnedFetchResponse {
-        correlation_id,
-        topics,
+/// Converts a generated response while preserving verified batch progress.
+///
+/// Progress follows the returned response's topic and partition indices and is
+/// published only for partitions whose complete record data passes CRC,
+/// decompression, exact record framing, batch bounds, and offset ordering checks.
+/// A corrupt tail removes the entire partition's messages and progress. The high
+/// watermark never serves as a replacement for a batch's next offset.
+#[must_use]
+pub fn convert_fetch_response_with_progress(
+    kp_resp: FetchResponse,
+    correlation_id: i32,
+) -> FetchResponseWithProgress {
+    convert_fetch_response_inner::<true>(kp_resp, correlation_id)
+}
+
+fn convert_fetch_response_inner<const WITH_PROGRESS: bool>(
+    kp_resp: FetchResponse,
+    correlation_id: i32,
+) -> FetchResponseWithProgress {
+    let mut topics = Vec::with_capacity(kp_resp.responses.len());
+    let mut next_offsets = if WITH_PROGRESS {
+        Vec::with_capacity(kp_resp.responses.len())
+    } else {
+        Vec::new()
+    };
+    for topic in kp_resp.responses {
+        let topic_name = topic.topic.to_string();
+        let mut partitions = Vec::with_capacity(topic.partitions.len());
+        let mut partition_offsets = if WITH_PROGRESS {
+            Vec::with_capacity(topic.partitions.len())
+        } else {
+            Vec::new()
+        };
+        for partition in topic.partitions {
+            let (data, next_offset) = if partition.error_code != 0 {
+                (
+                    Err(Arc::new(Error::TopicPartitionError {
+                        topic_name: topic_name.clone(),
+                        partition_id: partition.partition_index,
+                        error_code: KafkaCode::from_protocol(partition.error_code)
+                            .unwrap_or(KafkaCode::Unknown),
+                    })),
+                    None,
+                )
+            } else {
+                match decode_partition_records(partition.records, partition.high_watermark) {
+                    Ok((data, next_offset)) => (Ok(data), next_offset),
+                    Err(error) => (Err(error), None),
+                }
+            };
+            partitions.push(OwnedPartition {
+                partition: partition.partition_index,
+                data,
+                highwatermark: partition.high_watermark,
+            });
+            if WITH_PROGRESS {
+                partition_offsets.push(next_offset);
+            }
+        }
+        topics.push(OwnedTopic {
+            topic: topic_name,
+            partitions,
+        });
+        if WITH_PROGRESS {
+            next_offsets.push(partition_offsets);
+        }
+    }
+    FetchResponseWithProgress {
+        response: OwnedFetchResponse {
+            correlation_id,
+            topics,
+        },
+        progress: FetchProgress { next_offsets },
     }
 }
 
 fn decode_partition_records(
     records: Option<Bytes>,
     high_watermark: i64,
-) -> Result<OwnedData, Arc<Error>> {
-    let Some(records_bytes) = records else {
-        return Ok(OwnedData {
-            highwatermark_offset: high_watermark,
-            messages: vec![],
-        });
-    };
+) -> Result<(OwnedData, Option<i64>), Arc<Error>> {
+    let records_bytes = records.unwrap_or_default();
     if records_bytes.is_empty() {
-        return Ok(OwnedData {
-            highwatermark_offset: high_watermark,
-            messages: vec![],
-        });
+        return Ok((
+            OwnedData {
+                highwatermark_offset: high_watermark,
+                messages: vec![],
+            },
+            None,
+        ));
     }
 
-    let messages = decode_records_safe(records_bytes).map_err(Arc::new)?;
+    let decoded = decode_records_safe(records_bytes).map_err(Arc::new)?;
 
-    Ok(OwnedData {
-        highwatermark_offset: high_watermark,
-        messages,
-    })
+    Ok((
+        OwnedData {
+            highwatermark_offset: high_watermark,
+            messages: decoded.messages,
+        },
+        decoded.next_offset,
+    ))
 }
 
-fn decode_record_batches(mut records: Bytes) -> Result<Vec<OwnedMessage>, Error> {
+struct DecodedRecords {
+    messages: Vec<OwnedMessage>,
+    next_offset: Option<i64>,
+}
+
+fn decode_record_batches(mut records: Bytes) -> Result<DecodedRecords, Error> {
     let mut messages = Vec::new();
+    let mut next_offset = None;
+    let mut previous_record_offset = None;
     // Each partition can contain several batches, including empty batches left
     // by compaction. Decode all of them before accepting the partition data.
     while !records.is_empty() {
-        let record_set = RecordBatchDecoder::decode(&mut records)
-            .map_err(|err| map_record_decode_error(&err.to_string()))?;
-        messages.reserve(record_set.records.len());
-        messages.extend(record_set.records.into_iter().map(|record| OwnedMessage {
-            offset: record.offset,
-            key: record.key.unwrap_or_default(),
-            value: record.value.unwrap_or_default(),
-        }));
+        let (base_offset, batch_next_offset, record_count) = batch_offset_bounds(&records)?;
+        if next_offset.is_some_and(|previous_next| base_offset < previous_next) {
+            return Err(Error::codec());
+        }
+        let record_set = RecordBatchDecoder::decode_with_custom_compression(
+            &mut records,
+            Some(|bytes: &mut Bytes, codec| {
+                let checked = |decoded: &mut Bytes| {
+                    validate_record_frames(decoded.clone(), record_count)
+                        .map_err(std::io::Error::other)?;
+                    Ok(decoded.clone())
+                };
+                match codec {
+                    RecordCompression::None => compression::None::decompress(bytes, checked),
+                    #[cfg(feature = "gzip")]
+                    RecordCompression::Gzip => compression::Gzip::decompress(bytes, checked),
+                    #[cfg(feature = "snappy")]
+                    RecordCompression::Snappy => compression::Snappy::decompress(bytes, checked),
+                    #[cfg(feature = "lz4")]
+                    RecordCompression::Lz4 => compression::Lz4::decompress(bytes, checked),
+                    #[cfg(feature = "zstd")]
+                    RecordCompression::Zstd => compression::Zstd::decompress(bytes, checked),
+                    #[cfg(not(feature = "gzip"))]
+                    RecordCompression::Gzip => Err(disabled_codec_error(codec).into()),
+                    #[cfg(not(feature = "snappy"))]
+                    RecordCompression::Snappy => Err(disabled_codec_error(codec).into()),
+                    #[cfg(not(feature = "lz4"))]
+                    RecordCompression::Lz4 => Err(disabled_codec_error(codec).into()),
+                    #[cfg(not(feature = "zstd"))]
+                    RecordCompression::Zstd => Err(disabled_codec_error(codec).into()),
+                }
+            }),
+        )
+        .map_err(|err| map_record_decode_error(&err.to_string()))?;
+        if !record_set
+            .records
+            .first()
+            .is_some_and(|record| record.control)
+        {
+            messages.reserve(record_set.records.len());
+        }
+        for record in record_set.records {
+            if !(base_offset..batch_next_offset).contains(&record.offset)
+                || previous_record_offset.is_some_and(|previous| record.offset <= previous)
+            {
+                return Err(Error::codec());
+            }
+            previous_record_offset = Some(record.offset);
+            if !record.control {
+                messages.push(OwnedMessage {
+                    offset: record.offset,
+                    key: record.key.unwrap_or_default(),
+                    value: record.value.unwrap_or_default(),
+                });
+            }
+        }
+        next_offset = Some(batch_next_offset);
     }
-    Ok(messages)
+    Ok(DecodedRecords {
+        messages,
+        next_offset,
+    })
+}
+
+fn batch_offset_bounds(records: &[u8]) -> Result<(i64, i64, i32), Error> {
+    // The SDK currently supports only magic=2. Preserve its existing codec
+    // rejection of legacy and unknown magic without assuming a v2 header size.
+    if records.get(16) != Some(&2) || records.len() < 61 {
+        return Err(Error::codec());
+    }
+    let base_offset = i64::from_be_bytes(records[..8].try_into().map_err(|_| Error::codec())?);
+    let last_delta = i32::from_be_bytes(records[23..27].try_into().map_err(|_| Error::codec())?);
+    let record_count = i32::from_be_bytes(records[57..61].try_into().map_err(|_| Error::codec())?);
+    if base_offset < 0 || last_delta < 0 {
+        return Err(Error::codec());
+    }
+    let next_offset = base_offset
+        .checked_add(i64::from(last_delta))
+        .and_then(|last| last.checked_add(1))
+        .ok_or_else(Error::codec)?;
+    Ok((base_offset, next_offset, record_count))
+}
+
+fn validate_record_frames(mut bytes: Bytes, record_count: i32) -> Result<(), Error> {
+    if record_count < 0 {
+        return Err(Error::codec());
+    }
+    // The SDK checks record contents, but does not reject bytes left within a
+    // record or after the declared count. Check both boundaries before its
+    // count-based Vec reservation so a header cursor cannot skip hidden records.
+    for _ in 0..record_count {
+        let size = read_record_varint(&mut bytes)?;
+        let size = usize::try_from(size).map_err(|_| Error::codec())?;
+        // Even null key/value and zero headers require these six field bytes.
+        if size < 6 {
+            return Err(Error::codec());
+        }
+        if size > bytes.len() {
+            return Err(Error::codec());
+        }
+        validate_record_frame(bytes.split_to(size))?;
+    }
+    if !bytes.is_empty() {
+        return Err(Error::codec());
+    }
+    Ok(())
+}
+
+fn validate_record_frame(mut frame: Bytes) -> Result<(), Error> {
+    let _attributes = frame.try_get_u8().map_err(|_| Error::codec())?;
+    let _timestamp_delta = read_record_unsigned_varint(&mut frame, 10, 1)?;
+    let _offset_delta = read_record_varint(&mut frame)?;
+    skip_nullable_record_bytes(&mut frame)?;
+    skip_nullable_record_bytes(&mut frame)?;
+    let header_count = read_record_varint(&mut frame)?;
+    if header_count < 0 {
+        return Err(Error::codec());
+    }
+    for _ in 0..header_count {
+        let key_length = read_record_varint(&mut frame)?;
+        skip_record_bytes(&mut frame, key_length)?;
+        skip_nullable_record_bytes(&mut frame)?;
+    }
+    if !frame.is_empty() {
+        return Err(Error::codec());
+    }
+    Ok(())
+}
+
+fn read_record_varint(frame: &mut Bytes) -> Result<i32, Error> {
+    let value = read_record_unsigned_varint(frame, 5, 0x0f)?;
+    let magnitude = i32::try_from(value >> 1).map_err(|_| Error::codec())?;
+    Ok(if value & 1 == 0 {
+        magnitude
+    } else {
+        !magnitude
+    })
+}
+
+// The SDK's primitive Decoder trait is private. This bounded framing reader
+// only advances numeric field boundaries; the SDK still parses their contents.
+fn read_record_unsigned_varint(
+    frame: &mut Bytes,
+    max_bytes: u32,
+    final_mask: u8,
+) -> Result<u64, Error> {
+    let mut value = 0u64;
+    for index in 0..max_bytes {
+        let byte = frame.try_get_u8().map_err(|_| Error::codec())?;
+        if index == max_bytes - 1 && byte > final_mask {
+            return Err(Error::codec());
+        }
+        value |= u64::from(byte & 0x7f) << (index * 7);
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(Error::codec())
+}
+
+fn skip_nullable_record_bytes(frame: &mut Bytes) -> Result<(), Error> {
+    let length = read_record_varint(frame)?;
+    if length == -1 {
+        return Ok(());
+    }
+    skip_record_bytes(frame, length)
+}
+
+fn skip_record_bytes(frame: &mut Bytes, length: i32) -> Result<(), Error> {
+    let length = usize::try_from(length).map_err(|_| Error::codec())?;
+    if length > frame.len() {
+        return Err(Error::codec());
+    }
+    frame.advance(length);
+    Ok(())
+}
+
+#[cfg(not(all(
+    feature = "gzip",
+    feature = "snappy",
+    feature = "lz4",
+    feature = "zstd"
+)))]
+fn disabled_codec_error(codec: RecordCompression) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("Support for {codec:?} is not enabled as a cargo feature"),
+    )
 }
 
 /// Decode all fetched record batches, mapping decoder panics to codec errors.
-pub(crate) fn decode_records_safe(
-    records: Bytes,
-) -> Result<Vec<OwnedMessage>, crate::error::Error> {
+fn decode_records_safe(records: Bytes) -> Result<DecodedRecords, crate::error::Error> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         decode_record_batches(records)
     }));
@@ -438,7 +720,9 @@ mod tests {
         batches.extend_from_slice(&encoded_records(KpCompression::None, 5));
         let batches = batches.freeze();
 
-        let data = decode_partition_records(Some(batches.clone()), 6).unwrap();
+        let data = decode_partition_records(Some(batches.clone()), 6)
+            .unwrap()
+            .0;
         assert_eq!(data.highwatermark_offset, 6);
         assert_eq!(
             data.messages
@@ -447,7 +731,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [4, 5]
         );
-        assert_eq!(decode_records_safe(batches).unwrap().len(), 2);
+        assert_eq!(decode_records_safe(batches).unwrap().messages.len(), 2);
     }
 
     #[test]
@@ -461,7 +745,9 @@ mod tests {
         let mut batches = bytes::BytesMut::from(&empty_batch[..]);
         batches.extend_from_slice(&encoded_records(KpCompression::None, 5));
 
-        let data = decode_partition_records(Some(batches.freeze()), 6).unwrap();
+        let data = decode_partition_records(Some(batches.freeze()), 6)
+            .unwrap()
+            .0;
         assert_eq!(data.messages.len(), 1);
         assert_eq!(data.messages[0].offset, 5);
     }
@@ -490,7 +776,9 @@ mod tests {
         }
         assert!(batches.len() > 1_048_576);
 
-        let data = decode_partition_records(Some(batches.freeze()), 16_384).unwrap();
+        let data = decode_partition_records(Some(batches.freeze()), 16_384)
+            .unwrap()
+            .0;
         assert_eq!(data.messages.len(), 16_384);
         assert_eq!(data.messages.last().unwrap().offset, 16_383);
     }
@@ -515,12 +803,14 @@ mod tests {
             ));
         }
 
-        let data = decode_partition_records(Some(batches.freeze()), 5).unwrap();
+        let data = decode_partition_records(Some(batches.freeze()), 5)
+            .unwrap()
+            .0;
         assert_eq!(data.messages.len(), 5);
         assert_eq!(data.messages.last().unwrap().offset, 4);
     }
 
-    fn encoded_records(compression: KpCompression, offset: i64) -> Bytes {
+    pub(super) fn encoded_records(compression: KpCompression, offset: i64) -> Bytes {
         let record = Record {
             transactional: false,
             control: false,
@@ -546,3 +836,7 @@ mod tests {
         buf.freeze()
     }
 }
+
+#[cfg(test)]
+#[path = "fetch_progress_tests.rs"]
+mod progress_tests;

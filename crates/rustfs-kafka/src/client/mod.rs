@@ -90,8 +90,8 @@ pub use types::*;
 /// `KafkaClient::fetch_messages_kp`.
 pub mod fetch_kp {
     pub use crate::protocol::fetch::{
-        OwnedData, OwnedFetchResponse, OwnedMessage, OwnedPartition, OwnedTopic,
-        convert_fetch_response,
+        FetchProgress, FetchResponseWithProgress, OwnedData, OwnedFetchResponse, OwnedMessage,
+        OwnedPartition, OwnedTopic, convert_fetch_response, convert_fetch_response_with_progress,
     };
 }
 
