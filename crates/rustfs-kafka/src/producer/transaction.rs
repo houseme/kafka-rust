@@ -184,6 +184,7 @@ impl<P: Partitioner> TransactionalProducer<P> {
             let topics = super::partitioner::Topics::new(&self.state.partitions);
             self.state.partitioner.partition(topics, &mut msg);
         }
+        super::validate_unique_headers(msg.headers)?;
 
         if !self
             .state
@@ -220,9 +221,11 @@ impl<P: Partitioner> TransactionalProducer<P> {
             self.status = TransactionStatus::Poisoned;
             return Err(err);
         }
-        self.sequence_numbers
-            .insert(tp.clone(), advance_sequence(seq));
-        debug!("Sent message to {}:{} (seq: {})", tp.0, tp.1, seq);
+        *self.sequence_numbers.entry(tp).or_insert(seq) = advance_sequence(seq);
+        debug!(
+            "Sent message to {}:{} (seq: {})",
+            msg.topic, msg.partition, seq
+        );
         Ok(())
     }
 
@@ -656,6 +659,96 @@ mod tests {
                     .create(),
                 Err(Error::Config(_))
             ));
+        }
+    }
+
+    static MUTATED_DUPLICATE_HEADERS: std::sync::LazyLock<[(String, Bytes); 2]> =
+        std::sync::LazyLock::new(|| {
+            [
+                ("trace".to_owned(), Bytes::from_static(b"old")),
+                ("trace".to_owned(), Bytes::from_static(b"new")),
+            ]
+        });
+
+    struct DuplicateHeaderPartitioner {
+        calls: usize,
+    }
+
+    impl Partitioner for DuplicateHeaderPartitioner {
+        fn partition(
+            &mut self,
+            _: super::super::partitioner::Topics<'_>,
+            message: &mut ProduceMessage<'_, '_>,
+        ) {
+            self.calls += 1;
+            message.partition = 0;
+            message.headers = MUTATED_DUPLICATE_HEADERS.as_slice();
+        }
+    }
+
+    #[test]
+    fn partitioner_duplicate_headers_preserve_active_transactions_without_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = KafkaClient::builder()
+            .with_hosts(vec![address.to_string()])
+            .with_conn_rw_timeout(1)
+            .build();
+        let state = State {
+            partitioner: DuplicateHeaderPartitioner { calls: 0 },
+            partitions: HashMap::from([(
+                "topic-a".to_owned(),
+                super::super::partitioner::Partitions {
+                    available_ids: vec![0],
+                    num_all_partitions: 1,
+                },
+            )]),
+        };
+        let mut producer = TransactionalProducer {
+            client,
+            state,
+            producer_id: 1,
+            producer_epoch: 0,
+            transactional_id: "test".to_owned(),
+            sequence_numbers: HashMap::from([(("topic-a".to_owned(), 0), 7)]),
+            current_txn_partitions: HashSet::new(),
+            status: TransactionStatus::Idle,
+            coordinator_host: address.to_string(),
+            ack_timeout_ms: 1_000,
+            txn_epoch: 0,
+        };
+        let record = Record::from_value("topic-a", "value").with_header("trace", "unique");
+        record.headers.validate_unique().unwrap();
+        let sequences = producer.sequence_numbers.clone();
+        for (index, committed) in [true, false].into_iter().enumerate() {
+            producer.begin().unwrap();
+            let epoch = producer.txn_epoch;
+            assert!(matches!(producer.send(&record), Err(Error::Config(message))
+                if message.contains("duplicate")));
+            assert_eq!(producer.state.partitioner.calls, index + 1);
+            assert_eq!(producer.status, TransactionStatus::Active);
+            assert_eq!((producer.producer_id, producer.producer_epoch), (1, 0));
+            assert_eq!(producer.txn_epoch, epoch);
+            assert_eq!(producer.sequence_numbers, sequences);
+            assert!(producer.current_txn_partitions.is_empty());
+            assert!(
+                listener
+                    .accept()
+                    .is_err_and(|error| { error.kind() == std::io::ErrorKind::WouldBlock })
+            );
+            if committed {
+                producer.commit().unwrap();
+            } else {
+                producer.abort().unwrap();
+            }
+            assert_eq!(producer.status, TransactionStatus::Idle);
+            assert_eq!(producer.sequence_numbers, sequences);
+            assert!(
+                listener
+                    .accept()
+                    .is_err_and(|error| { error.kind() == std::io::ErrorKind::WouldBlock })
+            );
         }
     }
 
