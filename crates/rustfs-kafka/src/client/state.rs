@@ -1,8 +1,10 @@
+use crate::error::{Error, Result};
 use crate::protocol;
+use std::collections::HashSet;
 use std::collections::hash_map::{Entry, HashMap, Keys};
 use std::convert::AsRef;
 use std::slice;
-use tracing::{debug, warn};
+use tracing::debug;
 
 #[derive(Debug)]
 pub struct ClientState {
@@ -265,12 +267,38 @@ impl ClientState {
         // ~ important to clear both since one references the other
         // through `BrokerIndex`
         self.topic_partitions.clear();
+        self.group_coordinators.clear();
         self.brokers.clear();
+    }
+
+    pub(crate) fn update_metadata_checked(
+        &mut self,
+        md: protocol::metadata::MetadataResponseData,
+    ) -> Result<()> {
+        validate_metadata(&md)?;
+        self.apply_metadata(md);
+        Ok(())
+    }
+
+    pub(crate) fn replace_metadata_checked(
+        &mut self,
+        md: protocol::metadata::MetadataResponseData,
+    ) -> Result<()> {
+        validate_metadata(&md)?;
+        self.clear_metadata();
+        self.apply_metadata(md);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn update_metadata(&mut self, md: protocol::metadata::MetadataResponseData) {
+        self.update_metadata_checked(md)
+            .expect("valid metadata fixture");
     }
 
     /// Loads new and updates existing metadata from the given
     /// metadata response.
-    pub fn update_metadata(&mut self, md: protocol::metadata::MetadataResponseData) {
+    fn apply_metadata(&mut self, md: protocol::metadata::MetadataResponseData) {
         debug!("updating metadata from: {:?}", md);
 
         // ~ register new brokers with self.brokers and obtain an
@@ -304,10 +332,12 @@ impl ClientState {
             };
             // ~ sync the partitions vector with the new information
             for partition in t.partitions {
-                // partition IDs from Kafka are always non-negative
-                #[allow(clippy::cast_sign_loss)]
-                let tp = &mut tps[partition.id as usize];
-                if let Some(bref) = brokers.get(&partition.leader) {
+                // Validation established a dense, unique set of non-negative IDs.
+                let tp = &mut tps[partition.id.cast_unsigned() as usize];
+                if t.error == 0
+                    && partition.error == 0
+                    && let Some(bref) = brokers.get(&partition.leader)
+                {
                     tp.broker.set(*bref);
                 } else {
                     tp.broker.set_unknown();
@@ -378,51 +408,97 @@ impl ClientState {
     /// ~ Updates the coordinator for the specified group and returns
     /// the coordinator host as if `group_coordinator` would have
     /// been called subsequently.
-    pub fn set_group_coordinator<'a>(
+    pub(crate) fn set_group_coordinator_checked<'a>(
         &'a mut self,
         group: &str,
         gc: &protocol::consumer::GroupCoordinatorResponse,
-    ) -> &'a str {
+    ) -> Result<&'a str> {
+        if gc.error != 0
+            || gc.broker_id < 0
+            || gc.host.is_empty()
+            || !(1..=65_535).contains(&gc.port)
+        {
+            return Err(Error::codec());
+        }
         debug!(
             "set_group_coordinator: registering coordinator for '{}': {:?}",
             group, gc
         );
 
         let group_host = format!("{}:{}", gc.host, gc.port);
-        // ~ try to find an already existing broker
-        let mut broker_ref = BrokerRef::new(UNKNOWN_BROKER_INDEX);
-        for (i, broker) in (0u32..).zip(self.brokers.iter()) {
-            if gc.broker_id == broker.node_id {
-                if group_host != broker.host {
-                    warn!(
-                        "set_group_coordinator: coord_host({}) != broker_host({}) for \
-                           broker_id({})!",
-                        group_host, broker.host, broker.node_id
-                    );
-                }
-                broker_ref.index = i;
-                break;
+        let broker_ref = if let Some(index) = self
+            .brokers
+            .iter()
+            .position(|broker| broker.node_id == gc.broker_id)
+        {
+            let reference = BrokerRef::new(u32::try_from(index).map_err(|_| Error::codec())?);
+            if self.brokers[index].host != group_host {
+                // A successful FindCoordinator supplies the current endpoint.
+                // Keep its slot so all existing references follow the update.
+                self.brokers[index].host = group_host;
             }
-        }
-        // ~ if not found, add it to the list of known brokers
-        if broker_ref.index == UNKNOWN_BROKER_INDEX {
-            // broker counts won't exceed u32::MAX
-            #[allow(clippy::cast_possible_truncation)]
-            let idx = self.brokers.len() as u32;
-            broker_ref.index = idx;
+            reference
+        } else {
+            let reference =
+                BrokerRef::new(u32::try_from(self.brokers.len()).map_err(|_| Error::codec())?);
             self.brokers.push(Broker {
                 node_id: gc.broker_id,
                 host: group_host,
             });
+            reference
+        };
+        if let Some(reference) = self.group_coordinators.get_mut(group) {
+            *reference = broker_ref;
+        } else {
+            self.group_coordinators.insert(group.to_owned(), broker_ref);
         }
-        if let Some(br) = self.group_coordinators.get_mut(group)
-            && br.index != broker_ref.index
-        {
-            br.index = broker_ref.index;
-        }
-        self.group_coordinators.insert(group.to_owned(), broker_ref);
-        &self.brokers[broker_ref.index()].host
+        Ok(&self.brokers[broker_ref.index()].host)
     }
+
+    #[cfg(test)]
+    pub fn set_group_coordinator<'a>(
+        &'a mut self,
+        group: &str,
+        gc: &protocol::consumer::GroupCoordinatorResponse,
+    ) -> &'a str {
+        self.set_group_coordinator_checked(group, gc)
+            .expect("valid coordinator fixture")
+    }
+}
+
+fn validate_metadata(md: &protocol::metadata::MetadataResponseData) -> Result<()> {
+    let mut broker_ids = HashSet::with_capacity(md.brokers.len());
+    for broker in &md.brokers {
+        if broker.node_id < 0
+            || broker.host.is_empty()
+            || !(1..=65_535).contains(&broker.port)
+            || !broker_ids.insert(broker.node_id)
+        {
+            return Err(Error::codec());
+        }
+    }
+    for topic in &md.topics {
+        // Ordered dense IDs are the common wire layout and need no scratch
+        // allocation. Reordered legal IDs use one bounded bitmap, never a clone.
+        if topic
+            .partitions
+            .iter()
+            .enumerate()
+            .all(|(index, partition)| usize::try_from(partition.id).is_ok_and(|id| id == index))
+        {
+            continue;
+        }
+        let mut seen = vec![false; topic.partitions.len()];
+        for partition in &topic.partitions {
+            let index = usize::try_from(partition.id).map_err(|_| Error::codec())?;
+            let entry = seen.get_mut(index).ok_or_else(Error::codec)?;
+            if *entry {
+                return Err(Error::codec());
+            }
+            *entry = true;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -436,8 +512,6 @@ mod tests {
             error: 0,
             id,
             leader,
-            replicas: vec![],
-            isr: vec![],
         }
     }
 
@@ -450,7 +524,6 @@ mod tests {
     // mock data for an initial kafka metadata response
     fn metadata_response_initial() -> protocol::metadata::MetadataResponseData {
         protocol::metadata::MetadataResponseData {
-            header: protocol::HeaderResponse { correlation: 1 },
             brokers: vec![
                 md::BrokerMetadata {
                     node_id: 10,
@@ -566,7 +639,6 @@ mod tests {
 
     fn metadata_response_update() -> protocol::metadata::MetadataResponseData {
         protocol::metadata::MetadataResponseData {
-            header: protocol::HeaderResponse { correlation: 2 },
             brokers: vec![
                 md::BrokerMetadata {
                     node_id: 10,
@@ -657,5 +729,211 @@ mod tests {
         // already some initial metadata loaded.
         state.update_metadata(metadata_response_update());
         assert_updated_metadata_load(&state);
+    }
+
+    fn coordinator_response(
+        id: i32,
+        host: &str,
+        port: i32,
+    ) -> protocol::consumer::GroupCoordinatorResponse {
+        protocol::consumer::GroupCoordinatorResponse {
+            broker_id: id,
+            host: host.to_owned(),
+            port,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn clearing_metadata_invalidates_all_slot_dependent_group_caches() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("first", &coordinator_response(10, "gin1.dev", 1234));
+        state.set_group_coordinator("second", &coordinator_response(50, "gin2.dev", 9876));
+        state.clear_metadata();
+        assert_eq!(state.group_coordinators.len(), 0);
+        assert!(state.group_coordinator("first").is_none());
+        let mut replacement = metadata_response_initial();
+        replacement.brokers.reverse();
+        state.update_metadata_checked(replacement).unwrap();
+        assert!(state.group_coordinator("first").is_none());
+        assert!(state.group_coordinator("second").is_none());
+    }
+
+    #[test]
+    fn full_snapshot_replacement_clears_groups_but_incremental_updates_preserve_them() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("warm", &coordinator_response(50, "gin2.dev", 9876));
+        state
+            .update_metadata_checked(metadata_response_update())
+            .unwrap();
+        assert_eq!(state.group_coordinator("warm"), Some("aladin1.dev:9091"));
+        let mut replacement = metadata_response_update();
+        replacement.brokers.reverse();
+        state.replace_metadata_checked(replacement).unwrap();
+        assert!(state.group_coordinator("warm").is_none());
+        assert_eq!(state.num_topics(), 1);
+        assert!(!state.contains_topic("tee-one"));
+        assert_eq!(state.find_broker("tee-two", 2), Some("aladin1.dev:9091"));
+    }
+
+    #[test]
+    fn a_successful_find_updates_the_same_node_endpoint_for_every_existing_reference() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("first", &coordinator_response(50, "gin2.dev", 9876));
+        state.set_group_coordinator("second", &coordinator_response(50, "gin2.dev", 9876));
+        assert_eq!(
+            state
+                .set_group_coordinator_checked(
+                    "first",
+                    &coordinator_response(50, "new-coordinator.dev", 5432)
+                )
+                .unwrap(),
+            "new-coordinator.dev:5432"
+        );
+        assert_eq!(state.brokers.len(), 3);
+        assert_eq!(
+            state.group_coordinator("second"),
+            Some("new-coordinator.dev:5432")
+        );
+        assert_eq!(
+            state.find_broker("tee-one", 0),
+            Some("new-coordinator.dev:5432")
+        );
+    }
+
+    #[test]
+    fn malformed_successful_find_endpoints_do_not_change_the_state() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("warm", &coordinator_response(50, "gin2.dev", 9876));
+        let before = format!("{state:?}");
+        for response in [
+            coordinator_response(-1, "bad.dev", 9092),
+            coordinator_response(99, "", 9092),
+            coordinator_response(50, "bad.dev", 0),
+            coordinator_response(50, "bad.dev", -1),
+            coordinator_response(99, "bad.dev", 65_536),
+        ] {
+            assert!(
+                state
+                    .set_group_coordinator_checked("warm", &response)
+                    .is_err()
+            );
+            assert_eq!(format!("{state:?}"), before);
+        }
+    }
+
+    #[test]
+    fn malformed_partition_sets_reject_the_whole_snapshot_without_partial_publication() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("warm", &coordinator_response(50, "gin2.dev", 9876));
+        let before = format!("{state:?}");
+        for ids in [vec![-1], vec![2], vec![0, 0], vec![0, 2]] {
+            for replace in [false, true] {
+                let mut response = metadata_response_update();
+                response.topics.push(md::TopicMetadata {
+                    topic: "malformed".to_owned(),
+                    partitions: ids.iter().map(|&id| new_partition(id, 50)).collect(),
+                    ..Default::default()
+                });
+                let result = if replace {
+                    state.replace_metadata_checked(response)
+                } else {
+                    state.update_metadata_checked(response)
+                };
+                assert!(result.is_err());
+                assert_eq!(format!("{state:?}"), before);
+            }
+        }
+    }
+
+    #[test]
+    fn reordered_dense_partition_ids_publish_correctly_without_sorting_or_cloning() {
+        let mut state = ClientState::new();
+        let mut response = metadata_response_initial();
+        for topic in &mut response.topics {
+            topic.partitions.reverse();
+        }
+        state.update_metadata_checked(response).unwrap();
+        assert_initial_metadata_load(&state);
+    }
+
+    #[test]
+    fn malformed_broker_shapes_reject_the_whole_snapshot_and_preserve_warm_state() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("warm", &coordinator_response(50, "gin2.dev", 9876));
+        let before = format!("{state:?}");
+        for malformed in [
+            "node",
+            "host",
+            "negative-port",
+            "zero-port",
+            "large-port",
+            "duplicate-node",
+        ] {
+            for replace in [false, true] {
+                let mut response = metadata_response_update();
+                match malformed {
+                    "node" => response.brokers[0].node_id = -1,
+                    "host" => response.brokers[0].host.clear(),
+                    "negative-port" => response.brokers[0].port = -1,
+                    "zero-port" => response.brokers[0].port = 0,
+                    "large-port" => response.brokers[0].port = 65_536,
+                    "duplicate-node" => response.brokers[1].node_id = response.brokers[0].node_id,
+                    _ => unreachable!(),
+                }
+                let result = if replace {
+                    state.replace_metadata_checked(response)
+                } else {
+                    state.update_metadata_checked(response)
+                };
+                assert!(result.is_err(), "{malformed} must reject the snapshot");
+                assert_eq!(format!("{state:?}"), before);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_and_negative_leaders_remain_valid_leaderless_partitions() {
+        let mut state = ClientState::new();
+        let mut response = metadata_response_initial();
+        response.topics[0].partitions[0].leader = -1;
+        response.topics[0].partitions[1].leader = 999;
+        state.update_metadata_checked(response).unwrap();
+        assert_eq!(state.find_broker("tee-one", 0), None);
+        assert_eq!(state.find_broker("tee-one", 1), None);
+        assert_eq!(state.find_broker("tee-one", 2), Some("gin3.dev:9092"));
+    }
+
+    #[test]
+    fn metadata_errors_disable_routes_with_positive_leaders_and_recover_on_success() {
+        let mut state = ClientState::new();
+        state.update_metadata(metadata_response_initial());
+        state.set_group_coordinator("warm", &coordinator_response(50, "gin2.dev", 9876));
+        for code in [
+            crate::error::KafkaCode::LeaderNotAvailable,
+            crate::error::KafkaCode::ReplicaNotAvailable,
+            crate::error::KafkaCode::UnknownTopicOrPartition,
+            crate::error::KafkaCode::TopicAuthorizationFailed,
+        ] {
+            let mut response = metadata_response_initial();
+            response.topics[0].error = code as i16;
+            response.topics[1].partitions[0].error = code as i16;
+            state.update_metadata_checked(response).unwrap();
+            assert_eq!(state.find_broker("tee-one", 0), None);
+            assert_eq!(state.find_broker("tee-one", 1), None);
+            assert_eq!(state.find_broker("tee-two", 0), None);
+            assert_eq!(state.find_broker("tee-two", 3), Some("gin1.dev:1234"));
+            assert_eq!(state.group_coordinator("warm"), Some("gin2.dev:9876"));
+            state
+                .update_metadata_checked(metadata_response_initial())
+                .unwrap();
+            assert_initial_metadata_load(&state);
+        }
     }
 }

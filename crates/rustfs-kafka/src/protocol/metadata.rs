@@ -5,7 +5,7 @@ use kafka_protocol::protocol::StrBytes;
 
 use kafka_protocol::messages::metadata_request::MetadataRequestTopic;
 
-use super::{API_VERSION_METADATA, HeaderResponse};
+use super::API_VERSION_METADATA;
 
 pub fn build_metadata_request(
     correlation_id: i32,
@@ -32,12 +32,9 @@ pub fn build_metadata_request(
 
 pub fn convert_metadata_response(
     kp_resp: MetadataResponse,
-    correlation_id: i32,
+    _correlation_id: i32,
 ) -> MetadataResponseData {
     MetadataResponseData {
-        header: HeaderResponse {
-            correlation: correlation_id,
-        },
         brokers: kp_resp
             .brokers
             .into_iter()
@@ -60,8 +57,6 @@ pub fn convert_metadata_response(
                         error: p.error_code,
                         id: p.partition_index,
                         leader: i32::from(p.leader_id),
-                        replicas: p.replica_nodes.into_iter().map(i32::from).collect(),
-                        isr: p.isr_nodes.into_iter().map(i32::from).collect(),
                     })
                     .collect(),
             })
@@ -75,7 +70,6 @@ pub fn convert_metadata_response(
 
 #[derive(Default, Debug)]
 pub struct MetadataResponseData {
-    pub header: HeaderResponse,
     pub brokers: Vec<BrokerMetadata>,
     pub topics: Vec<TopicMetadata>,
 }
@@ -99,6 +93,4 @@ pub struct PartitionMetadata {
     pub error: i16,
     pub id: i32,
     pub leader: i32,
-    pub replicas: Vec<i32>,
-    pub isr: Vec<i32>,
 }

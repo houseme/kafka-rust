@@ -17,8 +17,13 @@ use super::{FetchOffset, KafkaClient};
 
 #[tracing::instrument(skip(client))]
 pub fn load_metadata_all(client: &mut KafkaClient) -> Result<()> {
-    client.reset_metadata();
-    load_metadata_kp(client, &[] as &[&str])
+    #[cfg(feature = "metrics")]
+    let start = Instant::now();
+    let response = fetch_metadata_kp(client, &[] as &[&str])?;
+    client.state.replace_metadata_checked(response)?;
+    #[cfg(feature = "metrics")]
+    crate::metrics::record_metadata_refresh(start.elapsed().as_secs_f64() * 1000.0);
+    Ok(())
 }
 
 #[tracing::instrument(skip(client, topics), fields(topic_count = topics.len()))]
@@ -30,7 +35,7 @@ pub fn load_metadata_kp<T: AsRef<str>>(client: &mut KafkaClient, topics: &[T]) -
     #[cfg(feature = "metrics")]
     let start = Instant::now();
     let resp = fetch_metadata_kp(client, topics)?;
-    client.state.update_metadata(resp);
+    client.state.update_metadata_checked(resp)?;
     #[cfg(feature = "metrics")]
     crate::metrics::record_metadata_refresh(start.elapsed().as_secs_f64() * 1000.0);
     Ok(())
@@ -246,7 +251,7 @@ fn fetch_metadata_kp<T: AsRef<str>>(
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::thread::JoinHandle;
     use std::time::Duration;
 
@@ -254,8 +259,14 @@ mod tests {
     use kafka_protocol::messages::list_offsets_response::{
         ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
     };
+    use kafka_protocol::messages::metadata_response::{
+        MetadataResponseBroker, MetadataResponsePartition, MetadataResponseTopic,
+    };
     use kafka_protocol::messages::{
-        ApiKey, ListOffsetsRequest, ListOffsetsResponse, RequestHeader, ResponseHeader, TopicName,
+        ApiKey, ApiVersionsRequest, ApiVersionsResponse, FindCoordinatorRequest,
+        FindCoordinatorResponse, ListOffsetsRequest, ListOffsetsResponse, MetadataRequest,
+        MetadataResponse, OffsetFetchRequest, OffsetFetchResponse, RequestHeader, ResponseHeader,
+        TopicName,
     };
     use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
 
@@ -263,6 +274,302 @@ mod tests {
     use crate::protocol::metadata::{
         BrokerMetadata, MetadataResponseData, PartitionMetadata, TopicMetadata,
     };
+
+    fn read_protocol_request<T: Decodable>(
+        stream: &mut TcpStream,
+        api: ApiKey,
+    ) -> (RequestHeader, T) {
+        let mut size = [0; 4];
+        stream.read_exact(&mut size).unwrap();
+        let mut payload = vec![0; usize::try_from(i32::from_be_bytes(size)).unwrap()];
+        stream.read_exact(&mut payload).unwrap();
+        let version = i16::from_be_bytes(payload[2..4].try_into().unwrap());
+        let mut payload = Bytes::from(payload);
+        let header =
+            RequestHeader::decode(&mut payload, api.request_header_version(version)).unwrap();
+        assert_eq!(header.request_api_key, api as i16);
+        let request = T::decode(&mut payload, version).unwrap();
+        assert!(payload.is_empty());
+        (header, request)
+    }
+
+    fn write_protocol_response<T: Encodable + HeaderVersion>(
+        stream: &mut TcpStream,
+        header: &RequestHeader,
+        response: &T,
+    ) {
+        let mut payload = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(header.correlation_id)
+            .encode(&mut payload, T::header_version(header.request_api_version))
+            .unwrap();
+        response
+            .encode(&mut payload, header.request_api_version)
+            .unwrap();
+        stream
+            .write_all(&i32::try_from(payload.len()).unwrap().to_be_bytes())
+            .unwrap();
+        stream.write_all(&payload).unwrap();
+    }
+
+    fn metadata_response(brokers: &[(i32, SocketAddr)], partitions: &[i32]) -> MetadataResponse {
+        MetadataResponse::default()
+            .with_brokers(
+                brokers
+                    .iter()
+                    .map(|&(id, address)| {
+                        MetadataResponseBroker::default()
+                            .with_node_id(id.into())
+                            .with_host(StrBytes::from_string(address.ip().to_string()))
+                            .with_port(i32::from(address.port()))
+                    })
+                    .collect(),
+            )
+            .with_topics(vec![
+                MetadataResponseTopic::default()
+                    .with_name(Some(StrBytes::from_static_str("test-topic").into()))
+                    .with_partitions(
+                        partitions
+                            .iter()
+                            .map(|&id| {
+                                MetadataResponsePartition::default()
+                                    .with_partition_index(id)
+                                    .with_leader_id(1.into())
+                            })
+                            .collect(),
+                    ),
+            ])
+    }
+
+    fn reply_metadata(stream: &mut TcpStream, response: &MetadataResponse) {
+        let (header, _) = read_protocol_request::<MetadataRequest>(stream, ApiKey::Metadata);
+        write_protocol_response(stream, &header, response);
+    }
+
+    fn reply_find(stream: &mut TcpStream, address: SocketAddr, port: i32) {
+        let (header, request) =
+            read_protocol_request::<FindCoordinatorRequest>(stream, ApiKey::FindCoordinator);
+        assert_eq!(request.key.as_str(), "test-group");
+        write_protocol_response(
+            stream,
+            &header,
+            &FindCoordinatorResponse::default()
+                .with_node_id(1.into())
+                .with_host(StrBytes::from_string(address.ip().to_string()))
+                .with_port(port),
+        );
+    }
+
+    fn reply_offset_fetch(stream: &mut TcpStream, offset: i64) {
+        let (header, request) =
+            read_protocol_request::<OffsetFetchRequest>(stream, ApiKey::OffsetFetch);
+        assert_eq!(request.group_id.as_str(), "test-group");
+        let response = OffsetFetchResponse::default().with_topics(vec![
+            kafka_protocol::messages::offset_fetch_response::OffsetFetchResponseTopic::default()
+                .with_name(StrBytes::from_static_str("test-topic").into()).with_partitions(vec![
+                    kafka_protocol::messages::offset_fetch_response::OffsetFetchResponsePartition::default()
+                        .with_partition_index(0).with_committed_offset(offset),
+                ]),
+        ]);
+        write_protocol_response(stream, &header, &response);
+    }
+
+    fn bootstrap_metadata(stream: &mut TcpStream, response: &MetadataResponse) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let (header, _) = read_protocol_request::<ApiVersionsRequest>(stream, ApiKey::ApiVersions);
+        write_protocol_response(stream, &header, &ApiVersionsResponse::default());
+        reply_metadata(stream, response);
+    }
+
+    #[test]
+    fn same_node_find_coordinator_routes_the_next_rpc_to_its_new_endpoint() {
+        let old_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let old_address = old_listener.local_addr().unwrap();
+        let new_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let new_address = new_listener.local_addr().unwrap();
+        let old_server = std::thread::spawn(move || {
+            let (mut stream, _) = old_listener.accept().unwrap();
+            bootstrap_metadata(&mut stream, &metadata_response(&[(1, old_address)], &[0]));
+            reply_find(&mut stream, new_address, i32::from(new_address.port()));
+        });
+        let new_server = std::thread::spawn(move || {
+            let (mut stream, _) = new_listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            reply_offset_fetch(&mut stream, 42);
+        });
+        let mut client = KafkaClient::builder()
+            .with_hosts(vec![old_address.to_string()])
+            .with_conn_rw_timeout(3)
+            .build();
+        assert_eq!(
+            client.find_group_coordinator("test-group").unwrap(),
+            new_address.to_string()
+        );
+        assert_eq!(
+            client.state.find_broker("test-topic", 0),
+            Some(new_address.to_string().as_str())
+        );
+        let offsets = client
+            .fetch_group_offsets(
+                "test-group",
+                &[super::super::FetchGroupOffset {
+                    topic: "test-topic",
+                    partition: 0,
+                }],
+            )
+            .unwrap();
+        assert_eq!(offsets["test-topic"][0].offset, 42);
+        old_server.join().unwrap();
+        new_server.join().unwrap();
+    }
+
+    #[test]
+    fn malformed_find_success_is_a_codec_error_without_cache_publication() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            bootstrap_metadata(&mut stream, &metadata_response(&[(1, address)], &[0]));
+            reply_find(&mut stream, address, 65_536);
+        });
+        let mut client = KafkaClient::builder()
+            .with_hosts(vec![address.to_string()])
+            .with_conn_rw_timeout(3)
+            .build();
+        assert!(matches!(
+            client.find_group_coordinator("test-group"),
+            Err(Error::Protocol(crate::error::ProtocolError::Codec))
+        ));
+        assert!(client.group_coordinator_host("test-group").is_none());
+        assert_eq!(
+            client.state.find_broker("test-topic", 0),
+            Some(address.to_string().as_str())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn metadata_refresh_preserves_warm_partial_cache_replaces_full_cache_and_keeps_failed_snapshots()
+     {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let other_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        other_listener.set_nonblocking(true).unwrap();
+        let other_address = other_listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || serve_metadata_refreshes(&listener, other_address));
+        let mut client = KafkaClient::builder()
+            .with_hosts(vec![address.to_string()])
+            .with_conn_rw_timeout(3)
+            .build();
+        client.find_group_coordinator("test-group").unwrap();
+        client.load_metadata(&["test-topic"]).unwrap();
+        assert_eq!(
+            client.group_coordinator_host("test-group"),
+            Some(address.to_string())
+        );
+        let partition = super::super::FetchGroupOffset {
+            topic: "test-topic",
+            partition: 0,
+        };
+        assert_eq!(
+            client
+                .fetch_group_offsets("test-group", std::slice::from_ref(&partition))
+                .unwrap()["test-topic"][0]
+                .offset,
+            42
+        );
+        client.load_metadata_all().unwrap();
+        assert!(client.group_coordinator_host("test-group").is_none());
+        assert_eq!(
+            client
+                .fetch_group_offsets("test-group", std::slice::from_ref(&partition))
+                .unwrap()["test-topic"][0]
+                .offset,
+            43
+        );
+        assert!(matches!(
+            client.load_metadata_all(),
+            Err(Error::Protocol(crate::error::ProtocolError::Codec))
+        ));
+        assert_eq!(
+            client.group_coordinator_host("test-group"),
+            Some(address.to_string())
+        );
+        assert_eq!(
+            client.state.find_broker("test-topic", 0),
+            Some(address.to_string().as_str())
+        );
+        assert!(matches!(
+            client.load_metadata_all(),
+            Err(Error::Protocol(crate::error::ProtocolError::Codec))
+        ));
+        assert_eq!(
+            client.group_coordinator_host("test-group"),
+            Some(address.to_string())
+        );
+        assert!(client.load_metadata_all().is_err());
+        assert_eq!(
+            client.group_coordinator_host("test-group"),
+            Some(address.to_string())
+        );
+        assert_eq!(
+            client.state.find_broker("test-topic", 0),
+            Some(address.to_string().as_str())
+        );
+        assert!(
+            other_listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        server.join().unwrap();
+    }
+
+    fn serve_metadata_refreshes(listener: &TcpListener, other: SocketAddr) {
+        let address = listener.local_addr().unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        bootstrap_metadata(
+            &mut stream,
+            &metadata_response(&[(1, address), (2, other)], &[0]),
+        );
+        reply_find(&mut stream, address, i32::from(address.port()));
+        let reordered = metadata_response(&[(2, other), (1, address)], &[0]);
+        reply_metadata(&mut stream, &reordered);
+        // Incremental publication keeps the existing group cache warm: no Find.
+        reply_offset_fetch(&mut stream, 42);
+        reply_metadata(&mut stream, &reordered);
+        // Full replacement destroyed the slots: a new Find is required.
+        reply_find(&mut stream, address, i32::from(address.port()));
+        reply_offset_fetch(&mut stream, 43);
+        reply_metadata(
+            &mut stream,
+            &metadata_response(&[(2, other), (1, address)], &[3]),
+        );
+        let malformed_broker = MetadataResponse::default()
+            .with_brokers(vec![
+                MetadataResponseBroker::default()
+                    .with_node_id((-1).into())
+                    .with_port(-1),
+            ])
+            .with_topics(vec![
+                MetadataResponseTopic::default()
+                    .with_name(Some(StrBytes::from_static_str("test-topic").into()))
+                    .with_partitions(vec![
+                        MetadataResponsePartition::default()
+                            .with_partition_index(0)
+                            .with_leader_id((-1).into()),
+                    ]),
+            ]);
+        reply_metadata(&mut stream, &malformed_broker);
+        let _ = read_protocol_request::<MetadataRequest>(&mut stream, ApiKey::Metadata);
+        // Close before the final response to exercise network failure preservation.
+    }
 
     #[test]
     fn list_offsets_preserves_the_broker_timestamp_for_by_time() {
@@ -503,7 +810,6 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
-            ..Default::default()
         });
         (client, server)
     }

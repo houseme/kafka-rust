@@ -115,15 +115,15 @@ pub(crate) fn get_group_coordinator(
         let retry_code = match r.error {
             0 => {
                 let gc = protocol::consumer::GroupCoordinatorResponse {
-                    header: protocol::HeaderResponse {
-                        correlation: correlation_id,
-                    },
                     error: r.error,
                     broker_id: r.broker_id,
                     port: r.port,
                     host: r.host,
                 };
-                return Ok(ctx.state.set_group_coordinator(group, &gc).to_owned());
+                return ctx
+                    .state
+                    .set_group_coordinator_checked(group, &gc)
+                    .map(str::to_owned);
             }
             e if KafkaCode::from_protocol(e) == Some(KafkaCode::GroupCoordinatorNotAvailable) => e,
             e => {

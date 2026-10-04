@@ -170,7 +170,6 @@ mod tests {
                 }],
                 ..Default::default()
             }],
-            ..Default::default()
         });
         for unknown in [
             FetchPartition::new("unknown", 0, 0),

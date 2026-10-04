@@ -9,10 +9,7 @@ use kafka_protocol::messages::offset_commit_request::{
 };
 use kafka_protocol::messages::offset_fetch_request::OffsetFetchRequestTopic;
 
-use super::{
-    API_VERSION_FIND_COORDINATOR, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH,
-    HeaderResponse,
-};
+use super::{API_VERSION_FIND_COORDINATOR, API_VERSION_OFFSET_COMMIT, API_VERSION_OFFSET_FETCH};
 
 // -- FindCoordinator --
 
@@ -36,7 +33,7 @@ pub fn build_find_coordinator_request(
 
 pub fn convert_find_coordinator_response(
     kp_resp: &FindCoordinatorResponse,
-    correlation_id: i32,
+    _correlation_id: i32,
 ) -> GroupCoordinatorResponse {
     let (error, node_id, host, port) = if let Some(c) = kp_resp.coordinators.first() {
         (
@@ -55,9 +52,6 @@ pub fn convert_find_coordinator_response(
     };
 
     GroupCoordinatorResponse {
-        header: HeaderResponse {
-            correlation: correlation_id,
-        },
         error,
         broker_id: node_id,
         port,
@@ -115,12 +109,9 @@ pub fn build_offset_commit_request(
 
 pub fn convert_offset_commit_response(
     kp_resp: kafka_protocol::messages::OffsetCommitResponse,
-    correlation_id: i32,
+    _correlation_id: i32,
 ) -> OffsetCommitResponse {
     OffsetCommitResponse {
-        header: HeaderResponse {
-            correlation: correlation_id,
-        },
         topic_partitions: kp_resp
             .topics
             .into_iter()
@@ -177,12 +168,9 @@ pub fn build_offset_fetch_request(
 
 pub fn convert_offset_fetch_response(
     kp_resp: kafka_protocol::messages::OffsetFetchResponse,
-    correlation_id: i32,
+    _correlation_id: i32,
 ) -> OffsetFetchResponse {
     OffsetFetchResponse {
-        header: HeaderResponse {
-            correlation: correlation_id,
-        },
         topic_partitions: kp_resp
             .topics
             .into_iter()
@@ -211,28 +199,16 @@ use crate::error::{Error, KafkaCode, Result};
 use crate::utils::PartitionOffset;
 
 #[derive(Debug, Default)]
-#[allow(dead_code)]
 pub struct GroupCoordinatorResponse {
-    pub header: HeaderResponse,
     pub error: i16,
     pub broker_id: i32,
     pub port: i32,
     pub host: String,
 }
 
-impl GroupCoordinatorResponse {
-    pub fn into_result(self) -> Result<Self> {
-        match Error::from_protocol(self.error) {
-            Some(e) => Err(e),
-            None => Ok(self),
-        }
-    }
-}
-
 #[derive(Default, Debug)]
 #[allow(dead_code)]
 pub struct OffsetFetchResponse {
-    pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionOffsetFetchResponse>,
 }
 
@@ -272,7 +248,6 @@ impl PartitionOffsetFetchResponse {
 #[derive(Default, Debug)]
 #[allow(dead_code)]
 pub struct OffsetCommitResponse {
-    pub header: HeaderResponse,
     pub topic_partitions: Vec<TopicPartitionOffsetCommitResponse>,
 }
 

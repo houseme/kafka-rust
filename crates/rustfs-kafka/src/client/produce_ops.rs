@@ -562,7 +562,6 @@ mod tests {
                     ..Default::default()
                 })
                 .collect(),
-            ..Default::default()
         });
     }
 

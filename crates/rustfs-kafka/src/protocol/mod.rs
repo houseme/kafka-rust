@@ -210,15 +210,6 @@ where
 }
 
 // --------------------------------------------------------------------
-// Shared data types (moved from old protocol module)
-// --------------------------------------------------------------------
-
-#[derive(Default, Debug, Clone)]
-pub struct HeaderResponse {
-    pub correlation: i32,
-}
-
-// --------------------------------------------------------------------
 
 #[test]
 fn test_kafka_code_from_protocol() {
