@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Producer and batch builder options plus producer client accessors remain available after selecting a custom partitioner.
 - Added MessageSets::iter_ref and Consumer::consume_messageset_ref for borrowed topic/message views while preserving owned iteration. Sync consumers filter batch prefixes before the requested position, validate offset bounds before progress publication or commit IO, and build fetch requests lazily; added seek/consume coverage to the Kafka and secure transport matrices.
 - Added a release batching-throughput example with identical payload and acknowledgement settings, explicit warmup, ABBA ordering, and a baseline-drift gate.
 - Added AsyncProducer::send_all with one Produce request per broker, partition-order preservation, complete ACK validation, and no redundant key/value pre-copying.
@@ -16,6 +17,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Batch enqueue reuses an existing topic/partition entry for payload accounting, and acknowledgement matching computes malformed and complete status in one traversal. Transactional sends resolve each custom key/value `AsBytes` view once.
 - Async request hot paths iterate the configured bootstrap hosts without cloning the host vector. `ensure_connected` checks the pool for any reusable connection with a short-circuit predicate.
 - Documented verified Fetch cursors and transaction control filtering, complete Produce acknowledgements, batch/transaction local guards, asynchronous preflight memory tradeoffs, and production frame encoding CPU measurement boundaries.
 - Produce encoding fallibly reserves known contiguous record runs before pushing SDK records. Added fixed real-builder/full-frame fixtures with SDK decode verification and an ignored release CPU measurement that preserves all warmup/sample data for an isolated serial ABBA comparison; no end-to-end throughput or allocation-count guarantee is implied.

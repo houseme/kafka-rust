@@ -196,7 +196,8 @@ outlive the response; `iter()` and `IntoIterator` retain their owned behavior.
 `StickyPartitioner` keeps its batch state per topic and chooses another available partition if the previous one
 loses its leader. Explicit record partitions remain unchanged. Calling `with_partitioner` on either sync producer
 builder preserves previously selected TLS, client ID, and acknowledgement settings. The regular producer also
-retains its timestamp setting, and the batch producer retains its batching settings.
+retains its timestamp setting, and the batch producer retains its batching settings. Builder options and the producer
+client accessors remain available after selecting a custom partitioner.
 
 Enable `producer_timestamp` and select `ProducerTimestamp::CreateTime` to include the current Unix milliseconds
 in sync Produce batches. One clock sample applies to every broker and partition in that call, including

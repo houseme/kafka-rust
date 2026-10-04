@@ -35,7 +35,7 @@ pub struct Builder<P = DefaultPartitioner> {
     producer_timestamp: Option<ProducerTimestamp>,
 }
 
-impl Builder {
+impl Builder<DefaultPartitioner> {
     pub(crate) fn new(
         client: Option<KafkaClient>,
         hosts: Vec<String>,
@@ -67,7 +67,9 @@ impl Builder {
         }
         b
     }
+}
 
+impl<P> Builder<P> {
     /// Specifies the security config to use.
     #[cfg(any(feature = "security", feature = "security-ring"))]
     #[must_use]
@@ -325,11 +327,11 @@ mod tests {
     #[test]
     fn custom_partitioner_preserves_producer_configuration() {
         let builder = Producer::from_hosts(vec!["broker:9092".to_owned()])
+            .with_partitioner(RoundRobinPartitioner::new())
             .with_client_id("custom-client".to_owned())
             .with_ack_timeout(Duration::from_secs(7))
             .with_connection_idle_timeout(Duration::from_secs(11))
-            .with_transactional_id("transaction-id")
-            .with_partitioner(RoundRobinPartitioner::new());
+            .with_transactional_id("transaction-id");
 
         assert_eq!(builder.hosts, vec!["broker:9092"]);
         assert_eq!(builder.client_id.as_deref(), Some("custom-client"));

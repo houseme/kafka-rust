@@ -424,7 +424,7 @@ impl BatchProducerBuilder {
     }
 }
 
-impl BatchProducerBuilder {
+impl<P: Partitioner> BatchProducerBuilder<P> {
     /// Specifies the security config to use.
     #[cfg(any(feature = "security", feature = "security-ring"))]
     #[must_use]
@@ -586,6 +586,7 @@ mod tests {
     #[test]
     fn custom_partitioner_preserves_batch_configuration() {
         let builder = BatchProducer::from_hosts(vec!["broker:9092".to_owned()])
+            .with_partitioner(super::super::RoundRobinPartitioner::new())
             .with_client_id("batch-client".to_owned())
             .with_ack_timeout(Duration::from_secs(7))
             .with_connection_idle_timeout(Duration::from_secs(11))
@@ -594,8 +595,7 @@ mod tests {
                 batch_size: 100,
                 linger_ms: 20,
                 max_bytes: 8192,
-            })
-            .with_partitioner(super::super::RoundRobinPartitioner::new());
+            });
 
         assert_eq!(builder.hosts, vec!["broker:9092"]);
         assert_eq!(builder.client_id.as_deref(), Some("batch-client"));

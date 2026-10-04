@@ -73,7 +73,9 @@ impl TransactionalProducer {
     pub fn from_client(client: KafkaClient) -> TransactionalBuilder<DefaultPartitioner> {
         TransactionalBuilder::new(Some(client), Vec::new())
     }
+}
 
+impl<P: Partitioner> TransactionalProducer<P> {
     /// Borrows the underlying kafka client.
     #[must_use]
     pub fn client(&self) -> &KafkaClient {
@@ -160,16 +162,10 @@ impl<P: Partitioner> TransactionalProducer<P> {
         #[cfg(feature = "producer_timestamp")]
         crate::client::produce_ops::validate_producer_timestamp(self.client.producer_timestamp())?;
 
-        let key = if rec.key.as_bytes().is_empty() {
-            None
-        } else {
-            Some(rec.key.as_bytes())
-        };
-        let value = if rec.value.as_bytes().is_empty() {
-            None
-        } else {
-            Some(rec.value.as_bytes())
-        };
+        let key_bytes = rec.key.as_bytes();
+        let key = (!key_bytes.is_empty()).then_some(key_bytes);
+        let value_bytes = rec.value.as_bytes();
+        let value = (!value_bytes.is_empty()).then_some(value_bytes);
 
         let mut msg = ProduceMessage {
             key,
@@ -421,7 +417,7 @@ impl TransactionalBuilder {
     }
 }
 
-impl TransactionalBuilder<DefaultPartitioner> {
+impl<P: Partitioner> TransactionalBuilder<P> {
     /// Sets the transactional ID (required).
     #[must_use]
     pub fn with_transactional_id(mut self, id: impl Into<String>) -> Self {
@@ -581,6 +577,54 @@ mod tests {
             }
             Ok(_) => panic!("expected error when transactional_id is not set"),
         }
+    }
+
+    #[test]
+    fn custom_partitioner_keeps_transactional_builder_configuration_available() {
+        let builder = TransactionalProducer::from_hosts(Vec::new())
+            .with_partitioner(
+                DefaultPartitioner::<std::collections::hash_map::RandomState>::default(),
+            )
+            .with_transactional_id("txn-custom")
+            .with_client_id("client-custom")
+            .with_ack_timeout_ms(1_234);
+
+        assert_eq!(builder.transactional_id.as_deref(), Some("txn-custom"));
+        assert_eq!(builder.client_id.as_deref(), Some("client-custom"));
+        assert_eq!(builder.ack_timeout_ms, 1_234);
+    }
+
+    #[test]
+    fn transactional_send_resolves_key_and_value_bytes_once() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountedBytes(Arc<AtomicUsize>);
+
+        impl crate::producer::AsBytes for CountedBytes {
+            fn as_bytes(&self) -> &[u8] {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                b"x"
+            }
+        }
+
+        let key_calls = Arc::new(AtomicUsize::new(0));
+        let value_calls = Arc::new(AtomicUsize::new(0));
+        let record = Record::from_key_value(
+            "missing-topic",
+            CountedBytes(Arc::clone(&key_calls)),
+            CountedBytes(Arc::clone(&value_calls)),
+        );
+        let mut producer = disconnected_producer();
+        producer.begin().unwrap();
+
+        assert!(matches!(
+            producer.send(&record),
+            Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+        ));
+        assert_eq!(key_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(value_calls.load(Ordering::Relaxed), 1);
+        assert!(producer.in_transaction());
     }
 
     fn disconnected_producer() -> TransactionalProducer {

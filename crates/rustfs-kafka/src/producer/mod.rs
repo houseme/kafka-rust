@@ -92,7 +92,9 @@ impl Producer {
     pub fn from_hosts(hosts: Vec<String>) -> builder::Builder<DefaultPartitioner> {
         Builder::new(None, hosts)
     }
+}
 
+impl<P: Partitioner> Producer<P> {
     /// Borrows the underlying kafka client.
     #[must_use]
     pub fn client(&self) -> &KafkaClient {

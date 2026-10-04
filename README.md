@@ -74,7 +74,7 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
 - Async consumers initialize from committed offsets, then use the configured fallback for partitions without a
   committed position. A failed or cancelled multi-broker poll does not advance progress for unreturned messages.
 - Sticky partitioning maintains separate state per topic and reselects when a partition becomes unavailable.
-- Producer builders preserve TLS, client ID, and other configuration when a custom partitioner is selected.
+- Producer builders preserve TLS, client ID, and other configuration when a custom partitioner is selected; remaining options and client accessors stay available afterward.
 - Async producers borrow cached partition routes. A broker leader error invalidates the affected topic route;
   the next send refreshes metadata and the failed send returns its original error.
 - `AsyncProducer::send_all` batches records by broker, topic, and partition, sending one Produce request per broker.
