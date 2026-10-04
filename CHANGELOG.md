@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync OffsetFetch and OffsetCommit require unique, complete requested topic/partition acknowledgements, reject duplicate input targets before IO, and retire malformed connections without replaying commits. OffsetFetch processes valid top-level errors first and rejects successful committed offsets below the explicit unset sentinel -1.
 - Sync, async, batch, and transactional producers reject duplicate header keys before routing or IO because the current map-based record codec cannot preserve them. Added reusable header validation; unique headers retain their order and values, and local rejection preserves buffered obligations and active transaction state.
 - Ordinary producer creation rejects unsupported idempotence and transaction IDs before metadata or connection IO; callers can use the dedicated transactional producer for the implemented transaction flow.
 - Metadata refresh validates broker descriptors and partition identities before publishing; failed full refreshes retain the previous snapshot, successful replacement clears dependent coordinator caches, and rediscovered endpoints update existing broker slots. Removed unused private response headers and replica/ISR copies while preserving public metadata views.

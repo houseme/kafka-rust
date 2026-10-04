@@ -4,7 +4,7 @@
 //! coordinator, with retry logic for transient errors such as
 //! `GroupLoadInProgress` and `NotCoordinatorForGroup`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use tracing::debug;
 
@@ -153,6 +153,15 @@ fn commit_offsets_inner(
     group: &str,
     ctx: &mut OffsetRequestContext<'_>,
 ) -> Result<()> {
+    let expected: HashSet<_> = offsets
+        .iter()
+        .map(|&(topic, partition, ..)| (topic, partition))
+        .collect();
+    if expected.len() != offsets.len() {
+        return Err(Error::Config(
+            "duplicate topic/partition in an offset commit request".into(),
+        ));
+    }
     let mut attempt = 1;
     loop {
         let now = Instant::now();
@@ -187,6 +196,11 @@ fn commit_offsets_inner(
         .map_err(|e| e.with_broker_context(&host, "OffsetCommit"))?;
         let our_resp =
             crate::protocol::consumer::convert_offset_commit_response(kp_resp, ctx.correlation_id);
+
+        if let Err(error) = validate_offset_commit_acknowledgements(&our_resp, &expected) {
+            let _ = conn.shutdown();
+            return Err(error.with_broker_context(&host, "OffsetCommit"));
+        }
 
         let mut retry_code = None;
         'rproc: for tp in &our_resp.topic_partitions {
@@ -228,11 +242,47 @@ fn commit_offsets_inner(
     }
 }
 
+fn validate_offset_commit_acknowledgements(
+    response: &protocol::consumer::OffsetCommitResponse,
+    expected: &HashSet<(&str, i32)>,
+) -> Result<()> {
+    let expected_topics: HashSet<_> = expected.iter().map(|(topic, _)| *topic).collect();
+    let mut seen_topics = HashSet::with_capacity(expected_topics.len());
+    let mut confirmed = HashSet::with_capacity(expected.len());
+    for topic in &response.topic_partitions {
+        if !expected_topics.contains(topic.topic.as_str())
+            || !seen_topics.insert(topic.topic.as_str())
+        {
+            return Err(Error::codec());
+        }
+        for partition in &topic.partitions {
+            let target = (topic.topic.as_str(), partition.partition);
+            if !expected.contains(&target) || !confirmed.insert(target) {
+                return Err(Error::codec());
+            }
+        }
+    }
+    if confirmed.len() != expected.len() {
+        return Err(Error::codec());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "offset_commit_tests.rs"]
+mod commit_tests;
+
 fn fetch_group_offsets_inner(
     partitions: &[(&str, i32)],
     group: &str,
     ctx: &mut OffsetRequestContext<'_>,
 ) -> Result<HashMap<String, Vec<PartitionOffset>>> {
+    let expected: HashSet<_> = partitions.iter().copied().collect();
+    if expected.len() != partitions.len() {
+        return Err(Error::Config(
+            "duplicate topic/partition in an offset fetch request".into(),
+        ));
+    }
     let mut attempt = 1;
     loop {
         let now = Instant::now();
@@ -263,6 +313,12 @@ fn fetch_group_offsets_inner(
         )
         .map_err(|e| e.with_broker_context(&host, "OffsetFetch"))?;
         let mut retry_code = offset_fetch_retry_code(kp_resp.error_code, group, ctx.state)?;
+        if retry_code.is_none()
+            && let Err(error) = validate_offset_fetch_acknowledgements(&kp_resp, &expected)
+        {
+            let _ = conn.shutdown();
+            return Err(error.with_broker_context(&host, "OffsetFetch"));
+        }
         let our_resp =
             crate::protocol::consumer::convert_offset_fetch_response(kp_resp, ctx.correlation_id);
 
@@ -301,6 +357,35 @@ fn fetch_group_offsets_inner(
             None => return Ok(topic_map),
         }
     }
+}
+
+fn validate_offset_fetch_acknowledgements(
+    response: &kafka_protocol::messages::OffsetFetchResponse,
+    expected: &HashSet<(&str, i32)>,
+) -> Result<()> {
+    let expected_topics: HashSet<_> = expected.iter().map(|(topic, _)| *topic).collect();
+    let mut seen_topics = HashSet::with_capacity(expected_topics.len());
+    let mut acknowledged = HashSet::with_capacity(expected.len());
+    for topic in &response.topics {
+        if !expected_topics.contains(topic.name.as_str())
+            || !seen_topics.insert(topic.name.as_str())
+        {
+            return Err(Error::codec());
+        }
+        for partition in &topic.partitions {
+            let target = (topic.name.as_str(), partition.partition_index);
+            if !expected.contains(&target)
+                || !acknowledged.insert(target)
+                || (partition.error_code == 0 && partition.committed_offset < -1)
+            {
+                return Err(Error::codec());
+            }
+        }
+    }
+    if acknowledged.len() != expected.len() {
+        return Err(Error::codec());
+    }
+    Ok(())
 }
 
 fn offset_fetch_retry_code(
