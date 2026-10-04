@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync ListOffsets validates complete unique targets per broker and successful offset bounds before projecting results, retires malformed connections, deduplicates input topics, and returns unknown nonzero broker errors explicitly. Raw unknown-offset sentinels, timestamps, maximum positions, and distinct partitions across brokers are preserved.
 - Fresh-topic consumer offset tests verify empty ListOffsets readiness and retry only complete leader-error Produce confirmations within a bounded budget, checking an empty log before repeating the batch. Transport and other errors fail immediately, retaining single-append and no-redelivery assertions.
 - Async consumers validate complete unique Fetch/OffsetFetch/OffsetCommit responses and numeric offsets before filtering batch prefixes or publishing progress. Malformed responses retain offsets and pending commits; topic-grouped progress maps and bounded dense request matching reduce repeated lookup work. Added secure within-batch committed-offset recovery and an ignored CPU microbenchmark of the production validation/publication path.
 - Sync OffsetFetch and OffsetCommit require unique, complete requested topic/partition acknowledgements, reject duplicate input targets before IO, and retire malformed connections without replaying commits. OffsetFetch processes valid top-level errors first and rejects successful committed offsets below the explicit unset sentinel -1.

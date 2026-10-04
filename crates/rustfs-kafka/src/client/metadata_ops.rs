@@ -4,7 +4,7 @@
 //! topic offsets (earliest, latest, by timestamp), and API version negotiation
 //! with brokers.
 
-use std::collections::hash_map::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use tracing::debug;
 
@@ -109,8 +109,12 @@ fn request_offsets_kp<T: AsRef<str>, O>(
     let config = &client.config;
 
     let mut broker_partitions: HashMap<&str, Vec<(&str, i32, i64)>> = HashMap::new();
+    let mut requested_topics = HashSet::with_capacity(n_topics);
     for topic in topics {
         let topic = topic.as_ref();
+        if !requested_topics.insert(topic) {
+            continue;
+        }
         if let Some(ps) = state.partitions_for(topic) {
             for (id, host) in ps
                 .iter()
@@ -150,6 +154,10 @@ fn request_offsets_kp<T: AsRef<str>, O>(
             api_version,
         )
         .map_err(|e| e.with_broker_context(host, "ListOffsets"))?;
+        if let Err(error) = validate_list_offsets_response(&kp_resp, &partitions) {
+            let _ = conn.shutdown();
+            return Err(error.with_broker_context(host, "ListOffsets"));
+        }
         for topic in kp_resp.topics {
             let topic_name = topic.name;
             let resp_offsets = res
@@ -157,11 +165,12 @@ fn request_offsets_kp<T: AsRef<str>, O>(
                 .or_insert_with(|| Vec::with_capacity(topic.partitions.len()));
             resp_offsets.reserve(topic.partitions.len());
             for partition in topic.partitions {
-                if let Some(error_code) = KafkaCode::from_protocol(partition.error_code) {
+                if partition.error_code != 0 {
                     return Err(Error::TopicPartitionError {
                         topic_name: topic_name.to_string(),
                         partition_id: partition.partition_index,
-                        error_code,
+                        error_code: KafkaCode::from_protocol(partition.error_code)
+                            .unwrap_or(KafkaCode::Unknown),
                     });
                 }
                 resp_offsets.push(map_partition(&partition));
@@ -171,6 +180,42 @@ fn request_offsets_kp<T: AsRef<str>, O>(
 
     Ok(res)
 }
+
+fn validate_list_offsets_response(
+    response: &kafka_protocol::messages::ListOffsetsResponse,
+    requested: &[(&str, i32, i64)],
+) -> Result<()> {
+    let mut remaining: HashMap<&str, HashSet<i32>> = HashMap::new();
+    for &(topic, partition, _) in requested {
+        if !remaining.entry(topic).or_default().insert(partition) {
+            return Err(Error::codec());
+        }
+    }
+    for topic in &response.topics {
+        let mut partitions = remaining
+            .remove(topic.name.as_str())
+            .ok_or_else(Error::codec)?;
+        for partition in &topic.partitions {
+            if !partitions.remove(&partition.partition_index)
+                // -1 is Kafka's valid UNKNOWN_OFFSET, including no timestamp match.
+                || (partition.error_code == 0 && partition.offset < -1)
+            {
+                return Err(Error::codec());
+            }
+        }
+        if !partitions.is_empty() {
+            return Err(Error::codec());
+        }
+    }
+    if !remaining.is_empty() {
+        return Err(Error::codec());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "list_offsets_tests.rs"]
+mod list_offsets_tests;
 
 fn fetch_metadata_kp<T: AsRef<str>>(
     client: &mut KafkaClient,
