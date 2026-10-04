@@ -61,6 +61,8 @@ use crate::protocol;
 pub mod builder;
 
 mod admin_ops;
+#[cfg(test)]
+mod admin_transport_tests;
 /// Configuration types and defaults for the Kafka client.
 pub mod config;
 pub(crate) mod fetch_ops;
@@ -434,9 +436,9 @@ impl KafkaClient {
 
     /// Generic helper for admin API requests that iterate over configured brokers.
     ///
-    /// Builds a request via `build`, sends it to each broker in order, and
-    /// converts the first successful response via `convert`. Returns the last
-    /// error if all brokers fail.
+    /// Tries another bootstrap broker when connection setup fails. After a
+    /// sending attempt, only explicitly read-only APIs may fail over; mutations
+    /// return uncertain delivery errors to the caller without automatic replay.
     fn try_admin_request<Req, Resp, T, FBuild, FConvert>(
         &mut self,
         operation_name: &'static str,
@@ -452,31 +454,40 @@ impl KafkaClient {
     {
         let correlation_id = self.state.next_correlation_id();
         let now = std::time::Instant::now();
-        let hosts = self.config.hosts.clone();
         let mut last_err: Option<Error> = None;
 
-        for host in hosts {
+        for host in &self.config.hosts {
             let (mut header, request) = build(correlation_id, &self.config.client_id);
             let effective_api_version = transport::apply_request_api_version(
                 &self.api_versions,
-                &host,
+                host,
                 &mut header,
                 api_version,
             );
 
-            let conn = match self.conn_pool.get_conn(&host, now) {
+            let retry_after_send = admin_request_is_read_only(header.request_api_key);
+            let frame = protocol::encode_request_frame(&header, &request, effective_api_version)
+                .map_err(|e| e.with_broker_context(host, operation_name))?;
+            let conn = match self.conn_pool.get_conn(host, now) {
                 Ok(conn) => conn,
                 Err(e) => {
-                    last_err = Some(e.with_broker_context(&host, operation_name));
+                    last_err = Some(e.with_broker_context(host, operation_name));
                     continue;
                 }
             };
 
-            match transport::kp_send_request(conn, &header, &request, effective_api_version)
+            match conn
+                .send_request(&frame, header.correlation_id, effective_api_version)
                 .and_then(|()| transport::kp_get_response::<Resp>(conn, effective_api_version))
             {
                 Ok(resp) => return Ok(convert(resp)),
-                Err(e) => last_err = Some(e.with_broker_context(&host, operation_name)),
+                Err(e) => {
+                    let error = e.with_broker_context(host, operation_name);
+                    if !retry_after_send {
+                        return Err(error);
+                    }
+                    last_err = Some(error);
+                }
             }
         }
 
@@ -487,7 +498,8 @@ impl KafkaClient {
 
     /// Creates one or more topics.
     ///
-    /// The request is attempted against configured brokers until one succeeds.
+    /// Unreachable bootstrap brokers are skipped before sending. Once sending
+    /// is attempted, uncertain errors are returned without automatic replay.
     ///
     /// # Errors
     ///
@@ -937,6 +949,34 @@ impl KafkaClientInternals for KafkaClient {
             messages,
         )
     }
+}
+
+// Unknown APIs are conservative: their side effects have not been classified.
+fn admin_request_is_read_only(api_key: i16) -> bool {
+    use kafka_protocol::messages::ApiKey;
+    matches!(
+        ApiKey::try_from(api_key),
+        Ok(ApiKey::DescribeCluster
+            | ApiKey::DescribeAcls
+            | ApiKey::DescribeConfigs
+            | ApiKey::DescribeDelegationToken
+            | ApiKey::DescribeLogDirs
+            | ApiKey::DescribeQuorum
+            | ApiKey::ListPartitionReassignments
+            | ApiKey::OffsetForLeaderEpoch
+            | ApiKey::DescribeClientQuotas
+            | ApiKey::DescribeUserScramCredentials
+            | ApiKey::DescribeProducers
+            | ApiKey::ListTransactions
+            | ApiKey::DescribeTransactions
+            | ApiKey::DescribeTopicPartitions
+            | ApiKey::DescribeGroups
+            | ApiKey::ListGroups
+            | ApiKey::ConsumerGroupDescribe
+            | ApiKey::ShareGroupDescribe
+            | ApiKey::DescribeShareGroupOffsets
+            | ApiKey::ListConfigResources)
+    )
 }
 
 #[cfg(test)]

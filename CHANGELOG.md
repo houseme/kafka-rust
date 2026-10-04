@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Admin mutations and unclassified APIs return uncertain errors after a sending attempt without automatic replay. Read-only queries retain IO failover, unreachable bootstrap brokers remain selectable, and frames are encoded before connecting without cloning all hosts.
 - Sync response buffers now check size conversion and reserve fallibly before exact reads; allocation or read failures close the connection and clear pending response context. SASL uses the same safe helper.
 - Spelling checks now recognize Kafka's LSO terminology used by the transaction isolation tests.
 - Exponential retry safely caps large attempts and duration overflow, rejects non-finite or nonpositive multipliers, and supports zero or shrinking delays; its documentation now describes deterministic backoff.
