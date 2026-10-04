@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Ordinary producers require complete unique resolved target acknowledgements and return codec errors instead of panicking on malformed confirmations. Invalid replies retire existing target connections without reconnecting or replay; valid partition errors, empty input, and no-ack sends retain their contracts.
 - Native async consumers publish verified batch positions and pending commits only after all broker responses succeed, including safe control-only and compacted progress. Missing cached positions and malformed data return codec errors; added TCP cancellation/error coverage, secure transaction-marker recovery, and updated the actual progress CPU fixture.
 - Sync consumers use verified batch cursors to progress through control-only and compacted batches without growing retry buffers or marking business messages consumed. Complete response validation and decoder-error priority precede atomic cursor/retry publication; added TCP and real transaction coverage.
 - Fetch adapters filter transaction control records and retain verified batch cursors through empty and compacted batches. CRC/decompression, exact record framing, batch bounds and strict offset ordering are checked before accepting a partition; existing owned response fields remain unchanged.

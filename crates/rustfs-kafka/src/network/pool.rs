@@ -107,6 +107,13 @@ impl Connections {
         self.config.idle_timeout
     }
 
+    /// Retires an existing stream without checkout or connection establishment.
+    pub(crate) fn invalidate_existing(&mut self, host: &str) {
+        if let Some(&index) = self.host_index.get(host) {
+            let _ = self.conns[index].item.shutdown();
+        }
+    }
+
     fn allocate_slot(&mut self, host: &str, now: Instant) -> Result<usize> {
         let cid = self.state.next_conn_id();
         let conn = Pooled::new(now, self.config.new_conn(cid, host)?);

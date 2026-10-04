@@ -57,7 +57,7 @@ pub use config::DEFAULT_REQUIRED_ACKS;
 use crate::client::KafkaClientInternals;
 use crate::client::{self, KafkaClient};
 use crate::error::{Error, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::slice::from_ref;
 
 use config::Config;
@@ -114,11 +114,6 @@ impl Producer {
 impl<P: Partitioner> Producer<P> {
     /// Synchronously send the specified message to Kafka.
     ///
-    /// # Panics
-    ///
-    /// Panics if the response contains an unexpected number of confirms
-    /// (this indicates a protocol-level bug).
-    ///
     /// # Errors
     ///
     /// Returns an error if producing the message to Kafka fails or if
@@ -128,22 +123,18 @@ impl<P: Partitioner> Producer<P> {
         K: AsBytes,
         V: AsBytes,
     {
-        let mut rs = self.send_all(from_ref(rec))?;
+        let confirms = self.send_all(from_ref(rec))?;
 
         if self.config.required_acks == 0 {
             Ok(())
         } else {
-            assert_eq!(1, rs.len());
-            let mut produce_confirm = rs.pop().unwrap();
-
-            assert_eq!(1, produce_confirm.partition_confirms.len());
-            produce_confirm
-                .partition_confirms
-                .pop()
-                .unwrap()
-                .offset
-                .map_err(Error::Kafka)?;
-            Ok(())
+            let [topic] = confirms.as_slice() else {
+                return Err(Error::codec());
+            };
+            let [partition] = topic.partition_confirms.as_slice() else {
+                return Err(Error::codec());
+            };
+            partition.offset.map(|_| ()).map_err(Error::Kafka)
         }
     }
 
@@ -154,7 +145,9 @@ impl<P: Partitioner> Producer<P> {
     /// # Errors
     ///
     /// Returns an error if producing messages to Kafka fails or if
-    /// any target topic/partition is unknown.
+    /// any target topic/partition is unknown, or the acknowledgement set contains
+    /// missing, duplicate, unexpected, or empty targets. Partition-level broker
+    /// errors remain in the returned confirmation offsets.
     pub fn send_all<K, V>(&mut self, recs: &[Record<'_, K, V>]) -> Result<Vec<ProduceConfirm>>
     where
         K: AsBytes,
@@ -179,8 +172,11 @@ impl<P: Partitioner> Producer<P> {
         let partitions = &self.state.partitions;
         let client = &mut self.client;
         let config = &self.config;
+        let expect_acks = config.required_acks != 0;
+        let mut expected = HashSet::new();
+        let mut previous_target = None;
 
-        client.internal_produce_messages(
+        let confirms = client.internal_produce_messages(
             config.required_acks,
             config.ack_timeout,
             recs.iter().map(|r| {
@@ -192,10 +188,47 @@ impl<P: Partitioner> Producer<P> {
                     headers: &r.headers.0,
                 };
                 partitioner.partition(Topics::new(partitions), &mut m);
+                if expect_acks {
+                    let target = (m.topic, m.partition);
+                    if previous_target != Some(target) {
+                        expected.insert(target);
+                        previous_target = Some(target);
+                    }
+                }
                 m
             }),
-        )
+        )?;
+        if expect_acks
+            && !recs.is_empty()
+            && let Err(error) = validate_produce_acknowledgements(&confirms, &expected)
+        {
+            client.invalidate_existing_produce_connections(expected.iter().copied());
+            return Err(error);
+        }
+        Ok(confirms)
     }
+}
+
+fn validate_produce_acknowledgements(
+    confirms: &[ProduceConfirm],
+    expected: &HashSet<(&str, i32)>,
+) -> Result<()> {
+    let mut acknowledged = HashSet::with_capacity(expected.len());
+    for topic in confirms {
+        if topic.partition_confirms.is_empty() {
+            return Err(Error::codec());
+        }
+        for partition in &topic.partition_confirms {
+            let target = (topic.topic.as_str(), partition.partition);
+            if !expected.contains(&target) || !acknowledged.insert(target) {
+                return Err(Error::codec());
+            }
+        }
+    }
+    if acknowledged.len() != expected.len() {
+        return Err(Error::codec());
+    }
+    Ok(())
 }
 
 fn to_option(data: &[u8]) -> Option<&[u8]> {
@@ -232,3 +265,6 @@ pub use builder::Builder;
 
 #[cfg(test)]
 mod header_validation_bench;
+
+#[cfg(test)]
+mod acknowledgement_tests;

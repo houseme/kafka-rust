@@ -624,6 +624,19 @@ impl KafkaClient {
         )
     }
 
+    pub(crate) fn invalidate_existing_produce_connections<'a>(
+        &mut self,
+        targets: impl IntoIterator<Item = (&'a str, i32)>,
+    ) {
+        let hosts: std::collections::HashSet<&str> = targets
+            .into_iter()
+            .filter_map(|(topic, partition)| self.state.find_broker(topic, partition))
+            .collect();
+        for host in hosts {
+            self.conn_pool.invalidate_existing(host);
+        }
+    }
+
     // -- produce operations (delegated to produce_ops.rs) --
 
     /// Send a message to Kafka.
