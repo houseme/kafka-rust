@@ -90,12 +90,19 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
   Produce call. The default retains zero timestamps. Configure `LogAppendTime` on the broker; selecting it on
   a sync producer returns a configuration error before network activity.
 - Retry backoff caps overflow at the configured maximum and rejects non-finite or nonpositive multipliers.
+- Async Fetch shares the sync decoder, consuming every batch and rejecting corrupt tails before publishing offsets.
+  Coordinator errors during offset initialization invalidate the cached coordinator and use bounded rediscovery.
+- Sync Produce prepares all broker frames before IO and maps confirmations directly. Negative offsets in successful
+  ACKs become failed confirmations, preserving those records in buffered producers.
+- Admin mutations return errors after a sending attempt without automatic replay; explicitly read-only APIs retain
+  broker failover. Response buffer reservations fail with errors and retire incomplete connections.
 
 `TransactionalProducer` uses a separate transaction coordinator and sends transaction IDs, producer identities,
 epochs, and sequences in transactional batches. Commit and abort preserve sequence state. A transaction RPC failure
 blocks further reuse; construct a new producer instead of retrying that instance. Transactional consumer-offset
-workflows and read-committed high-level consumers remain follow-up work. `GroupCoordinator`'s background heartbeat
-thread still does not send broker heartbeats. Further lifecycle work is tracked in
+workflows and read-committed high-level consumers remain follow-up work. `GroupCoordinator` discovers coordinators
+and uses each member's subscription for assignments; callers schedule its manual `heartbeat` method. Automatic
+heartbeat and rebalance scheduling remain follow-up work. Further lifecycle work is tracked in
 [rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
 
 ## Documentation

@@ -70,6 +70,10 @@ async fn main() -> rustfs_kafka::Result<()> {
   committed offset. Metadata refreshes retain existing positions.
 - Failed or cancelled multi-broker polls do not advance offsets for messages that were not returned. A successful
   poll advances in-memory progress; commit after application processing succeeds.
+- Fetch decoding shares the sync implementation, consumes all record batches, and rejects corrupt or unsupported
+  tails before offset publication. Poll grouping borrows cached host/topic names and avoids an intermediate vector.
+- Offset initialization retries coordinator migration/loading errors within the configured limit and invalidates
+  the coordinator cache after the final failed attempt, preserving offsets and pending commits.
 - Typed responses validate correlation IDs and full payload consumption. Connections interrupted by cancellation
   or transport failure are discarded on their next checkout, without automatically replaying Produce.
 - Raw `send`/`read_exact` protect individual IO operations; callers own protocol boundaries between separate calls.

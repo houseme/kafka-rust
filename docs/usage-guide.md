@@ -142,6 +142,13 @@ Sync transport writes complete request frames and flushes TCP/TLS before reading
 includes all record batches returned for a partition. Produce requests maintain contiguous relative offsets within
 each partition batch, including compressed batches.
 
+Native async Fetch uses the same complete record decoder as sync Fetch. Empty compacted batches do not hide later
+batches; corrupt, truncated, or unsupported trailing batches fail the entire poll before progress is published.
+Poll request routing borrows cached broker/topic names instead of copying them for every partition. OffsetFetch
+coordinator errors (`NotCoordinatorForGroup`, `GroupCoordinatorNotAvailable`, `GroupLoadInProgress`) invalidate
+the coordinator cache, retry within the configured limit, and retain offsets and uncommitted progress. An exhausted
+attempt also invalidates the cache so a later poll can discover the coordinator again.
+
 `StickyPartitioner` keeps its batch state per topic and chooses another available partition if the previous one
 loses its leader. Explicit record partitions remain unchanged. Calling `with_partitioner` on either sync producer
 builder preserves previously selected TLS, client ID, and acknowledgement settings. The regular producer also
@@ -163,6 +170,8 @@ partitions with unique successful confirmations; failed, missing, or duplicate c
 pending. The returned confirmation list exposes broker partition errors. Automatic flush propagates them as errors.
 Unexpected topic or partition confirmations return a codec error; uniquely confirmed requested partitions are
 still retired. Buffered topic names are shared across their partitions and records.
+An ACK with error code zero and a negative base offset becomes a failed `Unknown` partition confirmation; buffered
+records for that partition remain pending while other uniquely confirmed successes retire.
 While unconfirmed records remain after a failure, `send` rejects new records before enqueuing them. Explicit `flush`
 retries pending records, and `clear` discards them. Earlier brokers may have accepted records before a transport
 failure, so explicit retries still require an application decision about duplicates. With `acks=0`, a successful
@@ -188,6 +197,19 @@ and updates only the chosen connection's checkout time.
 nonpositive). Valid exponent overflow saturates at `max`; shrinking multipliers and zero delays remain
 supported. The delay is deterministic and does not include jitter.
 
+Sync Produce borrows broker grouping keys, groups adjacent records with the same target, and maps generated ACKs
+directly to confirmations. Every ordinary broker request is encoded before opening a connection, so a local codec
+or frame error cannot leave an earlier broker's records sent. This retains all encoded broker frames until sending
+begins and can increase peak memory for a multi-broker batch. Produce metrics count input records and value bytes
+once per topic for a completed transport call, including `acks=0`.
+
+Admin requests try another bootstrap broker if connection setup fails. After a sending attempt, mutations and
+unclassified API keys return uncertain delivery errors to the caller; application retries require a delivery
+decision. Explicitly read-only queries retain failover. Frame encoding happens before connection setup.
+Sync response buffers use checked size conversion and fallible reservation; failed allocation or exact reads
+close the connection and clear pending response context. Consumer responses containing unknown cached topics or
+partitions return codec errors while retaining fetch progress and pending retries.
+
 ### Transactional Producer
 
 Use `TransactionalProducer::from_client(client).with_transactional_id(id).create()` with a configured plain or
@@ -211,7 +233,16 @@ silently replay an uncertain Produce or EndTxn operation. The producer exposes n
 workflow; high-level consumers currently read uncommitted data. Validate abort visibility using a Kafka
 `read_committed` consumer.
 
-The automatic group heartbeat thread still does not send broker heartbeats. Full group lifecycle, transactional
+`GroupCoordinator::join_group` discovers the coordinator for a fresh client and sends a versioned subscription.
+The leader loads the union of all members' topics, preserves empty subscriptions, and associates custom assignor
+results with their member IDs. Duplicate, unknown, missing, or malformed assignments fail before Sync. Followers
+send an empty assignment list. Subscription and assignment decoding validates complete known schemas while
+retaining compatibility with future appended fields.
+
+Call `heartbeat` periodically and use `leave_group` to exit manually. Explicit coordinator errors invalidate the
+cache and return the current error; the next manual call rediscovers the coordinator. No idle logging worker is
+spawned. Constructor heartbeat/max-poll parameters remain accepted for API compatibility. Applications schedule
+heartbeats and enforce their max-poll policy. Full group lifecycle, transactional
 consumer offsets, high-level read-committed consumers, and broader protocol-version negotiation remain tracked in
 [rustfs/backlog#2713](https://github.com/rustfs/backlog/issues/2713).
 
