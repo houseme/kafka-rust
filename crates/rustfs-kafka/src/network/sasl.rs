@@ -19,7 +19,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256, Sha512};
 
 use super::connection::SaslConfig;
-use super::connection::{KafkaStream, StreamOps};
+use super::connection::{KafkaStream, StreamOps, read_exact_bytes};
 use crate::error::{Error, KafkaCode, Result};
 
 const API_VERSION_SASL_HANDSHAKE: i16 = 1;
@@ -379,14 +379,9 @@ where
     let result = (|| {
         let mut size_buf = [0u8; 4];
         stream.read_exact(&mut size_buf)?;
-        let size = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes(size_buf))?;
-        let mut payload = vec![0u8; size];
-        stream.read_exact(&mut payload)?;
-        crate::protocol::decode_response_payload_checked(
-            Bytes::from(payload),
-            api_version,
-            correlation_id,
-        )
+        let size = crate::protocol::non_negative_i32_to_u64(i32::from_be_bytes(size_buf))?;
+        let payload = read_exact_bytes(stream, size)?;
+        crate::protocol::decode_response_payload_checked(payload, api_version, correlation_id)
     })();
     if result.is_err() {
         let _ = StreamOps::shutdown(stream, std::net::Shutdown::Both);

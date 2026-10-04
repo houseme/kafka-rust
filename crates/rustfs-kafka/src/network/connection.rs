@@ -291,6 +291,23 @@ fn configure_tcp_socket(socket: &socket2::Socket) -> std::io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn read_exact_bytes(reader: &mut impl Read, size: u64) -> Result<bytes::Bytes> {
+    let len = usize::try_from(size).map_err(|_| crate::error::Error::codec())?;
+    if len == 0 {
+        return Ok(bytes::Bytes::new());
+    }
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len).map_err(|error| {
+        crate::error::Error::from(std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))
+    })?;
+    // Keep the slice length exact even if the allocator supplies more capacity.
+    // Initialized bytes permit safe Read implementations without read-to-end
+    // growth or an EOF probe that could touch the following frame.
+    buffer.resize(len, 0);
+    reader.read_exact(&mut buffer)?;
+    Ok(bytes::Bytes::from(buffer))
+}
+
 impl KafkaConnection {
     pub(crate) fn host(&self) -> &str {
         &self.host
@@ -357,11 +374,13 @@ impl KafkaConnection {
     }
 
     pub fn read_exact_alloc(&mut self, size: u64) -> Result<bytes::Bytes> {
-        let len = usize::try_from(size).expect("response size exceeds usize");
-        let mut buf = bytes::BytesMut::with_capacity(len);
-        buf.resize(len, 0);
-        self.read_exact(&mut buf)?;
-        Ok(buf.freeze())
+        let result = read_exact_bytes(&mut self.stream, size);
+        if result.is_err() {
+            // Raw callers may already have consumed the frame prefix. A failed
+            // allocation/read leaves its body unread and cannot reuse the stream.
+            let _ = self.shutdown();
+        }
+        result
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<()> {
@@ -452,6 +471,163 @@ impl KafkaConnection {
         }
 
         KafkaConnection::from_stream(stream, id, host, rw_timeout)
+    }
+}
+
+#[cfg(test)]
+mod response_buffer_tests {
+    use std::collections::VecDeque;
+    use std::io::{self, Cursor, ErrorKind, Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::error::{ConnectionError, Error, ProtocolError};
+
+    struct ScriptedReader {
+        bytes: Cursor<&'static [u8]>,
+        steps: VecDeque<io::Result<usize>>,
+        calls: usize,
+    }
+
+    impl ScriptedReader {
+        fn new(bytes: &'static [u8], steps: impl IntoIterator<Item = io::Result<usize>>) -> Self {
+            Self {
+                bytes: Cursor::new(bytes),
+                steps: steps.into_iter().collect(),
+                calls: 0,
+            }
+        }
+    }
+
+    impl Read for ScriptedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.calls += 1;
+            let limit = self.steps.pop_front().unwrap_or(Ok(buf.len()))?;
+            let len = limit.min(buf.len());
+            self.bytes.read(&mut buf[..len])
+        }
+    }
+
+    #[test]
+    fn response_buffer_stops_exactly_before_the_following_frame() {
+        let mut reader = ScriptedReader::new(b"frame1frame2", [Ok(2), Ok(1)]);
+
+        assert_eq!(
+            read_exact_bytes(&mut reader, 6).unwrap().as_ref(),
+            b"frame1"
+        );
+        assert_eq!(reader.bytes.position(), 6);
+        assert_eq!(
+            read_exact_bytes(&mut reader, 6).unwrap().as_ref(),
+            b"frame2"
+        );
+        assert_eq!(reader.bytes.position(), 12);
+    }
+
+    #[test]
+    fn response_buffer_retries_interrupted_reads_without_losing_bytes() {
+        let mut reader = ScriptedReader::new(
+            b"abcdefNEXT",
+            [
+                Err(ErrorKind::Interrupted.into()),
+                Ok(2),
+                Err(ErrorKind::Interrupted.into()),
+                Ok(1),
+            ],
+        );
+
+        assert_eq!(
+            read_exact_bytes(&mut reader, 6).unwrap().as_ref(),
+            b"abcdef"
+        );
+        assert_eq!(reader.calls, 5);
+        assert_eq!(read_exact_bytes(&mut reader, 4).unwrap().as_ref(), b"NEXT");
+    }
+
+    #[test]
+    fn response_buffer_reports_short_eof_instead_of_a_partial_success() {
+        let mut reader = ScriptedReader::new(b"short", []);
+
+        let error = read_exact_bytes(&mut reader, 6).unwrap_err();
+
+        assert!(
+            matches!(error, Error::Connection(ConnectionError::Io(ref error)) if error.kind() == ErrorKind::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn zero_response_buffer_does_not_read_the_stream() {
+        let mut reader = ScriptedReader::new(b"next-frame", []);
+
+        assert!(read_exact_bytes(&mut reader, 0).unwrap().is_empty());
+        assert_eq!(reader.calls, 0);
+        assert_eq!(reader.bytes.position(), 0);
+    }
+
+    #[test]
+    fn impossible_response_size_returns_an_error_before_reading() {
+        let mut reader = ScriptedReader::new(b"unread-frame", []);
+
+        let error = read_exact_bytes(&mut reader, u64::MAX).unwrap_err();
+
+        if usize::try_from(u64::MAX).is_ok() {
+            assert!(
+                matches!(error, Error::Connection(ConnectionError::Io(ref error)) if error.kind() == ErrorKind::OutOfMemory)
+            );
+        } else {
+            assert!(matches!(error, Error::Protocol(ProtocolError::Codec)));
+        }
+        assert_eq!(reader.calls, 0);
+        assert_eq!(reader.bytes.position(), 0);
+    }
+
+    #[test]
+    fn raw_response_allocation_failure_retires_pending_stream_before_pool_reuse() {
+        for truncated in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let host = listener.local_addr().unwrap().to_string();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut marker = [0];
+                stream.read_exact(&mut marker).unwrap();
+                assert_eq!(marker, [7]);
+                if truncated {
+                    stream.write_all(b"ab").unwrap();
+                    stream.shutdown(Shutdown::Write).unwrap();
+                }
+                assert_eq!(
+                    stream.read(&mut marker).unwrap(),
+                    0,
+                    "failed response stream was reused"
+                );
+                let (mut clean, _) = listener.accept().unwrap();
+                clean
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                clean.read_exact(&mut marker).unwrap();
+                assert_eq!(marker, [42]);
+            });
+            let mut client = crate::client::KafkaClient::builder()
+                .with_conn_rw_timeout(2)
+                .build();
+            let conn = client.get_conn_mut(&host).unwrap();
+            conn.send_request(&[7], 7, 0).unwrap();
+            let size = if truncated { 3 } else { u64::MAX };
+
+            assert!(conn.read_exact_alloc(size).is_err());
+            assert!(conn.is_terminated());
+            assert_eq!(conn.pending_response, None);
+            // The pool replaces and drops the retired owner. This also mirrors
+            // constructor cleanup when a peer has half-closed its write side.
+            let clean = client.get_conn_mut(&host).unwrap();
+            assert!(!clean.is_terminated());
+            clean.send(&[42]).unwrap();
+            server.join().unwrap();
+        }
     }
 }
 

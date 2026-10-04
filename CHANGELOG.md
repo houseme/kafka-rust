@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync response buffers now check size conversion and reserve fallibly before exact reads; allocation or read failures close the connection and clear pending response context. SASL uses the same safe helper.
 - Spelling checks now recognize Kafka's LSO terminology used by the transaction isolation tests.
 - Exponential retry safely caps large attempts and duration overflow, rejects non-finite or nonpositive multipliers, and supports zero or shrinking delays; its documentation now describes deterministic backoff.
 - Sync CreateTime uses one current Unix timestamp per Produce call, including compressed and transactional batches, while None retains zero. Producer constructors and active transactions reject client-side LogAppendTime before metadata or transaction IO; the integration matrix now checks CreateTime with ByTime queries.
