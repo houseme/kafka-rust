@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::client::{self, KafkaClient};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::protocol;
 
 #[cfg(feature = "producer_timestamp")]
@@ -123,11 +123,12 @@ impl Builder {
         self
     }
 
-    /// Enables idempotent producer mode (exactly-once per partition).
+    /// Requests idempotent producer mode.
     ///
-    /// When enabled, the producer will request a Producer ID from the broker
-    /// and include sequence numbers in produce requests. This requires
-    /// `RequiredAcks::All`.
+    /// The ordinary [`Producer`] does not support this mode: [`Self::create`]
+    /// returns a configuration error when enabled. Use [`super::TransactionalProducer`]
+    /// for producer identity, sequences, and transactional delivery.
+    /// Enabling this compatibility setting also selects `RequiredAcks::All`.
     #[must_use]
     pub fn with_idempotence(mut self, enabled: bool) -> Self {
         self.enable_idempotence = enabled;
@@ -137,9 +138,12 @@ impl Builder {
         self
     }
 
-    /// Sets the transactional ID for transactional producer mode.
+    /// Requests a transactional ID.
     ///
-    /// This implicitly enables idempotence and sets `RequiredAcks::All`.
+    /// [`Self::create`] rejects this setting on the ordinary [`Producer`]. Use
+    /// [`super::TransactionalProducer::from_hosts`] or
+    /// [`super::TransactionalProducer::from_client`] to create a transactional producer.
+    /// This compatibility setting also enables idempotence and `RequiredAcks::All`.
     #[must_use]
     pub fn with_transactional_id(mut self, id: impl Into<String>) -> Self {
         self.transactional_id = Some(id.into());
@@ -188,8 +192,20 @@ impl<P> Builder<P> {
     ///
     /// # Errors
     ///
-    /// Returns an error if timeout conversion fails, metadata loading fails, or producer state initialization fails.
+    /// Returns an error for unsupported idempotence or transactional settings,
+    /// timeout conversion failures, metadata loading failures, or state initialization failures.
     pub fn create(self) -> Result<Producer<P>> {
+        if self.transactional_id.is_some() {
+            return Err(Error::Config(
+                "transactional_id is configured on Producer; use TransactionalProducer instead"
+                    .into(),
+            ));
+        }
+        if self.enable_idempotence {
+            return Err(Error::Config(
+                "idempotent mode is not supported by Producer; use TransactionalProducer".into(),
+            ));
+        }
         #[cfg(feature = "producer_timestamp")]
         crate::client::produce_ops::validate_producer_timestamp(self.producer_timestamp)?;
         let (mut client, need_metadata) = match self.client {
@@ -228,6 +244,49 @@ impl<P> Builder<P> {
 mod tests {
     use super::*;
     use crate::producer::RoundRobinPartitioner;
+
+    #[test]
+    fn create_rejects_unsupported_modes_before_loading_metadata() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        for from_client in [false, true] {
+            let builder = if from_client {
+                Producer::from_client(KafkaClient::new(Vec::new()))
+            } else {
+                Producer::from_hosts(vec![listener.local_addr().unwrap().to_string()])
+            };
+            assert!(
+                matches!(builder.with_idempotence(true).create(), Err(Error::Config(message))
+                if message.contains("idempotent") && message.contains("TransactionalProducer"))
+            );
+            let builder = if from_client {
+                Producer::from_client(KafkaClient::new(Vec::new()))
+            } else {
+                Producer::from_hosts(vec![listener.local_addr().unwrap().to_string()])
+            };
+            assert!(matches!(
+                builder.with_transactional_id("txn").with_idempotence(false).create(),
+                Err(Error::Config(message)) if message.contains("transactional_id")
+            ));
+        }
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn disabling_idempotence_without_a_transactional_id_keeps_ordinary_mode_available() {
+        let producer = Producer::from_client(KafkaClient::new(Vec::new()))
+            .with_idempotence(true)
+            .with_idempotence(false)
+            .create()
+            .unwrap();
+        assert!(!producer.config.enable_idempotence);
+        assert_eq!(producer.config.transactional_id, None);
+        assert_eq!(producer.config.required_acks, RequiredAcks::All as i16);
+    }
 
     #[test]
     fn custom_partitioner_preserves_producer_configuration() {
