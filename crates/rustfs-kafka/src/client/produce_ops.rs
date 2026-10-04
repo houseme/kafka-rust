@@ -25,7 +25,13 @@ type BrokerMessage<'a, 'b> = (
     Option<&'b [u8]>,
     &'b [(String, bytes::Bytes)],
 );
-type BrokerMessages<'a, 'b> = HashMap<String, Vec<BrokerMessage<'a, 'b>>>;
+type BrokerMessages<'a, 'b, 'h> = HashMap<&'h str, Vec<BrokerMessage<'a, 'b>>>;
+
+struct PreparedProduceRequest<'a> {
+    host: &'a str,
+    frame: bytes::Bytes,
+    api_version: i16,
+}
 
 struct ProduceRequestContext<'a> {
     conn_pool: &'a mut Connections,
@@ -60,25 +66,21 @@ where
 
     // Collect messages into (broker, Vec<(topic, partition, key, value, headers)>)
     // We extract broker info first, then bundle with header references.
-    let mut broker_msgs: BrokerMessages<'a, 'b> = HashMap::new();
+    let mut broker_msgs: BrokerMessages<'a, 'b, '_> = HashMap::new();
     #[cfg(feature = "metrics")]
-    let mut total_bytes: usize = 0;
-    #[cfg(feature = "metrics")]
-    let mut message_count: usize = 0;
+    let mut topic_stats: HashMap<&str, (usize, usize)> = HashMap::new();
     for msg in messages {
         let msg = msg.as_ref();
         #[cfg(feature = "metrics")]
         {
-            total_bytes += msg.value.map_or(0, <[u8]>::len);
-            message_count += 1;
+            let (bytes, count) = topic_stats.entry(msg.topic).or_default();
+            *bytes += msg.value.map_or(0, <[u8]>::len);
+            *count += 1;
         }
-        let broker = match state.find_broker(msg.topic, msg.partition) {
-            None => {
-                #[cfg(feature = "metrics")]
-                crate::metrics::record_produce_error(msg.topic, "UnknownTopicOrPartition");
-                return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
-            }
-            Some(b) => b.to_owned(),
+        let Some(broker) = state.find_broker(msg.topic, msg.partition) else {
+            #[cfg(feature = "metrics")]
+            crate::metrics::record_produce_error(msg.topic, "UnknownTopicOrPartition");
+            return Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition));
         };
         broker_msgs.entry(broker).or_default().push((
             msg.topic,
@@ -106,18 +108,9 @@ where
     {
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         match &result {
-            Ok(confirms) => {
-                for confirm in confirms {
-                    crate::metrics::record_produce(
-                        &confirm.topic,
-                        total_bytes,
-                        message_count,
-                        elapsed,
-                    );
-                }
-                if confirms.is_empty() && message_count > 0 {
-                    // no-acks mode: record without specific topic
-                    crate::metrics::record_produce("_unknown", total_bytes, message_count, elapsed);
+            Ok(_) => {
+                for (topic, (bytes, count)) in topic_stats {
+                    crate::metrics::record_produce(topic, bytes, count, elapsed);
                 }
             }
             Err(e) => {
@@ -132,16 +125,49 @@ where
 
 fn produce_messages_inner(
     ctx: &mut ProduceRequestContext<'_>,
-    broker_msgs: BrokerMessages<'_, '_>,
+    broker_msgs: BrokerMessages<'_, '_, '_>,
 ) -> Result<Vec<ProduceConfirm>> {
+    let requests = prepare_produce_requests(ctx, broker_msgs)?;
     let now = Instant::now();
     let mut res: Vec<ProduceConfirm> = Vec::new();
 
-    for (host, msgs) in broker_msgs {
+    for PreparedProduceRequest {
+        host,
+        frame,
+        api_version,
+    } in requests
+    {
         let conn = ctx
             .conn_pool
-            .get_conn(&host, now)
-            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
+            .get_conn(host, now)
+            .map_err(|e| e.with_broker_context(host, "Produce"))?;
+        tracing::trace!("kp_send_request: sending {} bytes", frame.len());
+        conn.send_request(&frame, ctx.correlation_id, api_version)
+            .map_err(|e| e.with_broker_context(host, "Produce"))?;
+
+        if ctx.no_acks {
+            continue;
+        }
+
+        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ProduceResponse>(
+            conn,
+            api_version,
+        )
+        .map_err(|e| e.with_broker_context(host, "Produce"))?;
+        res.extend(protocol::produce::into_produce_confirmations(kp_resp));
+    }
+
+    Ok(res)
+}
+
+fn prepare_produce_requests<'h>(
+    ctx: &ProduceRequestContext<'_>,
+    broker_msgs: BrokerMessages<'_, '_, 'h>,
+) -> Result<Vec<PreparedProduceRequest<'h>>> {
+    // Validate every record batch and request frame before opening any connection.
+    // A later broker's local encoding error must not leave earlier messages sent.
+    let mut requests = Vec::with_capacity(broker_msgs.len());
+    for (host, msgs) in broker_msgs {
         let (mut header, request) = if ctx.timestamp == 0 {
             protocol::produce::build_produce_request(
                 ctx.correlation_id,
@@ -167,28 +193,19 @@ fn produce_messages_inner(
         };
         let api_version = transport::apply_request_api_version(
             ctx.api_versions,
-            &host,
+            host,
             &mut header,
             crate::protocol::API_VERSION_PRODUCE,
         );
-        transport::kp_send_request(conn, &header, &request, api_version)
-            .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-
-        if ctx.no_acks {
-            continue;
-        }
-
-        let kp_resp = transport::kp_get_response::<kafka_protocol::messages::ProduceResponse>(
-            conn,
+        let frame = protocol::encode_request_frame(&header, &request, api_version)
+            .map_err(|e| e.with_broker_context(host, "Produce"))?;
+        requests.push(PreparedProduceRequest {
+            host,
+            frame,
             api_version,
-        )
-        .map_err(|e| e.with_broker_context(&host, "Produce"))?;
-        let our_resp =
-            crate::protocol::produce::convert_produce_response(kp_resp, ctx.correlation_id);
-        res.extend(our_resp.get_response());
+        });
     }
-
-    Ok(res)
+    Ok(requests)
 }
 
 /// Transactional sends are synchronous and never retried here. A transport,
@@ -227,8 +244,11 @@ pub(crate) fn produce_transactional_message(
         &mut header,
         protocol::API_VERSION_PRODUCE,
     );
+    let frame = protocol::encode_request_frame(&header, &request, version)
+        .map_err(|err| err.with_broker_context(&host, "Produce"))?;
     let conn = client.conn_pool.get_conn(&host, Instant::now())?;
-    transport::kp_send_request(conn, &header, &request, version)
+    tracing::trace!("kp_send_request: sending {} bytes", frame.len());
+    conn.send_request(&frame, correlation, version)
         .map_err(|err| err.with_broker_context(&host, "Produce"))?;
     let response =
         protocol::transaction::read_response::<kafka_protocol::messages::ProduceResponse>(
@@ -389,6 +409,82 @@ mod tests {
         assert_eq!(sample_producer_timestamp(None).unwrap(), 0);
     }
 
+    #[test]
+    fn all_broker_frames_are_preflighted_before_opening_connections() {
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        first.set_nonblocking(true).unwrap();
+        second.set_nonblocking(true).unwrap();
+        let addresses = [first.local_addr().unwrap(), second.local_addr().unwrap()];
+        let long_topic = "x".repeat(usize::try_from(i16::MAX).unwrap() + 1);
+        let mut client = KafkaClient::builder().with_conn_rw_timeout(1).build();
+        configure_metadata_for_topics(&mut client, &addresses, &["topic-a", &long_topic]);
+        client.api_versions.insert_api_versions(
+            addresses[1].to_string(),
+            &[protocol::api_versions::BrokerApiVersion {
+                api_key: ApiKey::Produce as i16,
+                min_version: 3,
+                max_version: 8,
+            }],
+        );
+        let messages = [
+            ProduceMessage {
+                topic: "topic-a",
+                partition: 0,
+                key: None,
+                value: Some(b"valid"),
+                headers: &[],
+            },
+            ProduceMessage {
+                topic: &long_topic,
+                partition: 1,
+                key: None,
+                value: Some(b"invalid-frame"),
+                headers: &[],
+            },
+        ];
+        assert!(
+            client
+                .produce_messages(RequiredAcks::One, Duration::from_secs(1), &messages)
+                .is_err()
+        );
+        for listener in [&first, &second] {
+            assert!(
+                listener
+                    .accept()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
+    }
+
+    #[cfg(not(feature = "gzip"))]
+    #[test]
+    fn disabled_record_codec_is_rejected_before_connecting_to_any_broker() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client = KafkaClient::builder().with_conn_rw_timeout(1).build();
+        configure_metadata(&mut client, &[listener.local_addr().unwrap()]);
+        client.set_compression(Compression::GZIP);
+        let messages = [ProduceMessage {
+            topic: "topic-a",
+            partition: 0,
+            key: None,
+            value: Some(b"value"),
+            headers: &[],
+        }];
+        assert!(matches!(
+            client.produce_messages(RequiredAcks::One, Duration::from_secs(1), &messages),
+            Err(Error::Protocol(
+                crate::error::ProtocolError::UnsupportedCompression
+            ))
+        ));
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
     fn capture_produced_records(mode: Option<ProducerTimestamp>) -> Vec<Record> {
         let (first, first_server) = mock_produce_broker();
         let (second, second_server) = mock_produce_broker();
@@ -434,6 +530,14 @@ mod tests {
     }
 
     fn configure_metadata(client: &mut KafkaClient, addresses: &[SocketAddr]) {
+        configure_metadata_for_topics(client, addresses, &["topic-a", "topic-b"]);
+    }
+
+    fn configure_metadata_for_topics(
+        client: &mut KafkaClient,
+        addresses: &[SocketAddr],
+        topics: &[&str],
+    ) {
         client.state.update_metadata(MetadataResponseData {
             brokers: addresses
                 .iter()
@@ -444,17 +548,20 @@ mod tests {
                     port: i32::from(address.port()),
                 })
                 .collect(),
-            topics: vec![TopicMetadata {
-                topic: "topic-a".into(),
-                partitions: (0..addresses.len())
-                    .map(|index| PartitionMetadata {
-                        id: i32::try_from(index).unwrap(),
-                        leader: i32::try_from(index).unwrap() + 1,
-                        ..Default::default()
-                    })
-                    .collect(),
-                ..Default::default()
-            }],
+            topics: topics
+                .iter()
+                .map(|topic| TopicMetadata {
+                    topic: (*topic).to_owned(),
+                    partitions: (0..addresses.len())
+                        .map(|index| PartitionMetadata {
+                            id: i32::try_from(index).unwrap(),
+                            leader: i32::try_from(index).unwrap() + 1,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         });
     }
@@ -495,6 +602,9 @@ mod tests {
                             .with_index(partition.index).with_base_offset(0)
                     }).collect())
             }).collect();
+            if request.acks == 0 {
+                return records;
+            }
             let response = ProduceResponse::default().with_responses(responses);
             let mut payload = BytesMut::new();
             ResponseHeader::default()
@@ -509,5 +619,141 @@ mod tests {
             records
         });
         (address, server)
+    }
+
+    #[cfg(feature = "metrics")]
+    mod produce_metrics_tests {
+        use super::*;
+        use metrics::{
+            Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
+        };
+        use std::sync::atomic::Ordering;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct CounterRecorder {
+            counters: Mutex<HashMap<Key, Arc<metrics::atomics::AtomicU64>>>,
+        }
+
+        impl Recorder for CounterRecorder {
+            fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+            fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+                let counter = self
+                    .counters
+                    .lock()
+                    .unwrap()
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(metrics::atomics::AtomicU64::new(0)))
+                    .clone();
+                Counter::from_arc(counter)
+            }
+            fn register_gauge(&self, _: &Key, _: &Metadata<'_>) -> Gauge {
+                Gauge::noop()
+            }
+            fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
+                Histogram::noop()
+            }
+        }
+
+        impl CounterRecorder {
+            fn value(&self, name: &str, topic: &str) -> u64 {
+                self.counters
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(key, _)| {
+                        key.name() == name
+                            && key
+                                .labels()
+                                .any(|label| label.key() == "topic" && label.value() == topic)
+                    })
+                    .map_or(0, |(_, counter)| counter.load(Ordering::Relaxed))
+            }
+        }
+
+        #[test]
+        fn counters_are_per_input_topic_across_brokers_with_and_without_acks() {
+            for acks in [RequiredAcks::One, RequiredAcks::None] {
+                let recorder = CounterRecorder::default();
+                metrics::with_local_recorder(&recorder, || {
+                    let (first, first_server) = mock_produce_broker();
+                    let (second, second_server) = mock_produce_broker();
+                    let mut client = KafkaClient::builder().with_conn_rw_timeout(5).build();
+                    configure_metadata(&mut client, &[first, second]);
+                    let messages = [
+                        ProduceMessage {
+                            topic: "topic-a",
+                            partition: 0,
+                            key: Some(b"key"),
+                            value: Some(b"aaa"),
+                            headers: &[],
+                        },
+                        ProduceMessage {
+                            topic: "topic-b",
+                            partition: 0,
+                            key: None,
+                            value: Some(b"ccccccc"),
+                            headers: &[],
+                        },
+                        ProduceMessage {
+                            topic: "topic-a",
+                            partition: 1,
+                            key: None,
+                            value: Some(b"bb"),
+                            headers: &[],
+                        },
+                    ];
+                    let confirms = client
+                        .produce_messages(acks, Duration::from_secs(1), &messages)
+                        .unwrap();
+                    assert_eq!(confirms.is_empty(), matches!(acks, RequiredAcks::None));
+                    assert_eq!(first_server.join().unwrap().len(), 2);
+                    assert_eq!(second_server.join().unwrap().len(), 1);
+                });
+                assert_eq!(recorder.value("kafka.produce.messages_total", "topic-a"), 2);
+                assert_eq!(recorder.value("kafka.produce.messages_total", "topic-b"), 1);
+                assert_eq!(recorder.value("kafka.produce.bytes_total", "topic-a"), 5);
+                assert_eq!(recorder.value("kafka.produce.bytes_total", "topic-b"), 7);
+                assert_eq!(
+                    recorder.value("kafka.produce.messages_total", "_unknown"),
+                    0
+                );
+            }
+        }
+
+        #[test]
+        fn local_encoding_failure_keeps_the_existing_error_metric() {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut client = KafkaClient::builder()
+                .with_conn_rw_timeout(1)
+                .with_client_id("x".repeat(usize::try_from(i16::MAX).unwrap() + 1))
+                .build();
+            configure_metadata(&mut client, &[listener.local_addr().unwrap()]);
+            let recorder = CounterRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let messages = [ProduceMessage {
+                    topic: "topic-a",
+                    partition: 0,
+                    key: None,
+                    value: Some(b"value"),
+                    headers: &[],
+                }];
+                assert!(
+                    client
+                        .produce_messages(RequiredAcks::One, Duration::from_secs(1), &messages)
+                        .is_err()
+                );
+            });
+            assert_eq!(recorder.value("kafka.produce.errors_total", "_unknown"), 1);
+            assert_eq!(recorder.value("kafka.produce.messages_total", "topic-a"), 0);
+            assert!(
+                listener
+                    .accept()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
     }
 }

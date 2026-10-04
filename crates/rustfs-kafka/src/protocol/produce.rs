@@ -2,7 +2,7 @@ use kafka_protocol::messages::{ApiKey, ProduceRequest, ProduceResponse, RequestH
 use kafka_protocol::protocol::StrBytes;
 use kafka_protocol::records::{Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType};
 
-use super::{API_VERSION_PRODUCE, HeaderResponse, to_kp_compression};
+use super::{API_VERSION_PRODUCE, to_kp_compression};
 use crate::compression::Compression;
 use crate::error::{Error, KafkaCode, Result};
 use crate::producer::{ProduceConfirm, ProducePartitionConfirm};
@@ -101,37 +101,40 @@ pub(crate) fn build_produce_request_with_options(
         std::collections::HashMap<i32, Vec<Record>>,
     > = std::collections::HashMap::new();
 
-    for (topic, partition, key, value, headers) in messages {
+    for run in messages.chunk_by(|first, second| first.0 == second.0 && first.1 == second.1) {
+        let (topic, partition, ..) = run[0];
         let records = topic_map
             .entry(topic)
             .or_default()
-            .entry(*partition)
+            .entry(partition)
             .or_default();
-        let offset = super::usize_to_i32(records.len())?;
-        let kp_headers: indexmap::IndexMap<StrBytes, Option<bytes::Bytes>> = headers
-            .iter()
-            .map(|(k, v)| (StrBytes::from_string(k.clone()), Some(v.clone())))
-            .collect();
+        for (_, _, key, value, headers) in run {
+            let offset = super::usize_to_i32(records.len())?;
+            let kp_headers: indexmap::IndexMap<StrBytes, Option<bytes::Bytes>> = headers
+                .iter()
+                .map(|(k, v)| (StrBytes::from_string(k.clone()), Some(v.clone())))
+                .collect();
 
-        let record = Record {
-            transactional: context.is_some(),
-            control: false,
-            delete_horizon: false,
-            partition_leader_epoch: -1,
-            producer_id: context.map_or(-1, |context| context.producer_id),
-            producer_epoch: context.map_or(-1, |context| context.producer_epoch),
-            timestamp_type: TimestampType::Creation,
-            offset: i64::from(offset),
-            // The encoder groups records with the same offset - sequence. This
-            // keeps one batch per partition while retaining base_sequence = -1
-            // for a non-idempotent producer.
-            sequence: context.map_or(offset - 1, |context| context.sequence),
-            timestamp: options.timestamp,
-            key: key.map(bytes::Bytes::copy_from_slice),
-            value: value.map(bytes::Bytes::copy_from_slice),
-            headers: kp_headers,
-        };
-        records.push(record);
+            let record = Record {
+                transactional: context.is_some(),
+                control: false,
+                delete_horizon: false,
+                partition_leader_epoch: -1,
+                producer_id: context.map_or(-1, |context| context.producer_id),
+                producer_epoch: context.map_or(-1, |context| context.producer_epoch),
+                timestamp_type: TimestampType::Creation,
+                offset: i64::from(offset),
+                // The encoder groups records with the same offset - sequence. This
+                // keeps one batch per partition while retaining base_sequence = -1
+                // for a non-idempotent producer.
+                sequence: context.map_or(offset - 1, |context| context.sequence),
+                timestamp: options.timestamp,
+                key: key.map(bytes::Bytes::copy_from_slice),
+                value: value.map(bytes::Bytes::copy_from_slice),
+                headers: kp_headers,
+            };
+            records.push(record);
+        }
     }
 
     let topic_data: Vec<kafka_protocol::messages::produce_request::TopicProduceData> =
@@ -182,31 +185,19 @@ pub(crate) fn build_produce_request_with_options(
     Ok((header, request))
 }
 
-pub fn convert_produce_response(
-    kp_resp: ProduceResponse,
-    correlation_id: i32,
-) -> ProduceResponseData {
-    ProduceResponseData {
-        header: HeaderResponse {
-            correlation: correlation_id,
-        },
-        topic_partitions: kp_resp
-            .responses
+pub(crate) fn into_produce_confirmations(
+    response: ProduceResponse,
+) -> impl Iterator<Item = ProduceConfirm> {
+    response.responses.into_iter().map(|topic| ProduceConfirm {
+        topic: topic.name.to_string(),
+        partition_confirms: topic
+            .partition_responses
             .into_iter()
-            .map(|t| TopicPartitionProduceResponse {
-                topic: t.name.to_string(),
-                partitions: t
-                    .partition_responses
-                    .into_iter()
-                    .map(|p| PartitionProduceResponse {
-                        partition: p.index,
-                        error: p.error_code,
-                        offset: p.base_offset,
-                    })
-                    .collect(),
+            .map(|partition| {
+                partition_confirmation(partition.index, partition.error_code, partition.base_offset)
             })
             .collect(),
-    }
+    })
 }
 
 // --------------------------------------------------------------------
@@ -224,58 +215,13 @@ pub enum ProducerTimestamp {
     LogAppendTime = 8,
 }
 
-#[derive(Default, Debug, Clone)]
-#[allow(dead_code)]
-pub struct ProduceResponseData {
-    pub header: HeaderResponse,
-    pub topic_partitions: Vec<TopicPartitionProduceResponse>,
-}
-
-#[derive(Default, Debug, Clone)]
-pub struct TopicPartitionProduceResponse {
-    pub topic: String,
-    pub partitions: Vec<PartitionProduceResponse>,
-}
-
-#[derive(Default, Debug, Clone)]
-pub struct PartitionProduceResponse {
-    pub partition: i32,
-    pub error: i16,
-    pub offset: i64,
-}
-
-impl ProduceResponseData {
-    pub fn get_response(self) -> Vec<ProduceConfirm> {
-        self.topic_partitions
-            .into_iter()
-            .map(TopicPartitionProduceResponse::get_response)
-            .collect()
-    }
-}
-
-impl TopicPartitionProduceResponse {
-    pub fn get_response(self) -> ProduceConfirm {
-        let Self { topic, partitions } = self;
-        let partition_confirms = partitions
-            .iter()
-            .map(PartitionProduceResponse::get_response)
-            .collect();
-        ProduceConfirm {
-            topic,
-            partition_confirms,
-        }
-    }
-}
-
-impl PartitionProduceResponse {
-    pub fn get_response(&self) -> ProducePartitionConfirm {
-        ProducePartitionConfirm {
-            partition: self.partition,
-            offset: match KafkaCode::from_protocol(self.error) {
-                None => Ok(self.offset),
-                Some(code) => Err(code),
-            },
-        }
+fn partition_confirmation(partition: i32, error: i16, offset: i64) -> ProducePartitionConfirm {
+    ProducePartitionConfirm {
+        partition,
+        offset: match KafkaCode::from_protocol(error) {
+            None if offset >= 0 => Ok(offset),
+            code => Err(code.unwrap_or(KafkaCode::Unknown)),
+        },
     }
 }
 
@@ -479,5 +425,126 @@ mod tests {
             build_produce_request(1, "client-a", 1, 30_000, compression, &one_message())
                 .unwrap_or_else(|err| panic!("{compression:?} should encode successfully: {err}"));
         }
+    }
+
+    #[test]
+    fn contiguous_target_runs_preserve_record_order_and_unique_headers_for_all_codecs() {
+        let headers = [
+            ("first".to_owned(), bytes::Bytes::from_static(b"one")),
+            ("empty".to_owned(), bytes::Bytes::new()),
+            ("last".to_owned(), bytes::Bytes::from_static(b"three")),
+        ];
+        let messages: [ProduceMessageRef<'_>; 6] = [
+            ("a", 0, Some(b""), Some(b"first"), &headers),
+            ("a", 0, Some(b""), Some(b"second"), &headers),
+            ("a", 1, None, Some(b"other-partition"), &headers),
+            ("b", 0, None, Some(b"other-topic"), &headers),
+            ("a", 0, Some(b""), Some(b"third"), &headers),
+            ("a", 0, Some(b""), Some(b"fourth"), &headers),
+        ];
+        for compression in enabled_codecs() {
+            let (_, request) =
+                build_produce_request(1, "client", 1, 30_000, compression, &messages).unwrap();
+            for topic in request.topic_data {
+                for partition in topic.partition_data {
+                    let batches = kafka_protocol::records::RecordBatchDecoder::decode_all(
+                        &mut partition.records.unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(batches.len(), 1);
+                    let expected: &[&[u8]] = match (topic.name.as_str(), partition.index) {
+                        ("a", 0) => &[b"first", b"second", b"third", b"fourth"],
+                        ("a", 1) => &[b"other-partition"],
+                        ("b", 0) => &[b"other-topic"],
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(batches[0].records.len(), expected.len());
+                    for (index, record) in batches[0].records.iter().enumerate() {
+                        assert_eq!(record.offset, i64::try_from(index).unwrap());
+                        assert_eq!(record.sequence, i32::try_from(index).unwrap() - 1);
+                        assert_eq!(record.value.as_deref(), Some(expected[index]));
+                        assert_eq!(
+                            record
+                                .headers
+                                .keys()
+                                .map(StrBytes::as_str)
+                                .collect::<Vec<_>>(),
+                            vec!["first", "empty", "last"]
+                        );
+                        assert_eq!(
+                            record.headers[&StrBytes::from_static_str("empty")].as_deref(),
+                            Some(&b""[..])
+                        );
+                        if topic.name.as_str() == "a" && partition.index == 0 {
+                            assert_eq!(record.key.as_deref(), Some(&b""[..]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn confirmation_iterator_preserves_response_order_and_rejects_negative_offsets() {
+        use kafka_protocol::messages::produce_response::{
+            PartitionProduceResponse as GeneratedPartition, TopicProduceResponse as GeneratedTopic,
+        };
+        let response = ProduceResponse::default().with_responses(vec![
+            GeneratedTopic::default()
+                .with_name(TopicName::from(StrBytes::from_static_str("a")))
+                .with_partition_responses(vec![
+                    GeneratedPartition::default()
+                        .with_index(0)
+                        .with_base_offset(42),
+                    GeneratedPartition::default()
+                        .with_index(1)
+                        .with_error_code(KafkaCode::NotLeaderForPartition as i16)
+                        .with_base_offset(-1),
+                    GeneratedPartition::default()
+                        .with_index(2)
+                        .with_error_code(i16::MAX)
+                        .with_base_offset(-1),
+                    GeneratedPartition::default()
+                        .with_index(3)
+                        .with_base_offset(-1),
+                ]),
+            GeneratedTopic::default()
+                .with_name(TopicName::from(StrBytes::from_static_str("empty"))),
+            GeneratedTopic::default()
+                .with_name(TopicName::from(StrBytes::from_static_str("a")))
+                .with_partition_responses(vec![
+                    GeneratedPartition::default()
+                        .with_index(0)
+                        .with_base_offset(42),
+                ]),
+        ]);
+        let actual: Vec<_> = into_produce_confirmations(response)
+            .map(|confirm| {
+                (
+                    confirm.topic,
+                    confirm
+                        .partition_confirms
+                        .into_iter()
+                        .map(|partition| (partition.partition, partition.offset))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                (
+                    "a".to_owned(),
+                    vec![
+                        (0, Ok(42)),
+                        (1, Err(KafkaCode::NotLeaderForPartition)),
+                        (2, Err(KafkaCode::Unknown)),
+                        (3, Err(KafkaCode::Unknown)),
+                    ]
+                ),
+                ("empty".to_owned(), vec![]),
+                ("a".to_owned(), vec![(0, Ok(42))]),
+            ]
+        );
     }
 }

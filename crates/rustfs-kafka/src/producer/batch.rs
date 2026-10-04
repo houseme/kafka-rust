@@ -737,6 +737,7 @@ mod delivery_tests {
 
     enum BrokerReply {
         Confirm(Vec<(&'static str, i32, i16)>),
+        ConfirmWithOffsets(Vec<(&'static str, i32, i16, i64)>),
         ConfirmOrdered(Vec<(&'static str, i32, i16)>, ExpectedValues),
         Disconnect,
         NoAcks,
@@ -808,6 +809,13 @@ mod delivery_tests {
                 match reply {
                     BrokerReply::Confirm(confirms) | BrokerReply::ConfirmOrdered(confirms, _) => {
                         write_response(&mut stream, &header, &produce_response(confirms));
+                    }
+                    BrokerReply::ConfirmWithOffsets(confirms) => {
+                        write_response(
+                            &mut stream,
+                            &header,
+                            &produce_response_with_offsets(confirms),
+                        );
                     }
                     BrokerReply::Disconnect => break,
                     BrokerReply::NoAcks => assert_eq!(request.acks, 0),
@@ -891,13 +899,24 @@ mod delivery_tests {
     }
 
     fn produce_response(confirms: Vec<(&'static str, i32, i16)>) -> ProduceResponse {
+        produce_response_with_offsets(
+            confirms
+                .into_iter()
+                .map(|(topic, partition, error)| (topic, partition, error, 42))
+                .collect(),
+        )
+    }
+
+    fn produce_response_with_offsets(
+        confirms: Vec<(&'static str, i32, i16, i64)>,
+    ) -> ProduceResponse {
         let mut topics: BTreeMap<&'static str, Vec<PartitionProduceResponse>> = BTreeMap::new();
-        for (topic, partition, error) in confirms {
+        for (topic, partition, error, offset) in confirms {
             topics.entry(topic).or_default().push(
                 PartitionProduceResponse::default()
                     .with_index(partition)
                     .with_error_code(error)
-                    .with_base_offset(42),
+                    .with_base_offset(offset),
             );
         }
         ProduceResponse::default().with_responses(
@@ -1325,5 +1344,51 @@ mod delivery_tests {
         assert!(producer.batch_start.is_none());
         assert!(!producer.failed_flush);
         assert_eq!(server.join().unwrap(), vec![vec![("t".into(), 0, 1)]]);
+    }
+
+    #[test]
+    fn negative_success_offset_remains_buffered_without_replaying_other_confirmed_partitions() {
+        let (mut producer, server) = mock_batch_producer(
+            vec![
+                BrokerReply::ConfirmWithOffsets(vec![("t", 0, 0, 42), ("u", 0, 0, -1)]),
+                BrokerReply::Confirm(vec![("u", 0, 0)]),
+            ],
+            RequiredAcks::One,
+            100,
+        );
+        producer
+            .send(&Record::from_value("t", "confirmed").with_partition(0))
+            .unwrap();
+        producer
+            .send(&Record::from_value("u", "pending").with_partition(0))
+            .unwrap();
+        let started = producer.batch_start;
+        let confirms = producer.flush().unwrap();
+        let rejected = confirms
+            .iter()
+            .find(|confirm| confirm.topic == "u")
+            .unwrap();
+        assert_eq!(
+            rejected.partition_confirms[0].offset,
+            Err(KafkaCode::Unknown)
+        );
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (1, 7)
+        );
+        assert_eq!(producer.batch_start, started);
+        assert!(producer.failed_flush);
+        assert!(
+            producer
+                .send(&Record::from_value("u", "new").with_partition(0))
+                .is_err()
+        );
+        producer.flush().unwrap();
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (0, 0)
+        );
+        assert!(!producer.failed_flush);
+        assert_eq!(server.join().unwrap()[1], vec![("u".into(), 0, 1)]);
     }
 }
