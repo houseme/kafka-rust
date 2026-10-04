@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Async Produce encodes all complete broker frames before Produce IO and retains lightweight acknowledgement identities instead of record bodies. Completed writes release their frames before waiting for ACKs; malformed schemas and negative successful offsets take codec-error priority. Preflight can retain unsent broker frames concurrently and does not introduce automatic replay.
 - Transactional producers validate headers again after custom partitioners run and before metadata or enrollment IO, preserving active transactions and sequence state on local rejection. Successful sequence updates move the target key into its map instead of cloning it.
 - Ordinary producers require complete unique resolved target acknowledgements and return codec errors instead of panicking on malformed confirmations. Invalid replies retire existing target connections without reconnecting or replay; valid partition errors, empty input, and no-ack sends retain their contracts.
 - Native async consumers publish verified batch positions and pending commits only after all broker responses succeed, including safe control-only and compacted progress. Missing cached positions and malformed data return codec errors; added TCP cancellation/error coverage, secure transaction-marker recovery, and updated the actual progress CPU fixture.
