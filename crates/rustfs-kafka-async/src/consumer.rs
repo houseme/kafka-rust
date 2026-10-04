@@ -1,15 +1,16 @@
 //! Async consumer for fetching messages from Kafka.
 
 use kafka_protocol::messages::{
-    ApiKey, BrokerId, FetchRequest, FetchResponse, FindCoordinatorRequest, FindCoordinatorResponse,
-    GroupId, ListOffsetsRequest, ListOffsetsResponse, MetadataRequest, MetadataResponse,
-    OffsetCommitRequest, OffsetCommitResponse, OffsetFetchRequest, OffsetFetchResponse,
-    RequestHeader, TopicName, fetch_request::FetchPartition as KpFetchPartition,
-    fetch_request::FetchTopic as KpFetchTopic, list_offsets_request::ListOffsetsPartition,
-    list_offsets_request::ListOffsetsTopic, metadata_request::MetadataRequestTopic,
-    offset_commit_request::OffsetCommitRequestPartition,
+    ApiKey, BrokerId, FetchRequest, FetchResponse, FindCoordinatorRequest, GroupId,
+    ListOffsetsRequest, ListOffsetsResponse, MetadataRequest, OffsetCommitRequest,
+    OffsetCommitResponse, OffsetFetchRequest, OffsetFetchResponse, RequestHeader, TopicName,
+    fetch_request::FetchPartition as KpFetchPartition, fetch_request::FetchTopic as KpFetchTopic,
+    list_offsets_request::ListOffsetsPartition, list_offsets_request::ListOffsetsTopic,
+    metadata_request::MetadataRequestTopic, offset_commit_request::OffsetCommitRequestPartition,
     offset_commit_request::OffsetCommitRequestTopic, offset_fetch_request::OffsetFetchRequestTopic,
 };
+#[cfg(test)]
+use kafka_protocol::messages::{FindCoordinatorResponse, MetadataResponse};
 use kafka_protocol::protocol::StrBytes;
 use rustfs_kafka::client::SecurityConfig;
 use rustfs_kafka::client::fetch_kp::{OwnedFetchResponse, convert_fetch_response};
@@ -49,6 +50,8 @@ struct NativeConsumer {
     offsets: TopicOffsets,
     dirty_offsets: TopicOffsets,
     leaders: HashMap<(String, i32), String>,
+    metadata_refresh_needed: bool,
+    last_partial_metadata_refresh: Option<tokio::time::Instant>,
     coordinator: Option<String>,
     correlation: i32,
     retry_attempts: usize,
@@ -217,6 +220,8 @@ impl AsyncConsumerBuilder {
                 offsets: HashMap::new(),
                 dirty_offsets: HashMap::new(),
                 leaders: HashMap::new(),
+                metadata_refresh_needed: false,
+                last_partial_metadata_refresh: None,
                 coordinator: None,
                 correlation: 1,
                 retry_attempts: native_retry_attempts,
@@ -268,6 +273,8 @@ impl AsyncConsumer {
                 offsets: HashMap::new(),
                 dirty_offsets: HashMap::new(),
                 leaders: HashMap::new(),
+                metadata_refresh_needed: false,
+                last_partial_metadata_refresh: None,
                 coordinator: None,
                 correlation: 1,
                 retry_attempts: DEFAULT_NATIVE_RETRY_ATTEMPTS,
@@ -334,7 +341,6 @@ impl NativeConsumer {
                         return Err(err);
                     }
                     if !coordinator_error {
-                        self.leaders.clear();
                         self.refresh_metadata().await?;
                     }
                     tokio::time::sleep(self.retry_backoff).await;
@@ -346,7 +352,13 @@ impl NativeConsumer {
 
     async fn poll_once(&mut self) -> Result<MessageSets> {
         self.client.ensure_connected().await?;
-        if self.leaders.is_empty() {
+        if self.leaders.is_empty()
+            || (self.metadata_refresh_needed
+                && self
+                    .last_partial_metadata_refresh
+                    .as_ref()
+                    .is_none_or(|refresh| refresh.elapsed() >= self.retry_backoff))
+        {
             self.refresh_metadata().await?;
         }
         self.ensure_start_offsets().await?;
@@ -372,12 +384,32 @@ impl NativeConsumer {
         let mut owned_responses = Vec::with_capacity(by_broker.len());
 
         for (broker, tps) in by_broker {
-            let conn = self.client.get_connection(broker).await?;
             let (header, request) = build_fetch_request(correlation, &client_id, &tps);
-            send_kp_request(conn, &header, &request, API_VERSION_FETCH).await?;
-            let response = get_kp_response::<FetchResponse>(conn, API_VERSION_FETCH).await?;
+            let client = &mut self.client;
+            let response = async {
+                let conn = client.get_connection(broker).await?;
+                send_kp_request(conn, &header, &request, API_VERSION_FETCH).await?;
+                get_kp_response::<FetchResponse>(conn, API_VERSION_FETCH).await
+            }
+            .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    if matches!(error, Error::Connection(_)) {
+                        self.metadata_refresh_needed = true;
+                        self.last_partial_metadata_refresh = None;
+                    }
+                    return Err(error);
+                }
+            };
             let mut owned = convert_fetch_response(response, correlation);
-            validate_and_trim_fetch_response(&mut owned, &tps)?;
+            if let Err(error) = validate_and_trim_fetch_response(&mut owned, &tps) {
+                if is_leader_error(&error) {
+                    self.metadata_refresh_needed = true;
+                    self.last_partial_metadata_refresh = None;
+                }
+                return Err(error);
+            }
 
             owned_responses.push(owned);
         }
@@ -407,6 +439,9 @@ impl NativeConsumer {
                 }
                 Err(err) => {
                     self.record_error("commit", &err);
+                    if is_coordinator_error(&err) {
+                        self.coordinator = None;
+                    }
                     return Err(err);
                 }
             }
@@ -439,16 +474,30 @@ impl NativeConsumer {
             })
             .collect();
 
-        let conn = self.client.get_connection(&coordinator).await?;
         let (header, request) =
             build_offset_commit_request(correlation, &client_id, &self.group, &payload);
-        send_kp_request(conn, &header, &request, API_VERSION_OFFSET_COMMIT).await?;
-        let response =
-            get_kp_response::<OffsetCommitResponse>(conn, API_VERSION_OFFSET_COMMIT).await?;
-        if let Err(error) = validate_commit_acknowledgments(&response, &payload) {
-            conn.invalidate();
-            return Err(error);
+        let client = &mut self.client;
+        let response = async {
+            let conn = client.get_connection(&coordinator).await?;
+            send_kp_request(conn, &header, &request, API_VERSION_OFFSET_COMMIT).await?;
+            let response =
+                get_kp_response::<OffsetCommitResponse>(conn, API_VERSION_OFFSET_COMMIT).await?;
+            if let Err(error) = validate_commit_acknowledgments(&response, &payload) {
+                conn.invalidate();
+                return Err(error);
+            }
+            Ok(response)
         }
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if matches!(error, Error::Connection(_)) {
+                    self.coordinator = None;
+                }
+                return Err(error);
+            }
+        };
 
         for topic in response.topics {
             for partition in topic.partitions {
@@ -462,97 +511,6 @@ impl NativeConsumer {
         }
 
         self.dirty_offsets.clear();
-        Ok(())
-    }
-
-    async fn refresh_metadata(&mut self) -> Result<()> {
-        let request_host = if let Some(connected) = self.client.connected_hosts().first() {
-            (*connected).to_owned()
-        } else {
-            self.client
-                .bootstrap_hosts()
-                .first()
-                .cloned()
-                .ok_or_else(no_host_reachable_error)?
-        };
-
-        let correlation = self.next_correlation();
-        let client_id = self.client.client_id().to_owned();
-        let conn = self.client.get_connection(&request_host).await?;
-        let (header, request) = build_metadata_request(correlation, &client_id, &self.topics);
-        send_kp_request(conn, &header, &request, API_VERSION_METADATA).await?;
-        let response = get_kp_response::<MetadataResponse>(conn, API_VERSION_METADATA).await?;
-
-        let mut brokers: HashMap<i32, String> = HashMap::new();
-        for broker in response.brokers {
-            brokers.insert(
-                i32::from(broker.node_id),
-                format!("{}:{}", broker.host, broker.port),
-            );
-        }
-
-        self.leaders.clear();
-        for topic in response.topics {
-            let Some(topic_name) = topic.name else {
-                continue;
-            };
-            for partition in topic.partitions {
-                let leader = i32::from(partition.leader_id);
-                if leader < 0 {
-                    continue;
-                }
-                if let Some(host) = brokers.get(&leader) {
-                    let tp = (topic_name.to_string(), partition.partition_index);
-                    self.leaders.insert(tp, host.clone());
-                }
-            }
-        }
-
-        if self.leaders.is_empty() {
-            return Err(Error::Kafka(KafkaCode::LeaderNotAvailable));
-        }
-
-        Ok(())
-    }
-
-    async fn refresh_coordinator(&mut self) -> Result<()> {
-        let request_host = if let Some(connected) = self.client.connected_hosts().first() {
-            (*connected).to_owned()
-        } else {
-            self.client
-                .bootstrap_hosts()
-                .first()
-                .cloned()
-                .ok_or_else(no_host_reachable_error)?
-        };
-
-        let correlation = self.next_correlation();
-        let client_id = self.client.client_id().to_owned();
-        let conn = self.client.get_connection(&request_host).await?;
-        let (header, request) =
-            build_find_coordinator_request(correlation, &client_id, &self.group);
-        send_kp_request(conn, &header, &request, API_VERSION_FIND_COORDINATOR).await?;
-        let response =
-            get_kp_response::<FindCoordinatorResponse>(conn, API_VERSION_FIND_COORDINATOR).await?;
-
-        let (error_code, host, port) = if let Some(c) = response.coordinators.first() {
-            (c.error_code, c.host.to_string(), c.port)
-        } else {
-            (
-                response.error_code,
-                response.host.to_string(),
-                response.port,
-            )
-        };
-
-        if error_code != 0 {
-            if let Some(code) = map_kafka_code(error_code) {
-                return Err(Error::Kafka(code));
-            }
-            return Err(Error::Kafka(KafkaCode::Unknown));
-        }
-
-        self.coordinator = Some(format!("{host}:{port}"));
         Ok(())
     }
 
@@ -619,20 +577,36 @@ impl NativeConsumer {
             .map(|(topic, partition)| (topic.as_str(), *partition))
             .collect();
 
-        let conn = self.client.get_connection(&coordinator).await?;
         let (header, request) =
             build_offset_fetch_request(correlation, &client_id, &self.group, &req_parts);
-        send_kp_request(conn, &header, &request, API_VERSION_OFFSET_FETCH).await?;
-        let response =
-            get_kp_response::<OffsetFetchResponse>(conn, API_VERSION_OFFSET_FETCH).await?;
+        let client = &mut self.client;
+        let response = async {
+            let conn = client.get_connection(&coordinator).await?;
+            send_kp_request(conn, &header, &request, API_VERSION_OFFSET_FETCH).await?;
+            let response =
+                get_kp_response::<OffsetFetchResponse>(conn, API_VERSION_OFFSET_FETCH).await?;
+            if response.error_code == 0
+                && let Err(error) = validate_offset_fetch_acknowledgments(&response, &req_parts)
+            {
+                conn.invalidate();
+                return Err(error);
+            }
+            Ok(response)
+        }
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if matches!(error, Error::Connection(_)) {
+                    self.coordinator = None;
+                }
+                return Err(error);
+            }
+        };
         if response.error_code != 0 {
             return Err(Error::Kafka(
                 map_kafka_code(response.error_code).unwrap_or(KafkaCode::Unknown),
             ));
-        }
-        if let Err(error) = validate_offset_fetch_acknowledgments(&response, &req_parts) {
-            conn.invalidate();
-            return Err(error);
         }
 
         let mut committed = HashMap::new();
@@ -672,10 +646,14 @@ impl NativeConsumer {
         let client_id = self.client.client_id().to_owned();
         let mut by_broker: HashMap<&str, Vec<(&str, i32, i64)>> = HashMap::new();
         for tp in partitions {
-            let leader = self
-                .leaders
-                .get(tp)
-                .ok_or(Error::Kafka(KafkaCode::LeaderNotAvailable))?;
+            let leader = match self.leaders.get(tp) {
+                Some(leader) => leader,
+                None => {
+                    self.metadata_refresh_needed = true;
+                    self.last_partial_metadata_refresh = None;
+                    return Err(Error::Kafka(KafkaCode::LeaderNotAvailable));
+                }
+            };
             by_broker
                 .entry(leader.as_str())
                 .or_default()
@@ -683,17 +661,32 @@ impl NativeConsumer {
         }
         let mut resolved = HashMap::new();
         for (broker, requested) in by_broker {
-            let conn = self.client.get_connection(broker).await?;
             let (header, request) = build_list_offsets_request(correlation, &client_id, &requested);
-            send_kp_request(conn, &header, &request, API_VERSION_LIST_OFFSETS).await?;
-            let response =
-                get_kp_response::<ListOffsetsResponse>(conn, API_VERSION_LIST_OFFSETS).await?;
-            if let Err(error) = validate_list_offset_acknowledgments(&response, &requested) {
-                if matches!(error, Error::Protocol(ProtocolError::Codec)) {
-                    conn.invalidate();
+            let client = &mut self.client;
+            let response = async {
+                let conn = client.get_connection(broker).await?;
+                send_kp_request(conn, &header, &request, API_VERSION_LIST_OFFSETS).await?;
+                let response =
+                    get_kp_response::<ListOffsetsResponse>(conn, API_VERSION_LIST_OFFSETS).await?;
+                if let Err(error) = validate_list_offset_acknowledgments(&response, &requested) {
+                    if matches!(error, Error::Protocol(ProtocolError::Codec)) {
+                        conn.invalidate();
+                    }
+                    return Err(error);
                 }
-                return Err(error);
+                Ok(response)
             }
+            .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    if matches!(error, Error::Connection(_)) || is_leader_error(&error) {
+                        self.metadata_refresh_needed = true;
+                        self.last_partial_metadata_refresh = None;
+                    }
+                    return Err(error);
+                }
+            };
             for topic in response.topics {
                 for partition in topic.partitions {
                     insert_topic_offset(
@@ -732,8 +725,10 @@ fn build_metadata_request(
         .with_request_api_version(API_VERSION_METADATA)
         .with_correlation_id(correlation_id);
 
+    let mut seen = HashSet::new();
     let request_topics: Vec<MetadataRequestTopic> = topics
         .iter()
+        .filter(|topic| seen.insert(topic.as_str()))
         .map(|topic| {
             MetadataRequestTopic::default()
                 .with_name(Some(TopicName::from(StrBytes::from_string(topic.clone()))))
@@ -1252,6 +1247,13 @@ fn is_coordinator_error(err: &Error) -> bool {
     )
 }
 
+fn is_leader_error(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Kafka(KafkaCode::LeaderNotAvailable | KafkaCode::NotLeaderForPartition)
+    )
+}
+
 fn should_retry_commit(err: &Error) -> bool {
     match err {
         Error::Kafka(code) => matches!(
@@ -1315,7 +1317,7 @@ mod tests {
         TopicName::from(StrBytes::from_string(TEST_TOPIC.to_owned()))
     }
 
-    async fn read_request<T>(
+    pub(super) async fn read_request<T>(
         socket: &mut TcpStream,
         api_key: ApiKey,
         version: i16,
@@ -1413,6 +1415,7 @@ mod tests {
             &header,
             API_VERSION_FIND_COORDINATOR,
             FindCoordinatorResponse::default()
+                .with_node_id(BrokerId::from(0))
                 .with_host(StrBytes::from_string(coordinator.ip().to_string()))
                 .with_port(i32::from(coordinator.port())),
         )
@@ -3435,3 +3438,10 @@ mod consumer_progress_bench;
 #[cfg(test)]
 #[path = "consumer_start_offset_tests.rs"]
 mod consumer_start_offset_tests;
+
+#[cfg(test)]
+#[path = "consumer_coordinator_recovery_tests.rs"]
+mod consumer_coordinator_recovery_tests;
+
+#[path = "consumer_routing.rs"]
+mod routing;

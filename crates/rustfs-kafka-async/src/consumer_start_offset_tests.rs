@@ -405,15 +405,29 @@ async fn connection(mut socket: TcpStream, broker: usize, context: Arc<Context>)
                         MetadataResponseTopic::default()
                             .with_name(Some(TopicName::from(StrBytes::from_static_str(topic))))
                             .with_partitions(
-                                PARTITIONS
+                                (0..=PARTITIONS
                                     .iter()
                                     .filter(|partition| partition.topic == topic)
-                                    .map(|partition| {
+                                    .map(|partition| partition.partition)
+                                    .max()
+                                    .unwrap())
+                                    .map(|index| {
+                                        let partition = PARTITIONS.iter().find(|partition| {
+                                            partition.topic == topic && partition.partition == index
+                                        });
                                         MetadataResponsePartition::default()
-                                            .with_partition_index(partition.partition)
-                                            .with_leader_id(BrokerId::from(
-                                                i32::try_from(partition.broker).unwrap(),
-                                            ))
+                                            .with_partition_index(index)
+                                            .with_error_code(if partition.is_some() {
+                                                0
+                                            } else {
+                                                5
+                                            })
+                                            .with_leader_id(BrokerId::from(partition.map_or(
+                                                -1,
+                                                |partition| {
+                                                    i32::try_from(partition.broker).unwrap()
+                                                },
+                                            )))
                                     })
                                     .collect(),
                             )
@@ -472,6 +486,7 @@ async fn connection(mut socket: TcpStream, broker: usize, context: Arc<Context>)
                     &header,
                     API_VERSION_FIND_COORDINATOR,
                     FindCoordinatorResponse::default()
+                        .with_node_id(BrokerId::from(0))
                         .with_host(StrBytes::from_string(context.hosts[0].ip().to_string()))
                         .with_port(i32::from(context.hosts[0].port())),
                 )
@@ -702,7 +717,9 @@ async fn explicit_kafka_error_retries_without_partial_start_positions() {
     assert_eq!(fixture.native().dirty_offsets, dirty);
     assert_eq!(fixture.context.offset_fetches.load(Ordering::Relaxed), 2);
     assert_eq!(fixture.context.list_offsets.load(Ordering::Relaxed), 4);
-    assert_eq!(fixture.context.metadata.load(Ordering::Relaxed), 1);
+    // The retry refresh publishes a partial snapshot; configured ZERO backoff
+    // permits the next poll iteration to probe that partial snapshot again.
+    assert_eq!(fixture.context.metadata.load(Ordering::Relaxed), 2);
     fixture.finish().await;
 }
 
