@@ -125,10 +125,12 @@ impl<P: Partitioner> BatchProducer<P> {
             .buffer_bytes
             .checked_add(record_bytes)
             .ok_or_else(|| Error::Config("batch payload bytes exceed addressable size".into()))?;
-        let partition_bytes = self
+        let existing_batch = self
             .buffer
-            .get(msg.topic)
-            .and_then(|partitions| partitions.get(&partition))
+            .get_mut(msg.topic)
+            .and_then(|partitions| partitions.get_mut(&partition));
+        let partition_bytes = existing_batch
+            .as_ref()
             .map_or(0, |batch| batch.payload_bytes)
             .checked_add(record_bytes)
             .ok_or_else(|| {
@@ -141,8 +143,7 @@ impl<P: Partitioner> BatchProducer<P> {
             headers: msg.headers.to_vec(),
         };
 
-        if let Some(partitions) = self.buffer.get_mut(msg.topic) {
-            let batch = partitions.entry(partition).or_default();
+        if let Some(batch) = existing_batch {
             batch.records.push(batch_record);
             batch.payload_bytes = partition_bytes;
         } else {
@@ -252,20 +253,19 @@ impl<P: Partitioner> BatchProducer<P> {
             }
         }
 
-        malformed |= acknowledgements
-            .values()
-            .any(|status| *status == BatchConfirmation::Ambiguous)
-            || self.buffer.iter().any(|(topic, partitions)| {
-                partitions
-                    .keys()
-                    .any(|partition| !acknowledgements.contains_key(&(topic.as_str(), *partition)))
-            });
-        let all_confirmed = self.buffer.iter().all(|(topic, partitions)| {
-            partitions.keys().all(|partition| {
-                acknowledgements.get(&(topic.as_str(), *partition))
-                    == Some(&BatchConfirmation::Successful)
-            })
-        });
+        let mut all_confirmed = true;
+        for (topic, partitions) in &self.buffer {
+            for partition in partitions.keys() {
+                match acknowledgements.get(&(topic.as_str(), *partition)) {
+                    Some(BatchConfirmation::Successful) => {}
+                    Some(BatchConfirmation::Failed) => all_confirmed = false,
+                    Some(BatchConfirmation::Ambiguous) | None => {
+                        malformed = true;
+                        all_confirmed = false;
+                    }
+                }
+            }
+        }
         if all_confirmed {
             self.clear();
         } else {
