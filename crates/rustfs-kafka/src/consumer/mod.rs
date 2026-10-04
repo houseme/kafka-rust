@@ -351,13 +351,14 @@ impl Consumer {
                     .state
                     .assignments
                     .topic_ref(&t.topic)
-                    .expect("unknown topic in response");
+                    .ok_or_else(Error::codec)?;
 
                 for p in &t.partitions {
                     let tp = TopicPartition {
                         topic_ref,
                         partition: p.partition,
                     };
+                    let current = self.state.fetch_offsets.get(&tp).ok_or_else(Error::codec)?;
 
                     let Some(data) =
                         self.stage_partition_data(&t.topic, &tp, p, &mut fetch_updates)?
@@ -365,11 +366,6 @@ impl Consumer {
                         continue;
                     };
 
-                    let current = self
-                        .state
-                        .fetch_offsets
-                        .get(&tp)
-                        .expect("non-requested partition");
                     let fetch_state =
                         fetch_updates
                             .entry(tp)
@@ -960,6 +956,38 @@ mod pause_resume_tests {
         );
         assert_eq!(fetch_progress(&consumer), before);
         assert!(consumer.state.retry_partitions.is_empty());
+    }
+
+    #[test]
+    fn unexpected_response_members_return_errors_without_publishing_progress() {
+        for (topic, partition, error_code) in [
+            ("unexpected", 0, None),
+            ("t", 99, None),
+            ("t", 99, Some(KafkaCode::OffsetOutOfRange)),
+        ] {
+            let mut consumer = make_consumer();
+            let retry = topic_partition(&consumer, 0);
+            consumer.state.retry_partitions.push_back(retry);
+            let before = fetch_progress(&consumer);
+            let unexpected = error_code.map_or_else(
+                || partition_data(partition, 30, &[20]),
+                |code| partition_error(partition, 30, code),
+            );
+            let mut response = fetch_response(vec![partition_data(0, 30, &[10, 11])]);
+            response.topics.push(fetch_kp::OwnedTopic {
+                topic: topic.to_owned(),
+                partitions: vec![unexpected],
+            });
+            let retry_for_poll = topic_partition(&consumer, 0);
+            assert!(matches!(
+                consumer.process_fetch_responses(2, Some(retry_for_poll), vec![response]),
+                Err(Error::Protocol(crate::error::ProtocolError::Codec))
+            ));
+            assert_eq!(fetch_progress(&consumer), before);
+            assert_eq!(consumer.state.retry_partitions.len(), 1);
+            let expected_retry = topic_partition(&consumer, 0);
+            assert_eq!(consumer.state.next_retry_partition(), Some(&expected_retry));
+        }
     }
 
     #[test]

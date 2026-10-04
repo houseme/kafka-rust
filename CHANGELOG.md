@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync consumers return codec errors for unknown cached response topics or partitions, including OffsetOutOfRange responses, without panicking or publishing staged fetch and retry changes.
 - Async consumers share the complete, panic-safe Fetch converter, reject malformed trailing batches before publishing progress, borrow poll routing keys, and rediscover coordinators after bounded offset-initialization retries. Added TLS/SASL multi-batch delivery and committed-offset recovery coverage.
 - Admin mutations and unclassified APIs return uncertain errors after a sending attempt without automatic replay. Read-only queries retain IO failover, unreachable bootstrap brokers remain selectable, and frames are encoded before connecting without cloning all hosts.
 - Sync response buffers now check size conversion and reserve fallibly before exact reads; allocation or read failures close the connection and clear pending response context. SASL uses the same safe helper.
