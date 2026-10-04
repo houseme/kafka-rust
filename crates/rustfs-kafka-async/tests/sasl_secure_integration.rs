@@ -1,8 +1,10 @@
 #[cfg(feature = "integration_tests")]
 mod integration {
     use rustfs_kafka::client::{RequiredAcks, SaslConfig, SecurityConfig};
+    use rustfs_kafka::consumer::FetchOffset;
     use rustfs_kafka::producer::Record;
-    use rustfs_kafka_async::{AsyncProducer, AsyncProducerConfig};
+    use rustfs_kafka_async::{AsyncConsumer, AsyncProducer, AsyncProducerConfig};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     const LOCAL_KAFKA_BOOTSTRAP_HOST: &str = "127.0.0.1:9092";
     const TEST_TOPIC_NAME: &str = "kafka-rust-test";
@@ -54,5 +56,110 @@ mod integration {
             .send(&record)
             .await
             .expect("failed to produce message with secure profile");
+    }
+
+    #[tokio::test]
+    async fn test_async_consumer_reads_and_commits_multiple_batches_with_secure_profile() {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let hosts = vec![LOCAL_KAFKA_BOOTSTRAP_HOST.to_owned()];
+            let security = security_from_env();
+            let mut producer_config =
+                AsyncProducerConfig::new().with_required_acks(RequiredAcks::One);
+            if let Some(security) = &security {
+                producer_config = producer_config.with_security(security.clone());
+            }
+            let producer = AsyncProducer::from_hosts_with_config(hosts.clone(), producer_config)
+                .await
+                .expect("failed to create async producer with secure profile");
+            let run_id = format!(
+                "{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            );
+            let group = format!("async-batches-{run_id}");
+            let first = format!("async-batch-first-{run_id}");
+            let second = format!("async-batch-second-{run_id}");
+            // Separate Produce requests create separate record batches on the
+            // same partition before the consumer's first Fetch snapshot.
+            for value in [&first, &second] {
+                producer
+                    .send(&Record::from_value(TEST_TOPIC_NAME, value.as_bytes()).with_partition(0))
+                    .await
+                    .expect("failed to produce a record batch");
+            }
+            let mut builder = AsyncConsumer::builder(hosts.clone())
+                .with_group(group.clone())
+                .with_topic(TEST_TOPIC_NAME.to_owned())
+                .with_native_retry_attempts(64)
+                .with_native_retry_backoff(Duration::from_millis(100))
+                .with_fallback_offset(FetchOffset::Earliest);
+            if let Some(security) = &security {
+                builder = builder.with_security(security.clone());
+            }
+            let mut consumer = builder
+                .build()
+                .await
+                .expect("failed to create async consumer with secure profile");
+            let messages = consumer
+                .poll()
+                .await
+                .expect("failed to fetch record batches");
+            let mut first_offset = None;
+            let mut second_offset = None;
+            for set in messages.iter() {
+                for message in set.messages() {
+                    if message.value == first.as_bytes() {
+                        assert_eq!(set.partition(), 0);
+                        first_offset = Some(message.offset);
+                    }
+                    if message.value == second.as_bytes() {
+                        assert_eq!(set.partition(), 0);
+                        second_offset = Some(message.offset);
+                    }
+                }
+            }
+            assert!(
+                second_offset.expect("second batch must be present in the first poll")
+                    > first_offset.expect("first batch must be present in the first poll")
+            );
+            consumer
+                .commit()
+                .await
+                .expect("failed to commit delivered offsets");
+            consumer.close().await.unwrap();
+
+            let mut builder = AsyncConsumer::builder(hosts)
+                .with_group(group)
+                .with_topic(TEST_TOPIC_NAME.to_owned())
+                .with_native_retry_attempts(64)
+                .with_native_retry_backoff(Duration::from_millis(100))
+                .with_fallback_offset(FetchOffset::Earliest);
+            if let Some(security) = security {
+                builder = builder.with_security(security);
+            }
+            let mut resumed = builder
+                .build()
+                .await
+                .expect("failed to recreate async consumer");
+            let messages = resumed
+                .poll()
+                .await
+                .expect("failed to resume committed offsets");
+            for set in messages.iter() {
+                assert!(
+                    set.messages()
+                        .iter()
+                        .all(|message| message.value != first.as_bytes()
+                            && message.value != second.as_bytes())
+                );
+            }
+            resumed.close().await.unwrap();
+            producer.close().await.unwrap();
+        })
+        .await
+        .expect("secure multi-batch consumer test timed out");
     }
 }

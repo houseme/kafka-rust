@@ -85,12 +85,13 @@ pub(crate) use internals::KafkaClientInternals;
 pub use reexports::*;
 pub use types::*;
 
-/// Owned fetch response types from the kafka-protocol adapter.
+/// Owned fetch response types and conversion helper for the kafka-protocol adapter.
 /// These types own their data (no lifetimes) and are returned by
 /// `KafkaClient::fetch_messages_kp`.
 pub mod fetch_kp {
     pub use crate::protocol::fetch::{
         OwnedData, OwnedFetchResponse, OwnedMessage, OwnedPartition, OwnedTopic,
+        convert_fetch_response,
     };
 }
 

@@ -1,6 +1,5 @@
 //! Async consumer for fetching messages from Kafka.
 
-use bytes::Bytes;
 use kafka_protocol::messages::{
     ApiKey, BrokerId, FetchRequest, FetchResponse, FindCoordinatorRequest, FindCoordinatorResponse,
     GroupId, ListOffsetsRequest, ListOffsetsResponse, MetadataRequest, MetadataResponse,
@@ -12,17 +11,16 @@ use kafka_protocol::messages::{
     offset_commit_request::OffsetCommitRequestTopic, offset_fetch_request::OffsetFetchRequestTopic,
 };
 use kafka_protocol::protocol::StrBytes;
-use kafka_protocol::records::RecordBatchDecoder;
 use rustfs_kafka::client::SecurityConfig;
+use rustfs_kafka::client::fetch_kp::convert_fetch_response;
 use rustfs_kafka::consumer::{FetchOffset, MessageSets};
-use rustfs_kafka::error::{ConsumerError, Error, KafkaCode, ProtocolError, Result};
+use rustfs_kafka::error::{ConsumerError, Error, KafkaCode, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::debug;
 
 use crate::AsyncKafkaClient;
-use crate::connection::AsyncConnection;
 use crate::consumer_observability::{
     DEFAULT_NATIVE_RECENT_ERROR_LIMIT, NativeConsumerErrorStats, NativeConsumerObservability,
 };
@@ -321,16 +319,22 @@ impl NativeConsumer {
         for attempt in 1..=self.retry_attempts {
             match self.poll_once().await {
                 Ok(data) => return Ok(data),
-                Err(err) if attempt < self.retry_attempts && should_retry_poll(&err) => {
-                    self.record_error("poll", &err);
-                    self.leaders.clear();
-                    self.refresh_metadata().await?;
-                    tokio::time::sleep(self.retry_backoff).await;
-                    continue;
-                }
                 Err(err) => {
                     self.record_error("poll", &err);
-                    return Err(err);
+                    let coordinator_error = is_coordinator_error(&err);
+                    if coordinator_error {
+                        // Also invalidate on the final attempt, so a later
+                        // poll can discover the coordinator after it recovers.
+                        self.coordinator = None;
+                    }
+                    if attempt == self.retry_attempts || !should_retry_poll(&err) {
+                        return Err(err);
+                    }
+                    if !coordinator_error {
+                        self.leaders.clear();
+                        self.refresh_metadata().await?;
+                    }
+                    tokio::time::sleep(self.retry_backoff).await;
                 }
             }
         }
@@ -344,36 +348,26 @@ impl NativeConsumer {
         }
         self.ensure_start_offsets().await?;
 
-        let mut by_broker: HashMap<String, Vec<(String, i32, i64)>> = HashMap::new();
+        let correlation = self.next_correlation();
+        let mut by_broker: HashMap<&str, Vec<(&str, i32, i64, i32)>> = HashMap::new();
         for (tp, leader_host) in &self.leaders {
             let offset = *self.offsets.get(tp).unwrap_or(&0);
-            by_broker
-                .entry(leader_host.clone())
-                .or_default()
-                .push((tp.0.clone(), tp.1, offset));
+            by_broker.entry(leader_host.as_str()).or_default().push((
+                tp.0.as_str(),
+                tp.1,
+                offset,
+                FETCH_PARTITION_MAX_BYTES,
+            ));
         }
 
-        let correlation = self.next_correlation();
         let client_id = self.client.client_id().to_owned();
-        let mut owned_responses = Vec::new();
+        let mut owned_responses = Vec::with_capacity(by_broker.len());
 
         for (broker, tps) in by_broker {
-            let parts: Vec<(&str, i32, i64, i32)> = tps
-                .iter()
-                .map(|(topic, partition, offset)| {
-                    (
-                        topic.as_str(),
-                        *partition,
-                        *offset,
-                        FETCH_PARTITION_MAX_BYTES,
-                    )
-                })
-                .collect();
-
-            let conn = self.client.get_connection(&broker).await?;
-            let (header, request) = build_fetch_request(correlation, &client_id, &parts);
+            let conn = self.client.get_connection(broker).await?;
+            let (header, request) = build_fetch_request(correlation, &client_id, &tps);
             send_kp_request(conn, &header, &request, API_VERSION_FETCH).await?;
-            let response = get_fetch_response(conn, API_VERSION_FETCH).await?;
+            let response = get_kp_response::<FetchResponse>(conn, API_VERSION_FETCH).await?;
             let owned = convert_fetch_response(response, correlation);
             if let Some(err) = first_fetch_error(&owned) {
                 return Err(err);
@@ -892,57 +886,6 @@ fn build_list_offsets_request(
     (header, request)
 }
 
-async fn get_fetch_response(
-    conn: &mut AsyncConnection,
-    requested_version: i16,
-) -> Result<FetchResponse> {
-    get_kp_response(conn, requested_version).await
-}
-
-fn convert_fetch_response(
-    kp_resp: FetchResponse,
-    correlation_id: i32,
-) -> rustfs_kafka::client::fetch_kp::OwnedFetchResponse {
-    use rustfs_kafka::client::fetch_kp::{OwnedFetchResponse, OwnedPartition, OwnedTopic};
-
-    let topics = kp_resp
-        .responses
-        .into_iter()
-        .map(|t| {
-            let topic_name = t.topic.to_string();
-            let partitions: Vec<OwnedPartition> = t
-                .partitions
-                .into_iter()
-                .map(|p| {
-                    let data = if p.error_code != 0 {
-                        Err(Arc::new(Error::TopicPartitionError {
-                            topic_name: topic_name.clone(),
-                            partition_id: p.partition_index,
-                            error_code: map_kafka_code(p.error_code).unwrap_or(KafkaCode::Unknown),
-                        }))
-                    } else {
-                        decode_partition_records(p.records, p.high_watermark)
-                    };
-                    OwnedPartition {
-                        partition: p.partition_index,
-                        data,
-                        highwatermark: p.high_watermark,
-                    }
-                })
-                .collect();
-            OwnedTopic {
-                topic: topic_name,
-                partitions,
-            }
-        })
-        .collect();
-
-    OwnedFetchResponse {
-        correlation_id,
-        topics,
-    }
-}
-
 fn first_fetch_error(resp: &rustfs_kafka::client::fetch_kp::OwnedFetchResponse) -> Option<Error> {
     for topic in &resp.topics {
         for partition in &topic.partitions {
@@ -958,6 +901,9 @@ fn first_fetch_error(resp: &rustfs_kafka::client::fetch_kp::OwnedFetchResponse) 
 }
 
 fn should_retry_poll(err: &Error) -> bool {
+    if is_coordinator_error(err) {
+        return true;
+    }
     match err {
         Error::Kafka(code) => matches!(
             code,
@@ -969,6 +915,17 @@ fn should_retry_poll(err: &Error) -> bool {
         Error::Connection(_) => true,
         _ => false,
     }
+}
+
+fn is_coordinator_error(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::Kafka(
+            KafkaCode::GroupCoordinatorNotAvailable
+                | KafkaCode::NotCoordinatorForGroup
+                | KafkaCode::GroupLoadInProgress
+        )
+    )
 }
 
 fn should_retry_commit(err: &Error) -> bool {
@@ -986,60 +943,6 @@ fn should_retry_commit(err: &Error) -> bool {
     }
 }
 
-fn decode_partition_records(
-    records: Option<Bytes>,
-    high_watermark: i64,
-) -> std::result::Result<rustfs_kafka::client::fetch_kp::OwnedData, Arc<Error>> {
-    use rustfs_kafka::client::fetch_kp::{OwnedData, OwnedMessage};
-
-    let Some(mut records_bytes) = records else {
-        return Ok(OwnedData {
-            highwatermark_offset: high_watermark,
-            messages: vec![],
-        });
-    };
-    if records_bytes.is_empty() {
-        return Ok(OwnedData {
-            highwatermark_offset: high_watermark,
-            messages: vec![],
-        });
-    }
-
-    let record_set = match RecordBatchDecoder::decode(&mut records_bytes) {
-        Ok(record_set) => record_set,
-        Err(e) => {
-            let message = e.to_string();
-            return Err(Arc::new(map_record_decode_error(&message)));
-        }
-    };
-
-    let mut messages: Vec<OwnedMessage> = Vec::new();
-    for record in &record_set.records {
-        messages.push(OwnedMessage {
-            offset: record.offset,
-            key: record.key.clone().unwrap_or_default(),
-            value: record.value.clone().unwrap_or_default(),
-        });
-    }
-
-    Ok(OwnedData {
-        highwatermark_offset: high_watermark,
-        messages,
-    })
-}
-
-fn map_record_decode_error(message: &str) -> Error {
-    if is_disabled_compression_feature_error(message) {
-        Error::Protocol(ProtocolError::UnsupportedCompression)
-    } else {
-        Error::Protocol(ProtocolError::Codec)
-    }
-}
-
-fn is_disabled_compression_feature_error(message: &str) -> bool {
-    message.contains("Support for") && message.contains("not enabled as a cargo feature")
-}
-
 fn no_host_reachable_error() -> Error {
     Error::Connection(rustfs_kafka::error::ConnectionError::NoHostReachable)
 }
@@ -1050,7 +953,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use bytes::{Buf, BytesMut};
+    use bytes::{Buf, Bytes, BytesMut};
     use kafka_protocol::messages::ResponseHeader;
     use kafka_protocol::messages::fetch_response::{FetchableTopicResponse, PartitionData};
     use kafka_protocol::messages::list_offsets_response::{
@@ -1067,7 +970,7 @@ mod tests {
     };
     use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
     use kafka_protocol::records::{Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType};
-    use rustfs_kafka::error::{ConnectionError, Error};
+    use rustfs_kafka::error::{ConnectionError, Error, ProtocolError};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Notify;
@@ -1165,6 +1068,11 @@ mod tests {
         offset_fetch_error: i16,
     ) {
         serve_metadata(socket, brokers).await;
+        serve_coordinator(socket, brokers[0]).await;
+        serve_committed_offsets(socket, brokers.len(), committed_offsets, offset_fetch_error).await;
+    }
+
+    async fn serve_coordinator(socket: &mut TcpStream, coordinator: SocketAddr) {
         let (header, request) = read_request::<FindCoordinatorRequest>(
             socket,
             ApiKey::FindCoordinator,
@@ -1177,10 +1085,18 @@ mod tests {
             &header,
             API_VERSION_FIND_COORDINATOR,
             FindCoordinatorResponse::default()
-                .with_host(StrBytes::from_string(brokers[0].ip().to_string()))
-                .with_port(i32::from(brokers[0].port())),
+                .with_host(StrBytes::from_string(coordinator.ip().to_string()))
+                .with_port(i32::from(coordinator.port())),
         )
         .await;
+    }
+
+    async fn serve_committed_offsets(
+        socket: &mut TcpStream,
+        partition_count: usize,
+        committed_offsets: &[i64],
+        offset_fetch_error: i16,
+    ) {
         let (header, request) = read_request::<OffsetFetchRequest>(
             socket,
             ApiKey::OffsetFetch,
@@ -1194,7 +1110,7 @@ mod tests {
         partitions.sort_unstable();
         assert_eq!(
             partitions,
-            (0..i32::try_from(brokers.len()).unwrap()).collect::<Vec<_>>()
+            (0..i32::try_from(partition_count).unwrap()).collect::<Vec<_>>()
         );
         reply(
             socket,
@@ -1225,7 +1141,10 @@ mod tests {
         .await;
     }
 
-    fn fetch_response(partition: i32, offset: i64, error_code: i16) -> FetchResponse {
+    fn encoded_record_batch(
+        offset: i64,
+        compression: kafka_protocol::records::Compression,
+    ) -> Bytes {
         let record = Record {
             transactional: false,
             control: false,
@@ -1247,10 +1166,14 @@ mod tests {
             &[record],
             &RecordEncodeOptions {
                 version: 2,
-                compression: kafka_protocol::records::Compression::None,
+                compression,
             },
         )
         .unwrap();
+        records.freeze()
+    }
+
+    fn fetch_response(partition: i32, offset: i64, error_code: i16) -> FetchResponse {
         FetchResponse::default().with_responses(vec![
             FetchableTopicResponse::default()
                 .with_topic(test_topic())
@@ -1259,9 +1182,104 @@ mod tests {
                         .with_partition_index(partition)
                         .with_error_code(error_code)
                         .with_high_watermark(offset + 1)
-                        .with_records(Some(records.freeze())),
+                        .with_records(Some(encoded_record_batch(
+                            offset,
+                            kafka_protocol::records::Compression::None,
+                        ))),
                 ]),
         ])
+    }
+
+    async fn assert_poll_returns_batches(
+        records: Bytes,
+        start_offset: i64,
+        expected_offsets: &[i64],
+        next_offset: i64,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            serve_initialization(&mut socket, &[addr], &[start_offset], 0).await;
+            let (header, request) =
+                read_request::<FetchRequest>(&mut socket, ApiKey::Fetch, API_VERSION_FETCH).await;
+            assert_eq!(request.topics[0].partitions[0].fetch_offset, start_offset);
+            let mut response = fetch_response(0, start_offset, 0);
+            let partition = &mut response.responses[0].partitions[0];
+            partition.records = Some(records);
+            partition.high_watermark = next_offset;
+            reply(&mut socket, &header, API_VERSION_FETCH, response).await;
+            serve_commit(&mut socket, &[(0, next_offset)]).await;
+        });
+        let mut consumer = consumer_at(addr, FetchOffset::Latest).await;
+        let messages = checked(consumer.poll()).await.unwrap();
+        let set = messages.iter().next().unwrap();
+        assert_eq!(
+            set.messages()
+                .iter()
+                .map(|message| message.offset)
+                .collect::<Vec<_>>(),
+            expected_offsets
+        );
+        assert!(
+            set.messages().iter().all(
+                |message| message.key.is_empty() && message.value.as_ref() == &b"delivered"[..]
+            )
+        );
+        checked(consumer.commit()).await.unwrap();
+        checked(server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn poll_delivers_all_record_batches_and_commits_the_last_next_offset() {
+        let mut records = BytesMut::new();
+        for offset in [4, 5] {
+            records.extend_from_slice(&encoded_record_batch(
+                offset,
+                kafka_protocol::records::Compression::None,
+            ));
+        }
+        assert_poll_returns_batches(records.freeze(), 4, &[4, 5], 6).await;
+    }
+
+    #[tokio::test]
+    async fn poll_continues_past_an_empty_compacted_batch() {
+        // A complete magic=2 batch with a valid CRC32C and recordsCount=0.
+        let empty_batch: [u8; 61] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 255, 255, 255, 255, 2, 235, 224, 2, 3, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255,
+            255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0,
+        ];
+        let mut records = BytesMut::from(&empty_batch[..]);
+        records.extend_from_slice(&encoded_record_batch(
+            5,
+            kafka_protocol::records::Compression::None,
+        ));
+        assert_poll_returns_batches(records.freeze(), 0, &[5], 6).await;
+    }
+
+    #[cfg(feature = "compression")]
+    #[tokio::test]
+    async fn poll_delivers_batches_with_mixed_compression() {
+        use kafka_protocol::records::Compression;
+
+        let mut records = BytesMut::new();
+        for (offset, compression) in [
+            Compression::None,
+            Compression::Gzip,
+            Compression::Snappy,
+            Compression::Lz4,
+            Compression::Zstd,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            records.extend_from_slice(&encoded_record_batch(
+                i64::try_from(offset).unwrap(),
+                compression,
+            ));
+        }
+        assert_poll_returns_batches(records.freeze(), 0, &[0, 1, 2, 3, 4], 5).await;
     }
 
     async fn serve_fetch(socket: &mut TcpStream, partition: i32, offset: i64) {
@@ -1423,10 +1441,116 @@ mod tests {
             Err(Error::Kafka(KafkaCode::NotCoordinatorForGroup))
         ));
         let native = native_consumer(&mut consumer);
+        assert!(native.coordinator.is_none());
         assert!(native.offsets.is_empty());
         assert!(native.dirty_offsets.is_empty());
         drop(consumer);
         checked(server).await.unwrap();
+    }
+
+    async fn assert_coordinator_migration(error_code: i16) {
+        let leader = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let coordinator = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let leader_addr = leader.local_addr().unwrap();
+        let coordinator_addr = coordinator.local_addr().unwrap();
+        let leader_server = tokio::spawn(async move {
+            let (mut socket, _) = checked(leader.accept()).await.unwrap();
+            serve_initialization(&mut socket, &[leader_addr], &[], error_code).await;
+            // A coordinator-only failure must rediscover it without another
+            // Metadata request, and must not resolve the Latest fallback.
+            serve_coordinator(&mut socket, coordinator_addr).await;
+            serve_fetch(&mut socket, 0, 42).await;
+        });
+        let coordinator_server = tokio::spawn(async move {
+            let (mut socket, _) = checked(coordinator.accept()).await.unwrap();
+            serve_committed_offsets(&mut socket, 1, &[42], 0).await;
+            serve_commit(&mut socket, &[(0, 43)]).await;
+        });
+        let mut consumer = checked(
+            AsyncConsumer::builder(vec![leader_addr.to_string()])
+                .with_group(TEST_GROUP.to_owned())
+                .with_topic(TEST_TOPIC.to_owned())
+                .with_fallback_offset(FetchOffset::Latest)
+                .with_native_retry_attempts(2)
+                .with_native_retry_backoff(Duration::ZERO)
+                .build(),
+        )
+        .await
+        .unwrap();
+        let messages = checked(consumer.poll()).await.unwrap();
+        assert_eq!(messages.iter().next().unwrap().messages()[0].offset, 42);
+        assert_eq!(consumer.native_error_stats().unwrap().total_errors, 1);
+        checked(consumer.commit()).await.unwrap();
+        checked(leader_server).await.unwrap();
+        checked(coordinator_server).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn offset_initialization_rediscovers_a_migrated_coordinator() {
+        assert_coordinator_migration(16).await;
+    }
+
+    #[tokio::test]
+    async fn offset_initialization_retries_an_unavailable_coordinator() {
+        assert_coordinator_migration(15).await;
+    }
+
+    #[tokio::test]
+    async fn offset_initialization_retries_coordinator_load_in_progress() {
+        assert_coordinator_migration(14).await;
+    }
+
+    #[tokio::test]
+    async fn coordinator_retry_exhaustion_invalidates_cache_for_the_next_poll() {
+        let leader = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let coordinator = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let leader_addr = leader.local_addr().unwrap();
+        let coordinator_addr = coordinator.local_addr().unwrap();
+        let leader_server = tokio::spawn(async move {
+            let (mut socket, _) = checked(leader.accept()).await.unwrap();
+            serve_metadata(&mut socket, &[leader_addr]).await;
+            for _ in 0..2 {
+                serve_coordinator(&mut socket, leader_addr).await;
+                serve_committed_offsets(&mut socket, 1, &[], 16).await;
+            }
+            // Exhaustion must return to the caller before a third attempt;
+            // the caller's next poll starts with coordinator discovery.
+            serve_coordinator(&mut socket, coordinator_addr).await;
+            serve_fetch(&mut socket, 0, 42).await;
+        });
+        let coordinator_server = tokio::spawn(async move {
+            let (mut socket, _) = checked(coordinator.accept()).await.unwrap();
+            serve_committed_offsets(&mut socket, 1, &[42], 0).await;
+            serve_commit(&mut socket, &[(0, 43)]).await;
+        });
+        let mut consumer = checked(
+            AsyncConsumer::builder(vec![leader_addr.to_string()])
+                .with_group(TEST_GROUP.to_owned())
+                .with_topic(TEST_TOPIC.to_owned())
+                .with_native_retry_attempts(2)
+                .with_native_retry_backoff(Duration::ZERO)
+                .build(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            checked(consumer.poll()).await,
+            Err(Error::Kafka(KafkaCode::NotCoordinatorForGroup))
+        ));
+        let native = native_consumer(&mut consumer);
+        assert!(native.coordinator.is_none());
+        assert!(native.offsets.is_empty());
+        assert!(native.dirty_offsets.is_empty());
+        assert_eq!(
+            native.leaders.get(&(TEST_TOPIC.to_owned(), 0)),
+            Some(&leader_addr.to_string())
+        );
+        assert_eq!(consumer.native_error_stats().unwrap().total_errors, 2);
+        let messages = checked(consumer.poll()).await.unwrap();
+        assert_eq!(messages.iter().next().unwrap().messages()[0].offset, 42);
+        checked(consumer.commit()).await.unwrap();
+        checked(leader_server).await.unwrap();
+        checked(coordinator_server).await.unwrap();
     }
 
     #[tokio::test]
@@ -1486,6 +1610,10 @@ mod tests {
     enum LaterFetch {
         PartitionError,
         CorruptBatch,
+        CorruptTail,
+        TruncatedTail,
+        #[cfg(not(feature = "gzip"))]
+        UnsupportedTail,
         Disconnect,
         Block,
     }
@@ -1546,6 +1674,44 @@ mod tests {
                             *records = Some(Bytes::from(corrupt_records));
                             reply(&mut socket, &header, API_VERSION_FETCH, response).await;
                         }
+                        LaterFetch::CorruptTail | LaterFetch::TruncatedTail => {
+                            let mut response = fetch_response(partition, 0, 0);
+                            let records = &mut response.responses[0].partitions[0].records;
+                            let mut combined = BytesMut::from(&records.take().unwrap()[..]);
+                            if matches!(later_fetch, LaterFetch::CorruptTail) {
+                                let mut tail = encoded_record_batch(
+                                    1,
+                                    kafka_protocol::records::Compression::None,
+                                )
+                                .to_vec();
+                                *tail.last_mut().unwrap() ^= 1;
+                                combined.extend_from_slice(&tail);
+                            } else {
+                                combined.extend_from_slice(&[0; 7]);
+                            }
+                            *records = Some(combined.freeze());
+                            reply(&mut socket, &header, API_VERSION_FETCH, response).await;
+                        }
+                        #[cfg(not(feature = "gzip"))]
+                        LaterFetch::UnsupportedTail => {
+                            // Complete magic=2 batch with valid CRC32C and a
+                            // GZIP-compressed record whose value is "delivered".
+                            let mut gzip_batch = [
+                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 85, 255, 255, 255, 255, 2, 239,
+                                28, 19, 68, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                                255, 255, 255, 0, 0, 0, 1, 31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 147,
+                                99, 96, 96, 96, 20, 74, 73, 205, 201, 44, 75, 45, 74, 77, 97, 0, 0,
+                                184, 183, 161, 18, 16, 0, 0, 0,
+                            ];
+                            gzip_batch[..8].copy_from_slice(&1i64.to_be_bytes());
+                            let mut response = fetch_response(partition, 0, 0);
+                            let records = &mut response.responses[0].partitions[0].records;
+                            let mut combined = BytesMut::from(&records.take().unwrap()[..]);
+                            combined.extend_from_slice(&gzip_batch);
+                            *records = Some(combined.freeze());
+                            reply(&mut socket, &header, API_VERSION_FETCH, response).await;
+                        }
                         LaterFetch::Disconnect => {}
                         LaterFetch::Block => {
                             blocked.notify_one();
@@ -1556,9 +1722,16 @@ mod tests {
             }));
         }
         let mut consumer = consumer_at(brokers[0], FetchOffset::Latest).await;
-        if matches!(later_fetch, LaterFetch::CorruptBatch) {
+        if matches!(
+            later_fetch,
+            LaterFetch::CorruptBatch | LaterFetch::CorruptTail | LaterFetch::TruncatedTail
+        ) {
             // Codec errors must propagate even when recoverable errors would
             // receive multiple attempts.
+            native_consumer(&mut consumer).retry_attempts = 3;
+        }
+        #[cfg(not(feature = "gzip"))]
+        if matches!(later_fetch, LaterFetch::UnsupportedTail) {
             native_consumer(&mut consumer).retry_attempts = 3;
         }
         match later_fetch {
@@ -1576,10 +1749,18 @@ mod tests {
                     Err(Error::Kafka(KafkaCode::TopicAuthorizationFailed))
                 ));
             }
-            LaterFetch::CorruptBatch => {
+            LaterFetch::CorruptBatch | LaterFetch::CorruptTail | LaterFetch::TruncatedTail => {
                 assert!(matches!(
                     checked(consumer.poll()).await,
                     Err(Error::Protocol(ProtocolError::Codec))
+                ));
+                assert_eq!(consumer.native_error_stats().unwrap().total_errors, 1);
+            }
+            #[cfg(not(feature = "gzip"))]
+            LaterFetch::UnsupportedTail => {
+                assert!(matches!(
+                    checked(consumer.poll()).await,
+                    Err(Error::Protocol(ProtocolError::UnsupportedCompression))
                 ));
                 assert_eq!(consumer.native_error_stats().unwrap().total_errors, 1);
             }
@@ -1616,6 +1797,22 @@ mod tests {
     #[tokio::test]
     async fn later_broker_corrupt_batch_does_not_advance_undelivered_offsets_or_retry() {
         assert_incomplete_poll_preserves_progress(LaterFetch::CorruptBatch).await;
+    }
+
+    #[tokio::test]
+    async fn later_broker_corrupt_tail_does_not_advance_undelivered_offsets_or_retry() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::CorruptTail).await;
+    }
+
+    #[tokio::test]
+    async fn later_broker_truncated_tail_does_not_advance_undelivered_offsets_or_retry() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::TruncatedTail).await;
+    }
+
+    #[cfg(not(feature = "gzip"))]
+    #[tokio::test]
+    async fn later_broker_unsupported_tail_does_not_advance_undelivered_offsets_or_retry() {
+        assert_incomplete_poll_preserves_progress(LaterFetch::UnsupportedTail).await;
     }
 
     #[tokio::test]

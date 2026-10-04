@@ -132,6 +132,13 @@ pub fn build_fetch_request(
     (header, request)
 }
 
+/// Converts a generated Fetch response into owned partition data.
+///
+/// Every record batch is decoded and validated before accepting a partition,
+/// including batches following empty compacted batches. Partition-level broker
+/// errors, malformed records, and unavailable compression codecs are retained
+/// in each partition's data result. Decoder panics become codec errors.
+#[must_use]
 pub fn convert_fetch_response(kp_resp: FetchResponse, correlation_id: i32) -> OwnedFetchResponse {
     let topics = kp_resp
         .responses
