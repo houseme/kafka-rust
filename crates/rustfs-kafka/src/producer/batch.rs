@@ -9,7 +9,7 @@ use crate::error::{Error, ProtocolError, Result};
 use super::config::BatchConfig;
 use super::config::{Config, DEFAULT_ACK_TIMEOUT_MILLIS, DEFAULT_REQUIRED_ACKS};
 use super::partitioner::{DefaultPartitioner, Partitioner, Topics};
-use super::{Compression, Record, RequiredAcks, State};
+use super::{Compression, Record, RequiredAcks, State, validate_unique_headers};
 
 /// Internal representation of a buffered record.
 ///
@@ -21,7 +21,13 @@ struct BatchRecord {
     headers: Vec<(String, Bytes)>,
 }
 
-type BatchBuffer = BTreeMap<String, BTreeMap<i32, Vec<BatchRecord>>>;
+#[derive(Default)]
+struct PartitionBatch {
+    records: Vec<BatchRecord>,
+    payload_bytes: usize,
+}
+
+type BatchBuffer = BTreeMap<String, BTreeMap<i32, PartitionBatch>>;
 
 #[derive(PartialEq, Eq)]
 enum BatchConfirmation {
@@ -30,15 +36,11 @@ enum BatchConfirmation {
     Ambiguous,
 }
 
+#[cfg(test)]
 impl BatchRecord {
     fn byte_size(&self) -> usize {
-        self.key.as_ref().map_or(0, Bytes::len)
-            + self.value.as_ref().map_or(0, Bytes::len)
-            + self
-                .headers
-                .iter()
-                .map(|(k, v)| k.len() + v.len())
-                .sum::<usize>()
+        record_payload_bytes(self.key.as_deref(), self.value.as_deref(), &self.headers)
+            .expect("test record payload size must fit usize")
     }
 }
 
@@ -111,15 +113,27 @@ impl<P: Partitioner> BatchProducer<P> {
         self.state
             .partitioner
             .partition(Topics::new(&self.state.partitions), &mut msg);
+        validate_unique_headers(msg.headers)?;
 
         let partition = msg.partition;
-        let record_bytes = msg.key.as_ref().map_or(0, |k| k.len())
-            + msg.value.as_ref().map_or(0, |v| v.len())
-            + msg
-                .headers
-                .iter()
-                .map(|(k, v)| k.len() + v.len())
-                .sum::<usize>();
+        let record_bytes = record_payload_bytes(msg.key, msg.value, msg.headers)?;
+        let buffer_size = self
+            .buffer_size
+            .checked_add(1)
+            .ok_or_else(|| Error::Config("batch record count exceeds addressable size".into()))?;
+        let buffer_bytes = self
+            .buffer_bytes
+            .checked_add(record_bytes)
+            .ok_or_else(|| Error::Config("batch payload bytes exceed addressable size".into()))?;
+        let partition_bytes = self
+            .buffer
+            .get(msg.topic)
+            .and_then(|partitions| partitions.get(&partition))
+            .map_or(0, |batch| batch.payload_bytes)
+            .checked_add(record_bytes)
+            .ok_or_else(|| {
+                Error::Config("partition payload bytes exceed addressable size".into())
+            })?;
 
         let batch_record = BatchRecord {
             key: msg.key.map(Bytes::copy_from_slice),
@@ -128,17 +142,21 @@ impl<P: Partitioner> BatchProducer<P> {
         };
 
         if let Some(partitions) = self.buffer.get_mut(msg.topic) {
-            partitions.entry(partition).or_default().push(batch_record);
+            let batch = partitions.entry(partition).or_default();
+            batch.records.push(batch_record);
+            batch.payload_bytes = partition_bytes;
         } else {
-            self.buffer
+            let batch = self
+                .buffer
                 .entry(msg.topic.to_owned())
                 .or_default()
                 .entry(partition)
-                .or_default()
-                .push(batch_record);
+                .or_default();
+            batch.records.push(batch_record);
+            batch.payload_bytes = partition_bytes;
         }
-        self.buffer_size += 1;
-        self.buffer_bytes += record_bytes;
+        self.buffer_size = buffer_size;
+        self.buffer_bytes = buffer_bytes;
 
         if self.batch_start.is_none() {
             self.batch_start = Some(Instant::now());
@@ -208,12 +226,16 @@ impl<P: Partitioner> BatchProducer<P> {
         let mut acknowledgements = HashMap::new();
         let mut malformed = false;
         for confirm in confirms {
+            if confirm.partition_confirms.is_empty() {
+                malformed = true;
+                continue;
+            }
+            let Some(partitions) = self.buffer.get(confirm.topic.as_str()) else {
+                malformed = true;
+                continue;
+            };
             for partition in &confirm.partition_confirms {
-                if !self
-                    .buffer
-                    .get(confirm.topic.as_str())
-                    .is_some_and(|partitions| partitions.contains_key(&partition.partition))
-                {
+                if !partitions.contains_key(&partition.partition) {
                     malformed = true;
                     continue;
                 }
@@ -250,12 +272,12 @@ impl<P: Partitioner> BatchProducer<P> {
             let mut removed_count = 0;
             let mut removed_bytes = 0;
             self.buffer.retain(|topic, partitions| {
-                partitions.retain(|partition, records| {
+                partitions.retain(|partition, batch| {
                     if acknowledgements.get(&(topic.as_str(), *partition))
                         == Some(&BatchConfirmation::Successful)
                     {
-                        removed_count += records.len();
-                        removed_bytes += records.iter().map(BatchRecord::byte_size).sum::<usize>();
+                        removed_count += batch.records.len();
+                        removed_bytes += batch.payload_bytes;
                         false
                     } else {
                         true
@@ -315,16 +337,37 @@ fn to_option(data: &[u8]) -> Option<&[u8]> {
     if data.is_empty() { None } else { Some(data) }
 }
 
+fn record_payload_bytes(
+    key: Option<&[u8]>,
+    value: Option<&[u8]>,
+    headers: &[(String, Bytes)],
+) -> Result<usize> {
+    let overflow = || Error::Config("record payload bytes exceed addressable size".into());
+    let bytes = key
+        .map_or(0, <[u8]>::len)
+        .checked_add(value.map_or(0, <[u8]>::len))
+        .ok_or_else(overflow)?;
+    headers.iter().try_fold(bytes, |bytes, (key, value)| {
+        bytes
+            .checked_add(key.len())
+            .and_then(|bytes| bytes.checked_add(value.len()))
+            .ok_or_else(overflow)
+    })
+}
+
 fn buffered_messages(buffer: &BatchBuffer) -> impl Iterator<Item = client::ProduceMessage<'_, '_>> {
     buffer.iter().flat_map(|(topic, partitions)| {
-        partitions.iter().flat_map(move |(partition, records)| {
-            records.iter().map(move |record| client::ProduceMessage {
-                key: record.key.as_deref(),
-                value: record.value.as_deref(),
-                topic,
-                partition: *partition,
-                headers: &record.headers,
-            })
+        partitions.iter().flat_map(move |(partition, batch)| {
+            batch
+                .records
+                .iter()
+                .map(move |record| client::ProduceMessage {
+                    key: record.key.as_deref(),
+                    value: record.value.as_deref(),
+                    topic,
+                    partition: *partition,
+                    headers: &record.headers,
+                })
         })
     })
 }
@@ -693,7 +736,7 @@ mod tests {
             ),
             original
         );
-        let buffered = &producer.buffer["topic"][&0][0];
+        let buffered = &producer.buffer["topic"][&0].records[0];
         assert_eq!(buffered.value.as_deref(), Some(b"pending".as_slice()));
         assert_eq!(buffered.headers, valid.headers.0);
 
@@ -716,6 +759,170 @@ mod tests {
         producer.clear();
         assert!(!producer.send(&valid).unwrap());
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn duplicate_headers_from_partitioner_do_not_mutate_the_batch() {
+        use std::sync::LazyLock;
+
+        static DUPLICATE_HEADERS: LazyLock<Vec<(String, Bytes)>> = LazyLock::new(|| {
+            vec![
+                ("trace".into(), Bytes::from_static(b"first")),
+                ("between".into(), Bytes::from_static(b"middle")),
+                ("trace".into(), Bytes::from_static(b"last")),
+            ]
+        });
+
+        struct MutatingPartitioner {
+            calls: usize,
+        }
+        impl Partitioner for MutatingPartitioner {
+            fn partition(&mut self, _: Topics<'_>, msg: &mut client::ProduceMessage<'_, '_>) {
+                self.calls += 1;
+                if msg.value == Some(b"rejected".as_slice()) {
+                    msg.headers = &DUPLICATE_HEADERS;
+                    msg.topic = "other";
+                    msg.partition = 1;
+                }
+            }
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let client = KafkaClient::new(vec![listener.local_addr().unwrap().to_string()]);
+        let mut producer = BatchProducer::from_client(client)
+            .with_batch_config(BatchConfig {
+                batch_size: usize::MAX,
+                linger_ms: u64::MAX,
+                max_bytes: usize::MAX,
+            })
+            .with_partitioner(MutatingPartitioner { calls: 0 })
+            .create()
+            .unwrap();
+        let pending = Record::from_key_value("topic", "k", "pending")
+            .with_partition(0)
+            .with_header("original", "header");
+        assert!(!producer.send(&pending).unwrap());
+        let before = (
+            producer.buffered_count(),
+            producer.buffered_bytes(),
+            producer.buffer["topic"][&0].payload_bytes,
+            producer.batch_start,
+            producer.failed_flush,
+        );
+
+        let rejected = Record::from_value("topic", "rejected")
+            .with_partition(0)
+            .with_header("unique", "value");
+        assert!(
+            matches!(producer.send(&rejected), Err(Error::Config(message))
+            if message.contains("duplicate"))
+        );
+        assert_eq!(producer.state.partitioner.calls, 2);
+        assert_eq!(
+            (
+                producer.buffered_count(),
+                producer.buffered_bytes(),
+                producer.buffer["topic"][&0].payload_bytes,
+                producer.batch_start,
+                producer.failed_flush,
+            ),
+            before
+        );
+        assert_eq!(producer.buffer.len(), 1);
+        assert_eq!(producer.buffer["topic"].len(), 1);
+        assert_eq!(producer.buffer["topic"][&0].records.len(), 1);
+        let buffered = &producer.buffer["topic"][&0].records[0];
+        assert_eq!(buffered.key.as_deref(), Some(b"k".as_slice()));
+        assert_eq!(buffered.value.as_deref(), Some(b"pending".as_slice()));
+        assert_eq!(buffered.headers, pending.headers.0);
+        assert_eq!(rejected.headers.0.len(), 1);
+        assert_eq!(rejected.headers.0[0].0, "unique");
+        assert!(
+            listener
+                .accept()
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    fn assert_counter_overflow_preserves_batch(
+        inject: impl FnOnce(&mut BatchProducer),
+        error_message: &str,
+    ) {
+        let mut producer = make_test_producer(BatchConfig {
+            batch_size: usize::MAX,
+            linger_ms: u64::MAX,
+            max_bytes: usize::MAX,
+        });
+        let pending = Record::from_key_value("topic", "k", "pending")
+            .with_partition(0)
+            .with_header("h", "v");
+        assert!(!producer.send(&pending).unwrap());
+        inject(&mut producer);
+        let before = (
+            producer.buffered_count(),
+            producer.buffered_bytes(),
+            producer.buffer["topic"][&0].payload_bytes,
+            producer.batch_start,
+            producer.failed_flush,
+        );
+
+        let incoming = Record::from_key_value("topic", "k", "v")
+            .with_partition(0)
+            .with_header("h", "v");
+        assert!(
+            matches!(producer.send(&incoming), Err(Error::Config(message))
+            if message.contains(error_message))
+        );
+        assert_eq!(
+            (
+                producer.buffered_count(),
+                producer.buffered_bytes(),
+                producer.buffer["topic"][&0].payload_bytes,
+                producer.batch_start,
+                producer.failed_flush,
+            ),
+            before
+        );
+        assert_eq!(producer.buffer.len(), 1);
+        assert_eq!(producer.buffer["topic"].len(), 1);
+        assert_eq!(producer.buffer["topic"][&0].records.len(), 1);
+        let buffered = &producer.buffer["topic"][&0].records[0];
+        assert_eq!(buffered.key.as_deref(), Some(b"k".as_slice()));
+        assert_eq!(buffered.value.as_deref(), Some(b"pending".as_slice()));
+        assert_eq!(buffered.headers, pending.headers.0);
+    }
+
+    #[test]
+    fn record_count_overflow_does_not_mutate_the_batch() {
+        assert_counter_overflow_preserves_batch(
+            |producer| producer.buffer_size = usize::MAX,
+            "batch record count",
+        );
+    }
+
+    #[test]
+    fn total_payload_bytes_overflow_does_not_mutate_the_batch() {
+        assert_counter_overflow_preserves_batch(
+            |producer| producer.buffer_bytes = usize::MAX,
+            "batch payload bytes",
+        );
+    }
+
+    #[test]
+    fn partition_payload_bytes_overflow_does_not_mutate_the_batch() {
+        assert_counter_overflow_preserves_batch(
+            |producer| {
+                producer
+                    .buffer
+                    .get_mut("topic")
+                    .unwrap()
+                    .get_mut(&0)
+                    .unwrap()
+                    .payload_bytes = usize::MAX;
+            },
+            "partition payload bytes",
+        );
     }
 
     #[test]
@@ -764,15 +971,18 @@ mod tests {
             "t".to_string(),
             BTreeMap::from([(
                 0,
-                vec![BatchRecord {
-                    key: Some(Bytes::from_static(&[1])),
-                    value: Some(Bytes::from_static(&[2])),
-                    headers: vec![],
-                }],
+                PartitionBatch {
+                    records: vec![BatchRecord {
+                        key: Some(Bytes::from_static(&[1])),
+                        value: Some(Bytes::from_static(&[2])),
+                        headers: vec![],
+                    }],
+                    payload_bytes: 2,
+                },
             )]),
         );
         bp.buffer_size = 1;
-        bp.buffer_bytes = 3;
+        bp.buffer_bytes = 2;
         bp.batch_start = Some(Instant::now());
 
         bp.clear();
@@ -812,6 +1022,7 @@ mod delivery_tests {
 
     enum BrokerReply {
         Confirm(Vec<(&'static str, i32, i16)>),
+        ConfirmWithEmptyTopic(Vec<(&'static str, i32, i16)>, &'static str),
         ConfirmWithOffsets(Vec<(&'static str, i32, i16, i64)>),
         ConfirmOrdered(Vec<(&'static str, i32, i16)>, ExpectedValues),
         Disconnect,
@@ -884,6 +1095,15 @@ mod delivery_tests {
                 match reply {
                     BrokerReply::Confirm(confirms) | BrokerReply::ConfirmOrdered(confirms, _) => {
                         write_response(&mut stream, &header, &produce_response(confirms));
+                    }
+                    BrokerReply::ConfirmWithEmptyTopic(confirms, empty_topic) => {
+                        let mut response = produce_response(confirms);
+                        response
+                            .responses
+                            .push(TopicProduceResponse::default().with_name(TopicName::from(
+                                StrBytes::from_static_str(empty_topic),
+                            )));
+                        write_response(&mut stream, &header, &response);
                     }
                     BrokerReply::ConfirmWithOffsets(confirms) => {
                         write_response(
@@ -1071,6 +1291,9 @@ mod delivery_tests {
             (producer.buffered_count(), producer.buffered_bytes()),
             (4, 20)
         );
+        assert_eq!(producer.buffer["t"][&0].payload_bytes, 7);
+        assert_eq!(producer.buffer["t"][&1].payload_bytes, 2);
+        assert_eq!(producer.buffer["u"][&0].payload_bytes, 11);
 
         let confirms = producer.flush().unwrap();
         assert!(confirms.iter().any(|confirm| {
@@ -1093,6 +1316,8 @@ mod delivery_tests {
             vec!["u"]
         );
         assert_eq!(producer.buffer["u"].len(), 1);
+        assert_eq!(producer.buffer["u"][&0].records.len(), 2);
+        assert_eq!(producer.buffer["u"][&0].payload_bytes, 11);
         assert!(
             producer
                 .send(&Record::from_value("u", "new").with_partition(0))
@@ -1387,7 +1612,7 @@ mod delivery_tests {
         assert_eq!(producer.batch_start, started);
         assert!(producer.failed_flush);
         assert!(!producer.buffer.contains_key("t"));
-        assert_eq!(producer.buffer["u"][&0].len(), 1);
+        assert_eq!(producer.buffer["u"][&0].records.len(), 1);
         producer.flush().unwrap();
         assert_eq!(
             (producer.buffered_count(), producer.buffered_bytes()),
@@ -1419,6 +1644,108 @@ mod delivery_tests {
         assert!(producer.batch_start.is_none());
         assert!(!producer.failed_flush);
         assert_eq!(server.join().unwrap(), vec![vec![("t".into(), 0, 1)]]);
+    }
+
+    #[test]
+    fn empty_topic_confirmation_reports_codec_after_retiring_unique_success() {
+        for empty_topic in ["t", "unexpected"] {
+            let (mut producer, server) = mock_batch_producer(
+                vec![BrokerReply::ConfirmWithEmptyTopic(
+                    vec![("t", 0, 0)],
+                    empty_topic,
+                )],
+                RequiredAcks::One,
+                100,
+            );
+            producer
+                .send(&Record::from_value("t", "confirmed").with_partition(0))
+                .unwrap();
+            assert!(matches!(
+                producer.flush(),
+                Err(Error::Protocol(ProtocolError::Codec))
+            ));
+            assert_eq!(
+                (producer.buffered_count(), producer.buffered_bytes()),
+                (0, 0)
+            );
+            assert!(producer.buffer.is_empty());
+            assert!(producer.batch_start.is_none());
+            assert!(!producer.failed_flush);
+            assert!(producer.flush().unwrap().is_empty());
+            assert_eq!(server.join().unwrap(), vec![vec![("t".into(), 0, 1)]]);
+        }
+    }
+
+    #[test]
+    fn empty_topic_with_duplicate_and_failed_targets_preserves_partial_retry_counters() {
+        let (mut producer, server) = mock_batch_producer(
+            vec![
+                BrokerReply::ConfirmWithEmptyTopic(
+                    vec![
+                        ("t", 0, 0),
+                        ("t", 0, 0),
+                        ("t", 1, KafkaCode::NotLeaderForPartition as i16),
+                        ("u", 0, 0),
+                    ],
+                    "t",
+                ),
+                BrokerReply::Confirm(vec![("t", 0, 0), ("t", 1, 0)]),
+            ],
+            RequiredAcks::One,
+            100,
+        );
+        for (topic, partition, value) in [
+            ("t", 0, "a"),
+            ("t", 0, "bb"),
+            ("t", 1, "failed"),
+            ("u", 0, "ok"),
+        ] {
+            producer
+                .send(&Record::from_value(topic, value).with_partition(partition))
+                .unwrap();
+        }
+        let started = producer.batch_start;
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (4, 11)
+        );
+        assert!(matches!(
+            producer.flush(),
+            Err(Error::Protocol(ProtocolError::Codec))
+        ));
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (3, 9)
+        );
+        assert!(!producer.buffer.contains_key("u"));
+        assert_eq!(producer.buffer["t"][&0].records.len(), 2);
+        assert_eq!(producer.buffer["t"][&0].payload_bytes, 3);
+        assert_eq!(producer.buffer["t"][&1].records.len(), 1);
+        assert_eq!(producer.buffer["t"][&1].payload_bytes, 6);
+        assert_eq!(producer.batch_start, started);
+        assert!(producer.failed_flush);
+        assert!(matches!(
+            producer.send(&Record::from_value("t", "new").with_partition(0)),
+            Err(Error::Config(_))
+        ));
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (3, 9)
+        );
+        producer.flush().unwrap();
+        assert_eq!(
+            (producer.buffered_count(), producer.buffered_bytes()),
+            (0, 0)
+        );
+        assert!(producer.batch_start.is_none());
+        assert!(!producer.failed_flush);
+        assert_eq!(
+            server.join().unwrap(),
+            vec![
+                vec![("t".into(), 0, 2), ("t".into(), 1, 1), ("u".into(), 0, 1)],
+                vec![("t".into(), 0, 2), ("t".into(), 1, 1)],
+            ]
+        );
     }
 
     #[test]

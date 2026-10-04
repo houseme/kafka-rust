@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Batch producers cache each partition payload total and use it when retiring unique successful confirmations, avoiding repeated record scans. Checked record/byte counters and post-partitioner header validation reject local errors before buffer mutation; empty acknowledgement wrappers remain malformed while confirmed records retire normally.
 - Documented batched atomic startup, raw and high-level unknown-offset handling, ByTime fallback, consumed-marker reset, checked routing and bounded partial metadata probing, coordinator recovery, and the successful header guard CPU benchmark scope.
 - Header preflight uses at most six borrowed comparisons for two to four keys and retains hashing for larger inputs, with the same errors, key equality, values, and order. Added an ignored release CPU benchmark of the actual successful guard with fixed inputs and ABBA measurement instructions.
 - Documented consumer prefix filtering, offset acknowledgement and sentinel contracts, borrowed message views, atomic metadata replacement and coordinator endpoint updates, producer input limits, and the scope of consumer progress CPU measurements.
