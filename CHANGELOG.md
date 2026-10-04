@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Native async startup groups unresolved fallback ListOffsets requests by leader broker across topics, validates complete responses and offset semantics, and publishes committed/fallback positions only after all lookups succeed. Failures or cancellation retain offsets and pending commits; unknown positions return OffsetOutOfRange without an implicit latest fallback or negative Fetch.
 - Sync consumers resolve ByTime fallback positions once when needed, reject unknown starting positions without sending negative Fetch offsets, and require routes only for assigned partitions. Initialization resets consumed markers that disagree with the selected cursor after all lookups succeed, allowing lower fallback progress to be consumed and committed; added TCP and live no-match coverage.
 - Sync ListOffsets validates complete unique targets per broker and successful offset bounds before projecting results, retires malformed connections, deduplicates input topics, and returns unknown nonzero broker errors explicitly. Raw unknown-offset sentinels, timestamps, maximum positions, and distinct partitions across brokers are preserved.
 - Fresh-topic consumer offset tests verify empty ListOffsets readiness and retry only complete leader-error Produce confirmations within a bounded budget, checking an empty log before repeating the batch. Transport and other errors fail immediately, retaining single-append and no-redelivery assertions.

@@ -577,19 +577,28 @@ impl NativeConsumer {
             self.refresh_coordinator().await?;
         }
 
-        let committed = self.fetch_committed_offsets(&missing).await?;
+        let mut staged = self.fetch_committed_offsets(&missing).await?;
+        let mut fallback = Vec::new();
         for tp in missing {
-            if let Some(offset) = committed
+            let offset = staged
                 .get(tp.0.as_str())
                 .and_then(|partitions| partitions.get(&tp.1))
-                && *offset >= 0
-            {
-                insert_topic_offset(&mut self.offsets, &tp.0, tp.1, *offset);
-                continue;
+                .copied()
+                .ok_or(Error::Protocol(ProtocolError::Codec))?;
+            if offset == -1 {
+                if let Some(partitions) = staged.get_mut(tp.0.as_str()) {
+                    partitions.remove(&tp.1);
+                }
+                fallback.push(tp);
             }
-
-            let fallback = self.resolve_fallback_offset(&tp).await?;
-            insert_topic_offset(&mut self.offsets, &tp.0, tp.1, fallback);
+        }
+        for (topic, partitions) in self.fetch_fallback_offsets(&fallback).await? {
+            staged.entry(topic).or_default().extend(partitions);
+        }
+        // No committed or fallback start position is published until every
+        // broker's initialization response is complete and usable.
+        for (topic, partitions) in staged {
+            self.offsets.entry(topic).or_default().extend(partitions);
         }
 
         Ok(())
@@ -646,11 +655,13 @@ impl NativeConsumer {
         Ok(committed)
     }
 
-    async fn resolve_fallback_offset(&mut self, tp: &(String, i32)) -> Result<i64> {
-        let Some(leader) = self.leaders.get(tp).cloned() else {
-            return Err(Error::Kafka(KafkaCode::LeaderNotAvailable));
-        };
-
+    async fn fetch_fallback_offsets(
+        &mut self,
+        partitions: &[(String, i32)],
+    ) -> Result<TopicOffsets> {
+        if partitions.is_empty() {
+            return Ok(HashMap::new());
+        }
         let timestamp = match self.fallback_offset {
             FetchOffset::Earliest => -2,
             FetchOffset::Latest => -1,
@@ -659,35 +670,42 @@ impl NativeConsumer {
 
         let correlation = self.next_correlation();
         let client_id = self.client.client_id().to_owned();
-        let conn = self.client.get_connection(&leader).await?;
-        let (header, request) = build_list_offsets_request(
-            correlation,
-            &client_id,
-            &[(tp.0.as_str(), tp.1, timestamp)],
-        );
-        send_kp_request(conn, &header, &request, API_VERSION_LIST_OFFSETS).await?;
-        let response =
-            get_kp_response::<ListOffsetsResponse>(conn, API_VERSION_LIST_OFFSETS).await?;
-
-        for topic in response.topics {
-            if topic.name.as_str() != tp.0.as_str() {
-                continue;
+        let mut by_broker: HashMap<&str, Vec<(&str, i32, i64)>> = HashMap::new();
+        for tp in partitions {
+            let leader = self
+                .leaders
+                .get(tp)
+                .ok_or(Error::Kafka(KafkaCode::LeaderNotAvailable))?;
+            by_broker
+                .entry(leader.as_str())
+                .or_default()
+                .push((tp.0.as_str(), tp.1, timestamp));
+        }
+        let mut resolved = HashMap::new();
+        for (broker, requested) in by_broker {
+            let conn = self.client.get_connection(broker).await?;
+            let (header, request) = build_list_offsets_request(correlation, &client_id, &requested);
+            send_kp_request(conn, &header, &request, API_VERSION_LIST_OFFSETS).await?;
+            let response =
+                get_kp_response::<ListOffsetsResponse>(conn, API_VERSION_LIST_OFFSETS).await?;
+            if let Err(error) = validate_list_offset_acknowledgments(&response, &requested) {
+                if matches!(error, Error::Protocol(ProtocolError::Codec)) {
+                    conn.invalidate();
+                }
+                return Err(error);
             }
-            for partition in topic.partitions {
-                if partition.partition_index != tp.1 {
-                    continue;
+            for topic in response.topics {
+                for partition in topic.partitions {
+                    insert_topic_offset(
+                        &mut resolved,
+                        topic.name.as_str(),
+                        partition.partition_index,
+                        partition.offset,
+                    );
                 }
-                if partition.error_code != 0 {
-                    if let Some(code) = map_kafka_code(partition.error_code) {
-                        return Err(Error::Kafka(code));
-                    }
-                    return Err(Error::Kafka(KafkaCode::Unknown));
-                }
-                return Ok(partition.offset);
             }
         }
-
-        Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+        Ok(resolved)
     }
 
     fn error_stats(&self) -> NativeConsumerErrorStats {
@@ -956,6 +974,54 @@ fn validate_offset_fetch_acknowledgments(
             .any(|partition| partition.committed_offset < -1)
     }) {
         return Err(Error::Protocol(ProtocolError::Codec));
+    }
+    Ok(())
+}
+
+fn validate_list_offset_acknowledgments(
+    response: &ListOffsetsResponse,
+    requested: &[(&str, i32, i64)],
+) -> Result<()> {
+    validate_acknowledged_partitions(
+        requested
+            .iter()
+            .map(|&(topic, partition, _)| (topic, partition)),
+        response.topics.iter().map(|topic| {
+            (
+                topic.name.as_str(),
+                topic
+                    .partitions
+                    .iter()
+                    .map(|partition| partition.partition_index),
+            )
+        }),
+    )?;
+    if response.topics.iter().any(|topic| {
+        topic
+            .partitions
+            .iter()
+            .any(|partition| partition.error_code == 0 && partition.offset < -1)
+    }) {
+        return Err(Error::Protocol(ProtocolError::Codec));
+    }
+    for topic in &response.topics {
+        for partition in &topic.partitions {
+            if partition.error_code != 0 {
+                return Err(Error::Kafka(
+                    map_kafka_code(partition.error_code).unwrap_or(KafkaCode::Unknown),
+                ));
+            }
+        }
+    }
+    // UNKNOWN_OFFSET is a valid lookup result, but cannot initialize a Fetch
+    // position. Leave all initialization staged so a later poll can query again.
+    if response.topics.iter().any(|topic| {
+        topic
+            .partitions
+            .iter()
+            .any(|partition| partition.offset == -1)
+    }) {
+        return Err(Error::Kafka(KafkaCode::OffsetOutOfRange));
     }
     Ok(())
 }
@@ -1239,7 +1305,7 @@ mod tests {
     const TEST_GROUP: &str = "offset-group";
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-    async fn checked<F: Future>(future: F) -> F::Output {
+    pub(super) async fn checked<F: Future>(future: F) -> F::Output {
         tokio::time::timeout(TEST_TIMEOUT, future)
             .await
             .expect("mock broker operation timed out")
@@ -1269,8 +1335,12 @@ mod tests {
         (header, request)
     }
 
-    async fn reply<T>(socket: &mut TcpStream, header: &RequestHeader, version: i16, response: T)
-    where
+    pub(super) async fn reply<T>(
+        socket: &mut TcpStream,
+        header: &RequestHeader,
+        version: i16,
+        response: T,
+    ) where
         T: Encodable + HeaderVersion,
     {
         let mut frame = BytesMut::new();
@@ -3361,3 +3431,7 @@ mod tests {
 #[cfg(test)]
 #[path = "consumer_progress_bench.rs"]
 mod consumer_progress_bench;
+
+#[cfg(test)]
+#[path = "consumer_start_offset_tests.rs"]
+mod consumer_start_offset_tests;
