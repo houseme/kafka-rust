@@ -108,6 +108,10 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
 - Sync ListOffsets validates complete responses while preserving raw unknown offsets. High-level consumers reject an
   unresolved starting position, and sync fallback resets stale consumed markers so new progress can be committed.
 - Small header preflight uses borrowed comparisons for two to four keys; larger inputs retain hash-based validation.
+- Fetch hides transaction control records and advances through empty or compacted batches using verified batch
+  boundaries. Existing owned response fields and explicit sync consumption remain compatible.
+- Ordinary producers require complete target acknowledgements and return errors for malformed confirmations. Async
+  producers pre-encode every complete broker frame before starting Produce IO.
 
 `TransactionalProducer` uses a separate transaction coordinator and sends transaction IDs, producer identities,
 epochs, and sequences in transactional batches. Commit and abort preserve sequence state. A transaction RPC failure

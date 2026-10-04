@@ -88,6 +88,10 @@ async fn main() -> rustfs_kafka::Result<()> {
 - Typed responses validate correlation IDs and full payload consumption. Connections interrupted by cancellation
   or transport failure are discarded on their next checkout, without automatically replaying Produce.
 - Raw `send`/`read_exact` protect individual IO operations; callers own protocol boundaries between separate calls.
+- Native Fetch hides COMMIT/ABORT control markers, retains transactional business records in read-uncommitted mode,
+  and advances through verified empty or compacted batches. The batch cursor is independent of the high watermark.
+- Async Produce prepares every complete broker frame before sending any Produce request. ACK bookkeeping retains
+  target identities, and completed writes release their frame before waiting for confirmations.
 - Exact reads fill reserved storage directly without zero-initializing the whole response, and stop at the requested
   length so adjacent frames remain available to the following read.
 - Secure integration coverage includes Docker end-to-end checks for SASL `PLAIN`, `SCRAM-SHA-256`, and `SCRAM-SHA-512`.

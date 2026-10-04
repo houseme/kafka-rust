@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Documented verified Fetch cursors and transaction control filtering, complete Produce acknowledgements, batch/transaction local guards, asynchronous preflight memory tradeoffs, and production frame encoding CPU measurement boundaries.
 - Produce encoding fallibly reserves known contiguous record runs before pushing SDK records. Added fixed real-builder/full-frame fixtures with SDK decode verification and an ignored release CPU measurement that preserves all warmup/sample data for an isolated serial ABBA comparison; no end-to-end throughput or allocation-count guarantee is implied.
 - Batch producers cache each partition payload total and use it when retiring unique successful confirmations, avoiding repeated record scans. Checked record/byte counters and post-partitioner header validation reject local errors before buffer mutation; empty acknowledgement wrappers remain malformed while confirmed records retire normally.
 - Documented batched atomic startup, raw and high-level unknown-offset handling, ByTime fallback, consumed-marker reset, checked routing and bounded partial metadata probing, coordinator recovery, and the successful header guard CPU benchmark scope.

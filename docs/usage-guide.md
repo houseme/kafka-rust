@@ -155,6 +155,21 @@ does not redeliver older records. Every record is validated before filtering: ne
 offsets are codec errors, while `i64::MAX - 1` can advance to the valid next position `i64::MAX`. Failed polls retain
 existing fetch progress and pending commits. Async progress maps store each topic key once across its partitions.
 
+Fetch filters transaction control records from application messages. High-level consumers retain transactional
+business records in their current read-uncommitted mode, including aborted transaction data; this does not add a
+high-level read-committed option. Verified batch boundaries advance the fetch position through control-only, empty,
+and trailing compacted batches, instead of relying on the last visible record or jumping to the high watermark.
+Sync consumption is still explicit: skipping a batch does not mark business messages consumed. Native async poll
+can commit the safe skipped position under its existing progress semantics.
+
+The adapter checks batch offset bounds and strictly increasing partition records while permitting compaction gaps.
+SDK CRC/decompression and content parsing are retained; borrowed record framing checks also require complete body
+and individual record consumption before trusting a cursor. An invalid later batch rejects the entire partition,
+and no broker's progress is published when a poll fails. Existing owned DTO fields remain unchanged; the optional
+`client::fetch_kp::convert_fetch_response_with_progress` returns an opaque sidecar aligned with response indices.
+Use `into_parts()` to obtain the response and progress; filtering messages preserves this alignment. The SDK's
+existing unsupported legacy magic behavior remains unchanged.
+
 Native async initialization batches fallback ListOffsets queries by leader broker, including partitions from different
 topics, and publishes starting positions only after every committed/fallback lookup succeeds. Failed or cancelled
 initialization retains existing positions and pending commits. Sync initialization also resets stale consumed markers
@@ -261,6 +276,24 @@ and cannot preserve them. Producers now return a configuration error before rout
 and key case remain unchanged; local rejection retains active transaction state and buffered delivery obligations.
 For two to four keys, successful duplicate-key preflight uses borrowed comparisons without constructing a HashSet;
 larger inputs retain hash-based validation. This changes the guard's work, not the encoded header representation.
+
+Ordinary Producer sends require each resolved topic/partition to be acknowledged exactly once. Empty, missing,
+duplicated, or unexpected acknowledgements return codec errors rather than panicking or reporting success. Different
+brokers may contribute distinct partitions of the same topic. Valid partition errors remain in the confirmation
+vector; no-ack mode continues to complete after successful writes without reading confirmations. Batch producers
+retain their existing partial-success retirement and explicit retry rules.
+
+A custom partitioner can modify message headers, so Batch and Transactional producers validate the resulting headers
+again before buffering or transaction enrollment. Local rejection preserves existing buffers and active transactions.
+Batch counters check arithmetic before mutation and cache partition payload totals for partial retirement. Their
+byte limit keeps its existing key/value/header payload definition; it is not a total heap or wire-size limit.
+
+Async Produce encodes every complete broker frame before opening Produce connections or writing Produce bytes;
+metadata queries can still occur during routing. Prepared requests retain lightweight ACK identities instead of
+encoded-record bodies, and each completed write releases its frame before waiting for its acknowledgement. A local
+frame encoding error on a later broker therefore does not leave earlier Produce frames sent. Input or transport
+errors do not acquire automatic replay. Preflight retains unsent broker frames together, so it can increase concurrent
+wire-buffer storage; no total response or producer heap budget is implied.
 
 ### Transactional Producer
 
@@ -389,6 +422,23 @@ and verification stay outside timing. Compare immutable revisions using isolated
 executables, retain every ABBA sample, and apply the 15 percent baseline drift gate separately to each case. The result
 measures the successful guard for these inputs, rather than producer throughput, duplicate-error cost, or allocation
 counts. The smallest cases can be dominated by the common measurement loop.
+
+Measure the production Produce builder and complete frame encoder with isolated release test executables:
+
+```bash
+KAFKA_PRODUCE_ENCODING_VARIANT=candidate KAFKA_PRODUCE_ENCODING_PHASE=B1 KAFKA_PRODUCE_ENCODING_OUTPUT=/tmp/produce-encoding-B1.jsonl cargo test -p rustfs-kafka --release --no-default-features --lib protocol::produce::produce_encoding_bench::produce_encoding_cpu_bench -- --ignored --exact --nocapture --test-threads=1
+```
+
+Use unused absolute output paths for each leg. The six fixed cases use 1, 32, or 1024 records in contiguous or
+interleaved partition layouts with shared 64-byte values and prebuilt keys; an empty case and both one-record
+layouts expose common overhead. Timing includes the actual builder, frame encoding, allocation, drop, and result
+counting. Fixture construction, real SDK decoding checks, output, and network IO remain outside timing. Each case
+requires at least 150 ms of measured warmup and three adjacent 64-call windows within 10 percent, bounded by two
+seconds. Preserve every warmup window and nine samples. Compare immutable revisions with identical fixtures,
+features and profiles in separate target directories, verify each source and executable, and run one serial ABBA
+pass without concurrent builds or broker tests. A warmup failure or drift above 15 percent in either revision
+precludes attribution for that case; a comparison covering all cases requires every case to pass. These CPU
+measurements do not establish allocation counts or end-to-end throughput.
 
 Compare sequential acknowledged sends with native batching against an existing plaintext topic:
 
