@@ -71,7 +71,7 @@ where
     fetch_group_offsets_inner(&partition_vec, group, &mut ctx)
 }
 
-fn get_group_coordinator(
+pub(crate) fn get_group_coordinator(
     group: &str,
     ctx: &mut OffsetRequestContext<'_>,
     now: Instant,

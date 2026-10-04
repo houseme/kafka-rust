@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- GroupCoordinator now discovers fresh coordinators, encodes real subscriptions, assigns the union of member topics by member ID, validates metadata bounds and complete known schemas, and invalidates coordinator errors for the next manual call. Leave failures preserve membership; removed the idle logging worker while retaining constructor compatibility and manual heartbeat semantics.
 - Sync consumers return codec errors for unknown cached response topics or partitions, including OffsetOutOfRange responses, without panicking or publishing staged fetch and retry changes.
 - Async consumers share the complete, panic-safe Fetch converter, reject malformed trailing batches before publishing progress, borrow poll routing keys, and rediscover coordinators after bounded offset-initialization retries. Added TLS/SASL multi-batch delivery and committed-offset recovery coverage.
 - Admin mutations and unclassified APIs return uncertain errors after a sending attempt without automatic replay. Read-only queries retain IO failover, unreachable bootstrap brokers remain selectable, and frames are encoded before connecting without cloning all hosts.

@@ -847,6 +847,29 @@ impl KafkaClient {
         self.state.group_coordinator(group).map(ToOwned::to_owned)
     }
 
+    /// Discover a group coordinator using the offset operations' retry/cache path.
+    pub(crate) fn find_group_coordinator(&mut self, group: &str) -> Result<String> {
+        if let Some(host) = self.group_coordinator_host(group) {
+            return Ok(host);
+        }
+        // Preserve broker indices referenced by other groups' cached coordinators.
+        self.load_metadata(&[] as &[&str])?;
+        let correlation_id = self.state.next_correlation_id();
+        let mut context = offset_ops::OffsetRequestContext {
+            correlation_id,
+            client_id: &self.config.client_id,
+            state: &mut self.state,
+            conn_pool: &mut self.conn_pool,
+            config: &self.config,
+            api_versions: &self.api_versions,
+        };
+        offset_ops::get_group_coordinator(group, &mut context, std::time::Instant::now())
+    }
+
+    pub(crate) fn invalidate_group_coordinator(&mut self, group: &str) {
+        self.state.remove_group_coordinator(group);
+    }
+
     /// Gets the next correlation ID for request tracking.
     pub fn next_correlation_id(&mut self) -> i32 {
         self.state.next_correlation_id()

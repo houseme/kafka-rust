@@ -4,10 +4,12 @@
 //! consumer group management protocols: `JoinGroup`, `SyncGroup`, Heartbeat,
 //! and `LeaveGroup`.
 
-use bytes::{Buf, BytesMut};
-use kafka_protocol::messages::{ApiKey, RequestHeader};
-use kafka_protocol::protocol::Encodable;
+use bytes::{Bytes, BytesMut};
+use kafka_protocol::messages::{
+    ApiKey, ConsumerProtocolAssignment, ConsumerProtocolSubscription, RequestHeader,
+};
 use kafka_protocol::protocol::StrBytes;
+use kafka_protocol::protocol::{Decodable, Encodable};
 
 use crate::error::{Error, Result};
 use crate::network::KafkaConnection;
@@ -38,22 +40,6 @@ fn encode_bytes(buf: &mut BytesMut, data: &[u8]) {
         .expect("Kafka bytes length must fit in i32 for protocol encoding");
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(data);
-}
-
-fn decode_string(bytes: &mut bytes::Bytes) -> Result<String> {
-    if bytes.len() < 2 {
-        return Err(Error::codec());
-    }
-    let len = crate::protocol::non_negative_i16_to_usize(i16::from_be_bytes([bytes[0], bytes[1]]))?;
-    bytes.advance(2);
-    if bytes.len() < len {
-        return Err(Error::codec());
-    }
-    let s = std::str::from_utf8(&bytes[..len])
-        .map_err(|_| Error::codec())?
-        .to_owned();
-    bytes.advance(len);
-    Ok(s)
 }
 
 fn build_frame(header: &RequestHeader, body: &[u8], api_version: i16) -> Result<bytes::Bytes> {
@@ -401,6 +387,136 @@ pub fn fetch_leave_group(
 // Assignment encoding/decoding
 // --------------------------------------------------------------------
 
+const MAX_CONSUMER_PROTOCOL_VERSION: i16 = 3;
+
+pub(crate) fn encode_member_subscription(topics: &[String]) -> Result<Bytes> {
+    let subscription = ConsumerProtocolSubscription::default().with_topics(
+        topics
+            .iter()
+            .map(|topic| StrBytes::from_string(topic.clone()))
+            .collect(),
+    );
+    let version = 0i16;
+    let size = subscription
+        .compute_size(version)
+        .map_err(|_| Error::codec())?;
+    let mut bytes = BytesMut::with_capacity(size.checked_add(2).ok_or_else(Error::codec)?);
+    bytes.extend_from_slice(&version.to_be_bytes());
+    subscription
+        .encode(&mut bytes, version)
+        .map_err(|_| Error::codec())?;
+    Ok(bytes.freeze())
+}
+
+pub(crate) fn decode_member_subscription_topics(metadata: &Bytes) -> Result<Vec<String>> {
+    let mut cursor = ConsumerProtocolCursor::new(metadata);
+    let version = cursor.version()?;
+    for _ in 0..cursor.count(2)? {
+        cursor.string(false)?;
+    }
+    cursor.nullable_bytes()?;
+    if version >= 1 {
+        cursor.topic_partitions()?;
+    }
+    if version >= 2 {
+        cursor.take(4)?;
+    }
+    if version >= 3 {
+        cursor.string(true)?;
+    }
+    cursor.finish(version)?;
+    let mut body = metadata.slice(2..);
+    let subscription =
+        ConsumerProtocolSubscription::decode(&mut body, version.min(MAX_CONSUMER_PROTOCOL_VERSION))
+            .map_err(|_| Error::codec())?;
+    Ok(subscription
+        .topics
+        .into_iter()
+        .map(|topic| topic.to_string())
+        .collect())
+}
+
+// Generated array decoders allocate from the announced count before reading
+// their elements. Validate every nested count/length against the blob first.
+struct ConsumerProtocolCursor<'a> {
+    remaining: &'a [u8],
+}
+
+impl<'a> ConsumerProtocolCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { remaining: bytes }
+    }
+
+    fn take(&mut self, size: usize) -> Result<&'a [u8]> {
+        let result = self.remaining.get(..size).ok_or_else(Error::codec)?;
+        self.remaining = &self.remaining[size..];
+        Ok(result)
+    }
+
+    fn i16(&mut self) -> Result<i16> {
+        Ok(i16::from_be_bytes(
+            self.take(2)?.try_into().map_err(|_| Error::codec())?,
+        ))
+    }
+
+    fn i32(&mut self) -> Result<i32> {
+        Ok(i32::from_be_bytes(
+            self.take(4)?.try_into().map_err(|_| Error::codec())?,
+        ))
+    }
+
+    fn version(&mut self) -> Result<i16> {
+        let version = self.i16()?;
+        if version < 0 {
+            return Err(Error::codec());
+        }
+        Ok(version)
+    }
+
+    fn count(&mut self, minimum_element_size: usize) -> Result<usize> {
+        let count = crate::protocol::non_negative_i32_to_usize(self.i32()?)?;
+        if count > self.remaining.len() / minimum_element_size {
+            return Err(Error::codec());
+        }
+        Ok(count)
+    }
+
+    fn string(&mut self, nullable: bool) -> Result<()> {
+        let size = self.i16()?;
+        if nullable && size == -1 {
+            return Ok(());
+        }
+        self.take(crate::protocol::non_negative_i16_to_usize(size)?)?;
+        Ok(())
+    }
+
+    fn nullable_bytes(&mut self) -> Result<()> {
+        let size = self.i32()?;
+        if size != -1 {
+            self.take(crate::protocol::non_negative_i32_to_usize(size)?)?;
+        }
+        Ok(())
+    }
+
+    fn topic_partitions(&mut self) -> Result<()> {
+        for _ in 0..self.count(6)? {
+            self.string(false)?;
+            let count = self.count(4)?;
+            self.take(count.checked_mul(4).ok_or_else(Error::codec)?)?;
+        }
+        Ok(())
+    }
+
+    fn finish(&self, version: i16) -> Result<()> {
+        // Kafka treats newer versions as append-only extensions to the latest
+        // known schema. Known versions must consume their complete payload.
+        if version <= MAX_CONSUMER_PROTOCOL_VERSION && !self.remaining.is_empty() {
+            return Err(Error::codec());
+        }
+        Ok(())
+    }
+}
+
 /// Represents a partition assignment for a topic.
 #[derive(Debug, Clone)]
 pub struct TopicAssignment {
@@ -419,68 +535,28 @@ pub struct MemberAssignment {
 impl MemberAssignment {
     /// Decode a member assignment from raw bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        let mut bytes = bytes::Bytes::from(data.to_vec());
-        if bytes.len() < 2 {
-            return Err(Error::codec());
-        }
-        let version = i16::from_be_bytes([bytes[0], bytes[1]]);
-        bytes.advance(2);
-
-        let num_topics = if bytes.len() < 4 {
-            return Err(Error::codec());
-        } else {
-            let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
-                bytes[0], bytes[1], bytes[2], bytes[3],
-            ]))?;
-            bytes.advance(4);
-            v
-        };
-
-        let mut topic_partitions = Vec::with_capacity(num_topics);
-        for _ in 0..num_topics {
-            let topic = decode_string(&mut bytes)?;
-            let num_partitions = if bytes.len() < 4 {
-                return Err(Error::codec());
-            } else {
-                let v = crate::protocol::non_negative_i32_to_usize(i32::from_be_bytes([
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                ]))?;
-                bytes.advance(4);
-                v
-            };
-            let mut partitions = Vec::with_capacity(num_partitions);
-            for _ in 0..num_partitions {
-                if bytes.len() < 4 {
-                    return Err(Error::codec());
-                }
-                let p = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                bytes.advance(4);
-                partitions.push(p);
-            }
-            topic_partitions.push(TopicAssignment { topic, partitions });
-        }
-
-        let user_data = if !bytes.is_empty() && bytes.len() >= 4 {
-            let len = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-            bytes.advance(4);
-            if len >= 0 {
-                let len = crate::protocol::non_negative_i32_to_usize(len)?;
-                if bytes.len() >= len {
-                    Some(bytes[..len].to_vec())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
+        let mut cursor = ConsumerProtocolCursor::new(data);
+        let version = cursor.version()?;
+        cursor.topic_partitions()?;
+        cursor.nullable_bytes()?;
+        cursor.finish(version)?;
+        let mut body = Bytes::copy_from_slice(&data[2..]);
+        let assignment = ConsumerProtocolAssignment::decode(
+            &mut body,
+            version.min(MAX_CONSUMER_PROTOCOL_VERSION),
+        )
+        .map_err(|_| Error::codec())?;
         Ok(MemberAssignment {
             version,
-            topic_partitions,
-            user_data,
+            topic_partitions: assignment
+                .assigned_partitions
+                .into_iter()
+                .map(|topic| TopicAssignment {
+                    topic: topic.topic.to_string(),
+                    partitions: topic.partitions,
+                })
+                .collect(),
+            user_data: assignment.user_data.map(|bytes| bytes.to_vec()),
         })
     }
 
@@ -524,6 +600,121 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;
+
+    fn empty_subscription(version: i16) -> Bytes {
+        let mut bytes = BytesMut::new();
+        bytes.extend_from_slice(&version.to_be_bytes());
+        ConsumerProtocolSubscription::default()
+            .encode(&mut bytes, version.min(MAX_CONSUMER_PROTOCOL_VERSION))
+            .unwrap();
+        bytes.freeze()
+    }
+
+    #[test]
+    fn subscription_metadata_has_a_version_prefix_and_real_topics() {
+        let topics = vec!["topic-a".to_owned(), "topic-b".to_owned()];
+        let encoded = encode_member_subscription(&topics).unwrap();
+        assert_eq!(&encoded[..2], &0i16.to_be_bytes());
+        assert_eq!(decode_member_subscription_topics(&encoded).unwrap(), topics);
+        let mut body = encoded.slice(2..);
+        let decoded = ConsumerProtocolSubscription::decode(&mut body, 0).unwrap();
+        assert!(decoded.user_data.is_none());
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn subscription_metadata_accepts_empty_known_schemas_and_future_append_only_fields() {
+        for version in 0..=3 {
+            assert_eq!(
+                decode_member_subscription_topics(&empty_subscription(version)).unwrap(),
+                Vec::<String>::new()
+            );
+        }
+        let mut future = BytesMut::from(&empty_subscription(4)[..]);
+        future.extend_from_slice(&[0, 42]);
+        assert_eq!(
+            decode_member_subscription_topics(&future.freeze()).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn subscription_metadata_rejects_truncated_fields_and_impossible_counts_before_allocating() {
+        let valid = empty_subscription(0);
+        let mut negative_version = BytesMut::from(&valid[..]);
+        negative_version[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        let mut negative_topics = BytesMut::from(&valid[..]);
+        negative_topics[2..6].copy_from_slice(&(-1i32).to_be_bytes());
+        let mut huge_topics = BytesMut::from(&valid[..]);
+        huge_topics[2..6].copy_from_slice(&i32::MAX.to_be_bytes());
+        let mut truncated_user_data = BytesMut::from(&valid[..]);
+        truncated_user_data[6..10].copy_from_slice(&2i32.to_be_bytes());
+        truncated_user_data.extend_from_slice(&[0]);
+        let mut huge_owned_topics = BytesMut::from(&empty_subscription(1)[..]);
+        huge_owned_topics[10..14].copy_from_slice(&i32::MAX.to_be_bytes());
+        let mut huge_owned_partitions = BytesMut::from(&valid[..]);
+        huge_owned_partitions[..2].copy_from_slice(&1i16.to_be_bytes());
+        huge_owned_partitions.extend_from_slice(&1i32.to_be_bytes());
+        huge_owned_partitions.extend_from_slice(&0i16.to_be_bytes());
+        huge_owned_partitions.extend_from_slice(&i32::MAX.to_be_bytes());
+        let mut trailing_garbage = BytesMut::from(&valid[..]);
+        trailing_garbage.extend_from_slice(&[0]);
+        for malformed in [
+            Bytes::new(),
+            negative_version.freeze(),
+            negative_topics.freeze(),
+            huge_topics.freeze(),
+            truncated_user_data.freeze(),
+            huge_owned_topics.freeze(),
+            huge_owned_partitions.freeze(),
+            trailing_garbage.freeze(),
+            empty_subscription(2).slice(..17),
+            empty_subscription(3).slice(..19),
+        ] {
+            assert!(decode_member_subscription_topics(&malformed).is_err());
+        }
+    }
+
+    #[test]
+    fn assignment_metadata_rejects_truncated_user_data_and_unbounded_counts() {
+        let assignment = MemberAssignment {
+            version: 0,
+            topic_partitions: vec![],
+            user_data: None,
+        };
+        let valid = assignment.to_bytes();
+        let mut negative_version = BytesMut::from(&valid[..]);
+        negative_version[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        let mut huge_topics = BytesMut::from(&valid[..]);
+        huge_topics[2..6].copy_from_slice(&i32::MAX.to_be_bytes());
+        let mut huge_partitions = BytesMut::new();
+        huge_partitions.extend_from_slice(&0i16.to_be_bytes());
+        huge_partitions.extend_from_slice(&1i32.to_be_bytes());
+        huge_partitions.extend_from_slice(&0i16.to_be_bytes());
+        huge_partitions.extend_from_slice(&i32::MAX.to_be_bytes());
+        huge_partitions.extend_from_slice(&(-1i32).to_be_bytes());
+        let mut truncated_user_data = BytesMut::from(&valid[..]);
+        truncated_user_data[6..10].copy_from_slice(&2i32.to_be_bytes());
+        truncated_user_data.extend_from_slice(&[0]);
+        let mut trailing_garbage = BytesMut::from(&valid[..]);
+        trailing_garbage.extend_from_slice(&[0]);
+        for malformed in [
+            valid.slice(..6),
+            negative_version.freeze(),
+            huge_topics.freeze(),
+            huge_partitions.freeze(),
+            truncated_user_data.freeze(),
+            trailing_garbage.freeze(),
+        ] {
+            assert!(MemberAssignment::from_bytes(&malformed).is_err());
+        }
+        let mut future = BytesMut::from(&valid[..]);
+        future[..2].copy_from_slice(&4i16.to_be_bytes());
+        future.extend_from_slice(&[0, 42]);
+        let decoded = MemberAssignment::from_bytes(&future).unwrap();
+        assert_eq!(decoded.version, 4);
+        assert!(decoded.topic_partitions.is_empty());
+    }
 
     #[test]
     fn test_member_assignment_roundtrip() {

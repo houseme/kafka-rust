@@ -41,5 +41,6 @@ for mechanism in "${mechanisms[@]}"; do
     echo "Running sync integration tests with SASL=$mechanism"
     cargo test --features integration_tests --test test_kafka integration::client::test_kafka_client_load_metadata -- --nocapture
     cargo test --features integration_tests --test test_kafka integration::client::test_produce_fetch_messages -- --nocapture
+    cargo test --features integration_tests --test group_coordinator -- --nocapture
 
 done
