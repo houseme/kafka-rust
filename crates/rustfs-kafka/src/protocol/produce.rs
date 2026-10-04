@@ -111,6 +111,11 @@ pub(crate) fn build_produce_request_with_options(
             .or_default()
             .entry(partition)
             .or_default();
+        // Buffered producers already supply consecutive partition runs. Reserve
+        // their known size once instead of growing the Record vector per push.
+        if run.len() > 1 {
+            records.try_reserve(run.len()).map_err(|_| Error::codec())?;
+        }
         for (_, _, key, value, headers) in run {
             let offset = super::usize_to_i32(records.len())?;
             let kp_headers: indexmap::IndexMap<StrBytes, Option<bytes::Bytes>> = headers
@@ -578,3 +583,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "produce_encoding_bench.rs"]
+mod produce_encoding_bench;
