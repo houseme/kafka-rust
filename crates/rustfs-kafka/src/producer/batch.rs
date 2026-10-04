@@ -99,6 +99,7 @@ impl<P: Partitioner> BatchProducer<P> {
                     .into(),
             ));
         }
+        record.headers.validate_unique()?;
 
         let mut msg = client::ProduceMessage {
             key: to_option(record.key.as_bytes()),
@@ -641,6 +642,80 @@ mod tests {
             batch_start: None,
             failed_flush: false,
         }
+    }
+
+    #[test]
+    fn duplicate_headers_preserve_buffer_and_existing_failed_flush_ledger() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingPartitioner(Arc<AtomicUsize>);
+        impl Partitioner for CountingPartitioner {
+            fn partition(&mut self, _: Topics<'_>, _: &mut client::ProduceMessage<'_, '_>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut producer = BatchProducer::from_client(KafkaClient::new(Vec::new()))
+            .with_batch_config(BatchConfig {
+                batch_size: usize::MAX,
+                linger_ms: u64::MAX,
+                max_bytes: usize::MAX,
+            })
+            .with_partitioner(CountingPartitioner(Arc::clone(&calls)))
+            .create()
+            .unwrap();
+        let valid = Record::from_value("topic", "pending")
+            .with_partition(0)
+            .with_header("first", "1")
+            .with_header("second", "2");
+        assert!(!producer.send(&valid).unwrap());
+        let original = (
+            producer.buffered_count(),
+            producer.buffered_bytes(),
+            producer.batch_start,
+        );
+        let duplicate = Record::from_value("topic", "rejected")
+            .with_header("trace", "old")
+            .with_header("between", "middle")
+            .with_header("trace", "new");
+        assert!(
+            matches!(producer.send(&duplicate), Err(Error::Config(message))
+            if message.contains("duplicate"))
+        );
+        assert!(!producer.failed_flush);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            (
+                producer.buffered_count(),
+                producer.buffered_bytes(),
+                producer.batch_start
+            ),
+            original
+        );
+        let buffered = &producer.buffer["topic"][&0][0];
+        assert_eq!(buffered.value.as_deref(), Some(b"pending".as_slice()));
+        assert_eq!(buffered.headers, valid.headers.0);
+
+        // Missing metadata makes the real flush path retain its unconfirmed batch.
+        assert!(producer.flush().is_err());
+        assert!(producer.failed_flush);
+        assert!(
+            matches!(producer.send(&duplicate), Err(Error::Config(message))
+            if message.contains("unconfirmed"))
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            (
+                producer.buffered_count(),
+                producer.buffered_bytes(),
+                producer.batch_start
+            ),
+            original
+        );
+        producer.clear();
+        assert!(!producer.send(&valid).unwrap());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]

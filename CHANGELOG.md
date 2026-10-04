@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync, async, batch, and transactional producers reject duplicate header keys before routing or IO because the current map-based record codec cannot preserve them. Added reusable header validation; unique headers retain their order and values, and local rejection preserves buffered obligations and active transaction state.
 - Ordinary producer creation rejects unsupported idempotence and transaction IDs before metadata or connection IO; callers can use the dedicated transactional producer for the implemented transaction flow.
 - Metadata refresh validates broker descriptors and partition identities before publishing; failed full refreshes retain the previous snapshot, successful replacement clears dependent coordinator caches, and rediscovered endpoints update existing broker slots. Removed unused private response headers and replica/ISR copies while preserving public metadata views.
 - GroupCoordinator now discovers fresh coordinators, encodes real subscriptions, assigns the union of member topics by member ID, validates metadata bounds and complete known schemas, and invalidates coordinator errors for the next manual call. Leave failures preserve membership; removed the idle logging worker while retaining constructor compatibility and manual heartbeat semantics.

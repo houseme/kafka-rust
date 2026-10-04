@@ -156,6 +156,7 @@ impl<P: Partitioner> TransactionalProducer<P> {
         V: AsBytes,
     {
         self.require_active()?;
+        rec.headers.validate_unique()?;
         #[cfg(feature = "producer_timestamp")]
         crate::client::produce_ops::validate_producer_timestamp(self.client.producer_timestamp())?;
 
@@ -978,6 +979,63 @@ mod tests {
             producer.finish_transaction(committed).unwrap();
         }
         assert_eq!(producer.sequence_numbers[&("topic-a".into(), 0)], 4);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn duplicate_headers_are_rejected_locally_without_poisoning_or_registering_partitions() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (check_tx, check_rx) = std::sync::mpsc::channel();
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            initialize_mock(&mut stream, address);
+            check_rx.recv().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let error = stream.peek(&mut [0]).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ));
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            checked_tx.send(()).unwrap();
+            acknowledge_add(&mut stream, 0);
+            let header = read_produce(&mut stream, 0);
+            write_response(&mut stream, &header, &produce_response(0));
+            acknowledge_end(&mut stream, true, 0);
+        });
+        let mut producer = mock_producer(address);
+        producer.begin().unwrap();
+        let identity = (producer.producer_id(), producer.producer_epoch());
+        let epoch = producer.txn_epoch;
+        let duplicate = Record::from_value("topic-a", "value")
+            .with_header("trace", "old")
+            .with_header("between", "middle")
+            .with_header("trace", "new");
+        assert!(
+            matches!(producer.send(&duplicate), Err(Error::Config(message))
+            if message.contains("duplicate"))
+        );
+        assert_eq!(producer.status, TransactionStatus::Active);
+        assert_eq!(
+            (producer.producer_id(), producer.producer_epoch()),
+            identity
+        );
+        assert_eq!(producer.txn_epoch, epoch);
+        assert!(producer.sequence_numbers.is_empty());
+        assert!(producer.current_txn_partitions.is_empty());
+        check_tx.send(()).unwrap();
+        checked_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        producer
+            .send(&Record::from_value("topic-a", "value").with_header("trace", "unique"))
+            .unwrap();
+        assert_eq!(producer.sequence_numbers[&("topic-a".into(), 0)], 1);
+        producer.commit().unwrap();
         server.join().unwrap();
     }
 

@@ -71,6 +71,7 @@ where
     let mut topic_stats: HashMap<&str, (usize, usize)> = HashMap::new();
     for msg in messages {
         let msg = msg.as_ref();
+        crate::producer::validate_unique_headers(msg.headers)?;
         #[cfg(feature = "metrics")]
         {
             let (bytes, count) = topic_stats.entry(msg.topic).or_default();
@@ -448,6 +449,51 @@ mod tests {
                 .produce_messages(RequiredAcks::One, Duration::from_secs(1), &messages)
                 .is_err()
         );
+        for listener in [&first, &second] {
+            assert!(
+                listener
+                    .accept()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_headers_on_a_later_broker_open_no_produce_connections() {
+        let first = TcpListener::bind("127.0.0.1:0").unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").unwrap();
+        first.set_nonblocking(true).unwrap();
+        second.set_nonblocking(true).unwrap();
+        let mut client = KafkaClient::builder().with_conn_rw_timeout(1).build();
+        configure_metadata(
+            &mut client,
+            &[first.local_addr().unwrap(), second.local_addr().unwrap()],
+        );
+        let headers = [
+            ("trace".to_owned(), Bytes::from_static(b"old")),
+            ("between".to_owned(), Bytes::from_static(b"middle")),
+            ("trace".to_owned(), Bytes::from_static(b"new")),
+        ];
+        let messages = [
+            ProduceMessage {
+                topic: "topic-a",
+                partition: 0,
+                key: None,
+                value: Some(b"first"),
+                headers: &[],
+            },
+            ProduceMessage {
+                topic: "topic-a",
+                partition: 1,
+                key: None,
+                value: Some(b"second"),
+                headers: &headers,
+            },
+        ];
+        assert!(matches!(
+            client.produce_messages(RequiredAcks::One, Duration::from_secs(1), &messages),
+            Err(Error::Config(message)) if message.contains("duplicate")
+        ));
         for listener in [&first, &second] {
             assert!(
                 listener

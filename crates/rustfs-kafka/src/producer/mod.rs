@@ -46,7 +46,7 @@ pub use self::batch::{BatchProducer, BatchProducerBuilder};
 pub use self::partitioner::{
     DefaultPartitioner, Partitioner, RoundRobinPartitioner, StickyPartitioner, UniformPartitioner,
 };
-pub use self::record::{AsBytes, Headers, Record};
+pub use self::record::{AsBytes, Headers, Record, validate_unique_headers};
 pub use config::BatchConfig;
 pub use transaction::{TransactionalBuilder, TransactionalProducer};
 
@@ -170,6 +170,9 @@ impl<P: Partitioner> Producer<P> {
             return Err(Error::Config(
                 "idempotent mode is not supported by Producer; use TransactionalProducer".into(),
             ));
+        }
+        for record in recs {
+            record.headers.validate_unique()?;
         }
 
         let partitioner = &mut self.state.partitioner;

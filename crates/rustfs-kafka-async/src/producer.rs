@@ -365,6 +365,9 @@ impl NativeProducer {
         if records.is_empty() {
             return Ok(());
         }
+        for record in records {
+            record.headers.validate_unique()?;
+        }
 
         let correlation_id = self.correlation.fetch_add(1, Ordering::Relaxed);
         let mut client = self.client.lock().await;
@@ -1202,6 +1205,62 @@ mod tests {
                 .is_err(),
             "an empty batch must not send any request"
         );
+    }
+
+    #[tokio::test]
+    async fn later_duplicate_headers_are_rejected_before_locks_metadata_and_round_robin() {
+        for required_acks in [RequiredAcks::None, RequiredAcks::One] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let acks = required_acks as i16;
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let correlation = read_metadata_request(&mut socket).await;
+                    write_metadata_response(&mut socket, correlation, &[addr], 0).await;
+                    // The rejected batch must not advance round-robin or send any
+                    // frame. The next explicit valid send is the first Produce.
+                    let correlation = read_produce_request(&mut socket, 0, acks).await;
+                    if acks != 0 {
+                        write_produce_response(&mut socket, correlation, 0, 0).await;
+                    }
+                });
+                let producer = test_producer(addr, required_acks).await;
+                let duplicate = test_record()
+                    .with_header("trace", "old")
+                    .with_header("between", "middle")
+                    .with_header("trace", "new");
+                {
+                    let AsyncProducerMode::Native(native) = &producer.mode;
+                    let _client_guard = native.client.lock().await;
+                    let state_guard = native.state.lock().await;
+                    let records = [test_record(), duplicate];
+                    let result = tokio::time::timeout(
+                        Duration::from_millis(100),
+                        producer.send_all(&records),
+                    )
+                    .await
+                    .expect("complete input validation must precede both locks");
+                    assert!(matches!(result, Err(Error::Config(message))
+                        if message.contains("codec") && message.contains("duplicate")));
+                    assert!(state_guard.topics.is_empty());
+                    assert!(state_guard.round_robin.is_empty());
+                    assert_eq!(records[1].headers.len(), 4);
+                    assert_eq!(
+                        records[1].headers.iter().nth(1).unwrap().1,
+                        Bytes::from_static(b"old")
+                    );
+                    assert_eq!(
+                        records[1].headers.iter().nth(3).unwrap().1,
+                        Bytes::from_static(b"new")
+                    );
+                }
+                producer.send(&test_record()).await.unwrap();
+                server.await.unwrap();
+            })
+            .await
+            .expect("a rejected duplicate-header batch must leave valid sending available");
+        }
     }
 
     #[tokio::test]

@@ -89,6 +89,9 @@ pub(crate) fn build_produce_request_with_options(
     messages: &[ProduceMessageRef<'_>],
     options: ProduceRequestOptions<'_>,
 ) -> Result<(RequestHeader, ProduceRequest)> {
+    for (_, _, _, _, headers) in messages {
+        crate::producer::validate_unique_headers(headers)?;
+    }
     let context = options.transaction;
     let header = RequestHeader::default()
         .with_client_id(Some(StrBytes::from_string(client_id.to_owned())))
@@ -245,6 +248,33 @@ mod tests {
 
     fn one_message() -> [ProduceMessageRef<'static>; 1] {
         [("topic-a", 0, None, Some(&b"value"[..]), &[])]
+    }
+
+    #[test]
+    fn duplicate_headers_are_rejected_for_ordinary_and_transactional_encoding() {
+        let headers = [
+            ("trace".to_owned(), bytes::Bytes::from_static(b"old")),
+            ("between".to_owned(), bytes::Bytes::from_static(b"middle")),
+            ("trace".to_owned(), bytes::Bytes::from_static(b"new")),
+        ];
+        let messages: [ProduceMessageRef<'_>; 2] = [
+            ("topic-a", 0, None, Some(b"first"), &[]),
+            ("topic-b", 1, None, Some(b"second"), &headers),
+        ];
+        assert!(matches!(
+            build_produce_request(1, "client", 1, 30_000, Compression::NONE, &messages),
+            Err(Error::Config(message)) if message.contains("duplicate")
+        ));
+        assert!(matches!(
+            build_transactional_produce_request(
+                1, "client", 30_000, Compression::NONE, messages[1],
+                TransactionContext { transactional_id: "txn", producer_id: 42, producer_epoch: 3, sequence: 7 },
+                0,
+            ),
+            Err(Error::Config(message)) if message.contains("duplicate")
+        ));
+        assert_eq!(headers[0].1, bytes::Bytes::from_static(b"old"));
+        assert_eq!(headers[2].1, bytes::Bytes::from_static(b"new"));
     }
 
     #[test]

@@ -1,5 +1,33 @@
 use bytes::Bytes;
+use std::collections::HashSet;
 use std::fmt;
+
+use crate::error::{Error, Result};
+
+/// Checks whether the current record codec can preserve these headers.
+///
+/// Kafka permits ordered headers with duplicate keys, but the current codec
+/// represents headers as a map. Such input is rejected instead of silently
+/// discarding earlier values. Headers with unique keys retain their order.
+///
+/// # Errors
+///
+/// Returns a configuration error if duplicate keys cannot be preserved.
+pub fn validate_unique_headers(headers: &[(String, Bytes)]) -> Result<()> {
+    if headers.len() < 2 {
+        return Ok(());
+    }
+    let mut keys = HashSet::with_capacity(headers.len());
+    for (key, _) in headers {
+        if !keys.insert(key.as_str()) {
+            return Err(Error::Config(
+                "the current record codec cannot preserve duplicate header keys and their ordered values"
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// A collection of key-value headers attached to a Kafka record.
 ///
@@ -42,6 +70,16 @@ impl Headers {
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &(String, Bytes)> {
         self.0.iter()
+    }
+
+    /// Checks that the current codec can encode these headers without data loss.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error for duplicate keys, which Kafka permits
+    /// but the current map-based codec cannot preserve.
+    pub fn validate_unique(&self) -> Result<()> {
+        validate_unique_headers(&self.0)
     }
 }
 
@@ -189,6 +227,44 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Record<'_, K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unique_header_validation_preserves_empty_single_and_ordered_values() {
+        let mut headers = Headers::new();
+        headers.validate_unique().unwrap();
+        headers.insert("", b"first");
+        headers.validate_unique().unwrap();
+        headers.insert("trace", b"second");
+        headers.insert("Trace", b"third");
+        headers.validate_unique().unwrap();
+        assert_eq!(
+            headers
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_ref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("", b"first".as_slice()),
+                ("trace", b"second".as_slice()),
+                ("Trace", b"third".as_slice()),
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_header_validation_reports_codec_limit_without_discarding_values() {
+        for key in ["trace", ""] {
+            let mut headers = Headers::new();
+            headers.insert(key, b"first");
+            headers.insert("between", b"middle");
+            headers.insert(key, b"last");
+            let original = headers.0.clone();
+            assert!(
+                matches!(headers.validate_unique(), Err(Error::Config(message))
+                if message.contains("codec") && message.contains("duplicate"))
+            );
+            assert_eq!(headers.0, original);
+        }
+    }
 
     #[test]
     fn test_headers_empty_default() {

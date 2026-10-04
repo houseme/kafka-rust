@@ -289,6 +289,40 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_headers_in_a_later_record_are_rejected_before_partitioning_any_record() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingPartitioner(Arc<AtomicUsize>);
+        impl Partitioner for CountingPartitioner {
+            fn partition(
+                &mut self,
+                _: crate::producer::partitioner::Topics<'_>,
+                _: &mut client::ProduceMessage<'_, '_>,
+            ) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut producer = Producer::from_client(KafkaClient::new(Vec::new()))
+            .with_partitioner(CountingPartitioner(Arc::clone(&calls)))
+            .create()
+            .unwrap();
+        let records = [
+            crate::producer::Record::from_value("topic", "first"),
+            crate::producer::Record::from_value("topic", "second")
+                .with_header("trace", "old")
+                .with_header("between", "middle")
+                .with_header("trace", "new"),
+        ];
+        assert!(
+            matches!(producer.send_all(&records), Err(Error::Config(message))
+            if message.contains("duplicate"))
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn custom_partitioner_preserves_producer_configuration() {
         let builder = Producer::from_hosts(vec!["broker:9092".to_owned()])
             .with_client_id("custom-client".to_owned())
