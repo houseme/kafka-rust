@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Header preflight uses at most six borrowed comparisons for two to four keys and retains hashing for larger inputs, with the same errors, key equality, values, and order. Added an ignored release CPU benchmark of the actual successful guard with fixed inputs and ABBA measurement instructions.
 - Documented consumer prefix filtering, offset acknowledgement and sentinel contracts, borrowed message views, atomic metadata replacement and coordinator endpoint updates, producer input limits, and the scope of consumer progress CPU measurements.
 - Documented complete async Fetch decoding, coordinator recovery, admin delivery decisions, safe response reservation, Produce preflight memory and metrics, and manual group scheduling with automatic lifecycle work still tracked in backlog.
 - Sync Produce borrows broker keys, groups adjacent record targets, maps ACKs directly, and pre-encodes all broker frames before IO. Negative successful offsets become failed confirmations, and metrics count input value bytes and records once per topic; preflight can retain more multi-broker wire data at once.

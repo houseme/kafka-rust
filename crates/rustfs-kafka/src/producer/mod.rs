@@ -229,3 +229,6 @@ impl<P> State<P> {
 
 // Re-export Builder for public API
 pub use builder::Builder;
+
+#[cfg(test)]
+mod header_validation_bench;

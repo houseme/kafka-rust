@@ -17,14 +17,21 @@ pub fn validate_unique_headers(headers: &[(String, Bytes)]) -> Result<()> {
     if headers.len() < 2 {
         return Ok(());
     }
-    let mut keys = HashSet::with_capacity(headers.len());
-    for (key, _) in headers {
-        if !keys.insert(key.as_str()) {
-            return Err(Error::Config(
-                "the current record codec cannot preserve duplicate header keys and their ordered values"
-                    .into(),
-            ));
-        }
+    let duplicate = if headers.len() <= 4 {
+        // Small header sets need at most six borrowed comparisons.
+        headers
+            .iter()
+            .enumerate()
+            .any(|(index, (key, _))| headers[..index].iter().any(|(previous, _)| previous == key))
+    } else {
+        let mut keys = HashSet::with_capacity(headers.len());
+        headers.iter().any(|(key, _)| !keys.insert(key.as_str()))
+    };
+    if duplicate {
+        return Err(Error::Config(
+            "the current record codec cannot preserve duplicate header keys and their ordered values"
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -263,6 +270,52 @@ mod tests {
                 if message.contains("codec") && message.contains("duplicate"))
             );
             assert_eq!(headers.0, original);
+        }
+    }
+
+    #[test]
+    fn four_and_five_unique_headers_preserve_exact_case_unicode_values_and_order() {
+        let keys = ["", "trace", "Trace", "é", "e\u{301}"];
+        for count in [4, 5] {
+            let headers: Vec<_> = keys[..count]
+                .iter()
+                .enumerate()
+                .map(|(index, key)| {
+                    (
+                        key.to_string(),
+                        Bytes::from(vec![u8::try_from(index).unwrap()]),
+                    )
+                })
+                .collect();
+            let original = headers.clone();
+            validate_unique_headers(&headers).unwrap();
+            assert_eq!(headers, original);
+        }
+    }
+
+    #[test]
+    fn four_and_five_headers_reject_head_or_tail_duplicates_without_changing_input() {
+        for count in [4, 5] {
+            for duplicate_position in [1, count - 1] {
+                for duplicate_key in ["trace", "Trace", "", "é", "e\u{301}", "标签"] {
+                    let headers: Vec<_> = (0..count)
+                        .map(|index| {
+                            let key = if index == 0 || index == duplicate_position {
+                                duplicate_key.to_owned()
+                            } else {
+                                format!("middle-{index}")
+                            };
+                            (key, Bytes::from(vec![u8::try_from(index).unwrap()]))
+                        })
+                        .collect();
+                    let original = headers.clone();
+                    assert!(
+                        matches!(validate_unique_headers(&headers), Err(Error::Config(message))
+                        if message == "the current record codec cannot preserve duplicate header keys and their ordered values")
+                    );
+                    assert_eq!(headers, original);
+                }
+            }
         }
     }
 
