@@ -103,6 +103,11 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
   and uses newly discovered coordinator endpoints. Offset Fetch/Commit responses require complete acknowledgements.
 - Ordinary producers reject unsupported idempotence/transaction options at creation. Record encoding rejects duplicate
   header keys before routing or IO because the current codec cannot preserve their ordered values.
+- Native async startup batches unresolved fallback positions by broker and publishes initialization only after all
+  lookups succeed. Checked routing and coordinator recovery preserve progress across failures.
+- Sync ListOffsets validates complete responses while preserving raw unknown offsets. High-level consumers reject an
+  unresolved starting position, and sync fallback resets stale consumed markers so new progress can be committed.
+- Small header preflight uses borrowed comparisons for two to four keys; larger inputs retain hash-based validation.
 
 `TransactionalProducer` uses a separate transaction coordinator and sends transaction IDs, producer identities,
 epochs, and sequences in transactional batches. Commit and abort preserve sequence state. A transaction RPC failure

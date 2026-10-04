@@ -80,6 +80,11 @@ async fn main() -> rustfs_kafka::Result<()> {
   preserve progress and pending commits; only an explicit `-1` committed offset selects the fallback.
 - Duplicate header keys are rejected before locking, routing, or IO because the current codec cannot preserve their
   ordered values. Unique headers keep their values and order.
+- Native startup queries unresolved fallback offsets once per leader broker across topics. All lookups succeed before
+  starting positions are published; failed or cancelled initialization preserves progress and pending commits.
+- An unknown fallback offset is not a concrete starting position: poll returns `OffsetOutOfRange`, and a later explicit
+  poll can query again. Routing snapshots are checked before publication; coordinator transport failures and exhausted
+  coordinator errors allow rediscovery, while leader failures trigger metadata refresh without clearing group state.
 - Typed responses validate correlation IDs and full payload consumption. Connections interrupted by cancellation
   or transport failure are discarded on their next checkout, without automatically replaying Produce.
 - Raw `send`/`read_exact` protect individual IO operations; callers own protocol boundaries between separate calls.

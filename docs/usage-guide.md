@@ -155,6 +155,19 @@ does not redeliver older records. Every record is validated before filtering: ne
 offsets are codec errors, while `i64::MAX - 1` can advance to the valid next position `i64::MAX`. Failed polls retain
 existing fetch progress and pending commits. Async progress maps store each topic key once across its partitions.
 
+Native async initialization batches fallback ListOffsets queries by leader broker, including partitions from different
+topics, and publishes starting positions only after every committed/fallback lookup succeeds. Failed or cancelled
+initialization retains existing positions and pending commits. Sync initialization also resets stale consumed markers
+when the configured fallback changes the starting position, so consuming records below an old invalid checkpoint can
+establish and commit new progress.
+
+Raw ListOffsets results preserve Kafka's `-1` unknown-offset sentinel and its returned timestamp. High-level consumers
+need a concrete position: an unknown fallback result returns the non-retriable `OffsetOutOfRange` error during sync
+creation or async poll, including a ByTime query with no matching record. The timestamp condition is preserved; a
+later explicit async poll can query again. Successful positions below `-1` are malformed, while `i64::MAX` remains a
+valid next position. Sync ListOffsets queries deduplicate input topic names and require complete, unique responses for
+the partitions actually sent to each broker; different brokers can contribute different partitions of the same topic.
+
 Use `message_sets.iter_ref()` to process borrowed sets without allocating topic strings or cloning message vectors.
 Each view exposes `topic()`, `partition()`, and `messages()`. Sync callers can mark a view with
 `consumer.consume_messageset_ref(&view)`. `view.to_owned()` produces the existing owned `MessageSet` when it must
@@ -233,11 +246,21 @@ slots. Incremental refresh preserves those caches. FindCoordinator can update a 
 its slot, so existing references follow the reported host/port. Invalid broker descriptors or partition IDs fail
 before publishing any metadata.
 
+Native async routing also validates broker descriptors, requested topic identities, partition IDs, and coordinator
+endpoints before publishing them. Healthy partitions remain available when sibling metadata entries report errors;
+invalid or entirely leaderless replacements retain the previous snapshot. Missing routes are probed again using the
+configured retry backoff, while healthy partitions remain fetchable between probes. Leader transport failures and
+explicit leader errors force metadata refresh, including after the retry budget is exhausted. Coordinator RPC transport failures and final coordinator
+rejections invalidate only the coordinator cache, so a later manual call can discover its current endpoint. Existing
+bounded retry rules still apply; malformed response acknowledgements do not gain automatic retries.
+
 Ordinary `Producer` builders reject idempotence or transaction IDs at `create`; use `TransactionalProducer` for the
 implemented transaction flow. Kafka supports ordered duplicate header keys, but the current record codec uses a map
 and cannot preserve them. Producers now return a configuration error before routing or sending such records.
 `Headers::validate_unique` and `producer::validate_unique_headers` expose the same check. Unique keys, empty values,
 and key case remain unchanged; local rejection retains active transaction state and buffered delivery obligations.
+For two to four keys, successful duplicate-key preflight uses borrowed comparisons without constructing a HashSet;
+larger inputs retain hash-based validation. This changes the guard's work, not the encoded header representation.
 
 ### Transactional Producer
 
@@ -353,6 +376,19 @@ map reset, and result verification are outside timing. The default is 256 warmup
 calls; every sample verifies all published offsets. Compare revisions in separate Cargo target directories, verify
 the source and executable for each revision, and retain all A1-B1-B2-A2 samples. A baseline drift above 15 percent
 precludes a performance conclusion. This measurement does not establish allocation counts or broker throughput.
+
+Measure the actual successful header guard separately:
+
+```bash
+cargo test -p rustfs-kafka --release --lib producer::header_validation_bench::header_validation_cpu_bench -- --ignored --exact --nocapture --test-threads=1
+```
+
+The fixed cases contain 0, 1, 2, 4, 8, and 16 unique headers with prebuilt names and values. Each case warms 10,000 calls
+and records nine samples of 100,000 calls. The timed loop includes common black-box/result-counting work; construction
+and verification stay outside timing. Compare immutable revisions using isolated target directories and verified
+executables, retain every ABBA sample, and apply the 15 percent baseline drift gate separately to each case. The result
+measures the successful guard for these inputs, rather than producer throughput, duplicate-error cost, or allocation
+counts. The smallest cases can be dominated by the common measurement loop.
 
 Compare sequential acknowledged sends with native batching against an existing plaintext topic:
 
