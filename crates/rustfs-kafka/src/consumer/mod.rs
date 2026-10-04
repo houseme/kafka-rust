@@ -261,8 +261,12 @@ impl Consumer {
     /// ```
     /// # Errors
     ///
-    /// Returns an error if the topic or partition is not being consumed.
+    /// Returns an error if the topic or partition is not assigned, or if the
+    /// requested offset is negative.
     pub fn seek(&mut self, topic: &str, partition: i32, offset: i64) -> Result<()> {
+        if offset < 0 {
+            return Err(Error::Config("seek offset must be non-negative".into()));
+        }
         let topic_ref = self.state.topic_ref(topic);
         match topic_ref {
             Some(topic_ref) => {
@@ -270,6 +274,13 @@ impl Consumer {
                     topic_ref,
                     partition,
                 };
+                if !self.state.fetch_offsets.contains_key(&tp) {
+                    return Err(Error::TopicPartitionError {
+                        topic_name: topic.to_owned(),
+                        partition_id: partition,
+                        error_code: KafkaCode::UnknownTopicOrPartition,
+                    });
+                }
                 let maybe_entry = self.state.fetch_offsets.entry(tp);
                 match maybe_entry {
                     Entry::Occupied(mut e) => {
@@ -586,6 +597,11 @@ impl Consumer {
                     ..
                 } = error.as_ref()
                 {
+                    if partition.highwatermark < 0 {
+                        // The broker's OOR response can carry an unknown
+                        // watermark. Do not publish that sentinel as a cursor.
+                        return Err(Error::from(Arc::clone(error)));
+                    }
                     let fetch_state = fetch_updates
                         .entry(TopicPartition {
                             topic_ref: tp.topic_ref,
@@ -636,8 +652,9 @@ impl Consumer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the topic is not being consumed or the message offset
-    /// is negative or cannot be advanced to a representable next offset.
+    /// Returns an error if the topic/partition is not assigned to this
+    /// consumer, or the message offset is negative or cannot be advanced to a
+    /// representable next offset.
     pub fn consume_message(&mut self, topic: &str, partition: i32, offset: i64) -> Result<()> {
         let topic_ref = self
             .state
@@ -653,6 +670,13 @@ impl Consumer {
             topic_ref,
             partition,
         };
+        if !self.state.fetch_offsets.contains_key(&tp) {
+            return Err(Error::TopicPartitionError {
+                topic_name: topic.to_owned(),
+                partition_id: partition,
+                error_code: KafkaCode::UnknownTopicOrPartition,
+            });
+        }
         match self.state.consumed_offsets.entry(tp) {
             Entry::Vacant(v) => {
                 v.insert(state::ConsumedOffset {
@@ -1022,6 +1046,125 @@ mod pause_resume_tests {
             .collect();
         partitions.sort_unstable();
         partitions
+    }
+
+    #[test]
+    fn seek_rejects_negative_and_unassigned_positions_without_mutation() {
+        let mut consumer = make_consumer();
+        let before = requested_partitions(&consumer);
+        let offsets: Vec<_> = [0, 1]
+            .map(|partition| {
+                let state = consumer
+                    .state
+                    .fetch_offsets
+                    .get(&topic_partition(&consumer, partition))
+                    .unwrap();
+                (state.offset, state.max_bytes)
+            })
+            .into();
+        assert!(matches!(consumer.seek("t", 0, -1), Err(Error::Config(_))));
+        assert!(matches!(
+            consumer.seek("t", 2, 5),
+            Err(Error::TopicPartitionError {
+                error_code: KafkaCode::UnknownTopicOrPartition,
+                ..
+            })
+        ));
+        assert_eq!(requested_partitions(&consumer), before);
+        let after: Vec<_> = [0, 1]
+            .map(|partition| {
+                let state = consumer
+                    .state
+                    .fetch_offsets
+                    .get(&topic_partition(&consumer, partition))
+                    .unwrap();
+                (state.offset, state.max_bytes)
+            })
+            .into();
+        assert_eq!(after, offsets);
+    }
+
+    #[test]
+    fn seek_accepts_zero_and_maximum_cursor_offsets() {
+        let mut consumer = make_consumer();
+        consumer.seek("t", 0, 0).unwrap();
+        consumer.seek("t", 0, i64::MAX).unwrap();
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 0))
+                .unwrap()
+                .offset,
+            i64::MAX
+        );
+    }
+
+    #[test]
+    fn consume_message_rejects_unassigned_partitions_before_dirtifying_offsets() {
+        let mut consumer = make_consumer();
+        assert!(matches!(
+            consumer.consume_message("t", 2, 50),
+            Err(Error::TopicPartitionError {
+                error_code: KafkaCode::UnknownTopicOrPartition,
+                ..
+            })
+        ));
+        assert!(consumer.state.consumed_offsets.is_empty());
+
+        consumer.consume_message("t", 0, 50).unwrap();
+        assert_eq!(consumer.last_consumed_message("t", 0), Some(50));
+        assert_eq!(consumer.last_consumed_message("t", 1), None);
+    }
+
+    #[test]
+    fn negative_oor_high_watermark_does_not_publish_or_complete_a_retry() {
+        let mut consumer = make_consumer();
+        let tp = topic_partition(&consumer, 0);
+        consumer.state.retry_partitions.push_back(tp);
+        let before = consumer
+            .state
+            .fetch_offsets
+            .get(&topic_partition(&consumer, 0))
+            .unwrap()
+            .offset;
+        let response = fetch_kp::OwnedFetchResponse {
+            correlation_id: 1,
+            topics: vec![fetch_kp::OwnedTopic {
+                topic: "t".to_owned(),
+                partitions: vec![fetch_kp::OwnedPartition {
+                    partition: 0,
+                    highwatermark: -1,
+                    data: Err(Arc::new(Error::TopicPartitionError {
+                        topic_name: "t".to_owned(),
+                        partition_id: 0,
+                        error_code: KafkaCode::OffsetOutOfRange,
+                    })),
+                }],
+            }],
+        };
+
+        assert!(matches!(
+            consumer.process_fetch_responses(
+                1,
+                Some(topic_partition(&consumer, 0)),
+                vec![response],
+            ),
+            Err(Error::TopicPartitionError {
+                error_code: KafkaCode::OffsetOutOfRange,
+                ..
+            })
+        ));
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 0))
+                .unwrap()
+                .offset,
+            before
+        );
+        assert_eq!(consumer.state.retry_partitions.len(), 1);
     }
 
     #[test]

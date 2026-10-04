@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Sync consumers reject negative seek cursors and consume requests for unassigned partitions. OffsetOutOfRange responses with a negative or unknown high watermark return the broker error without publishing the sentinel or completing pending retries.
 - Async Produce encodes all complete broker frames before Produce IO and retains lightweight acknowledgement identities instead of record bodies. Completed writes release their frames before waiting for ACKs; malformed schemas and negative successful offsets take codec-error priority. Preflight can retain unsent broker frames concurrently and does not introduce automatic replay.
 - Transactional producers validate headers again after custom partitioners run and before metadata or enrollment IO, preserving active transactions and sequence state on local rejection. Successful sequence updates move the target key into its map instead of cloning it.
 - Ordinary producers require complete unique resolved target acknowledgements and return codec errors instead of panicking on malformed confirmations. Invalid replies retire existing target connections without reconnecting or replay; valid partition errors, empty input, and no-ack sends retain their contracts.

@@ -98,6 +98,8 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
   broker failover. Response buffer reservations fail with errors and retire incomplete connections.
 - High-level consumers filter records before the requested offset, including recovery inside a record batch, and
   reject invalid offsets or incomplete partition responses before publishing progress.
+- Sync seek rejects negative or unassigned cursors; consumed offsets must belong to an assigned partition. An OOR
+  response with an unknown negative high watermark preserves the prior cursor and retry.
 - `MessageSets::iter_ref` borrows topic names and message slices; the existing owned iterator remains available.
 - Metadata replacement preserves the previous snapshot on failure, clears dependent coordinator caches on success,
   and uses newly discovered coordinator endpoints. Offset Fetch/Commit responses require complete acknowledgements.

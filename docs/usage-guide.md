@@ -138,6 +138,11 @@ responses for a poll succeed, immediately before the returned message sets are d
 leave progress for undelivered messages unchanged. Call `commit` only after successfully processing the returned
 messages; polling still advances the in-memory position before application processing.
 
+`Consumer::seek` accepts non-negative positions only and requires an assigned topic/partition. `consume_message`
+also requires that the partition be assigned before adding a dirty commit. If `OffsetOutOfRange` arrives with a
+negative/unknown high watermark, `poll` returns the broker error and preserves fetch and retry state rather than
+turning the sentinel into a future Fetch offset.
+
 Sync transport writes complete request frames and flushes TCP/TLS before reading the response. Fetch decoding
 includes all record batches returned for a partition. Produce requests maintain contiguous relative offsets within
 each partition batch, including compressed batches.
