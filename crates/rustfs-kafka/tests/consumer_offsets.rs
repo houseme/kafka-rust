@@ -115,6 +115,49 @@ fn seek_into_record_batch_returns_only_requested_offsets_once() {
     assert_invalid_consumed_offsets(&mut consumer, &fixture.name, Some(i64::MAX - 1));
 }
 
+#[test]
+fn future_time_no_match_is_preserved_by_client_and_rejected_by_consumer() {
+    let fixture = OffsetTopic::new();
+    let mut client = new_client();
+    wait_for_topic(
+        &mut client,
+        &fixture.name,
+        Instant::now() + Duration::from_secs(15),
+    );
+    let future_timestamp = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+    .checked_add(3_600_000)
+    .unwrap();
+    let fallback = FetchOffset::ByTime(future_timestamp);
+    let offsets = client.list_offsets(&[&fixture.name], fallback).unwrap();
+    assert_eq!(offsets.len(), 1);
+    let partitions = offsets
+        .get(&fixture.name)
+        .expect("future time response missing fixture topic");
+    assert_eq!(partitions.len(), 1);
+    assert_eq!(partitions[0].partition, 0);
+    assert_eq!(partitions[0].offset, -1);
+    assert_eq!(partitions[0].time, -1);
+
+    let Err(error) = Consumer::from_client(client)
+        .with_topic_partitions(fixture.name.clone(), &[0])
+        .with_fallback_offset(fallback)
+        .create()
+    else {
+        panic!("a time query with no matching record must reject consumer initialization");
+    };
+    assert!(
+        matches!(&error, Error::Kafka(KafkaCode::OffsetOutOfRange)),
+        "expected OffsetOutOfRange for a time query with no match, got {error:?}"
+    );
+    assert!(!error.is_retriable());
+}
+
 fn assert_invalid_consumed_offsets(consumer: &mut Consumer, topic: &str, expected: Option<i64>) {
     for offset in [-2, -1, i64::MIN, i64::MAX] {
         let error = consumer.consume_message(topic, 0, offset).unwrap_err();
