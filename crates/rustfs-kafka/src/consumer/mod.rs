@@ -323,13 +323,13 @@ impl Consumer {
                 "fetching messages: (fetch-offsets: {:?})",
                 state.fetch_offsets_debug()
             );
-            let reqs: Vec<FetchPartition<'_>> = state.fetch_requests().collect();
-            if reqs.is_empty() {
-                return (0, None, Ok(Vec::new()));
-            }
+            let mut num_partitions = 0usize;
+            let result = client.fetch_messages_kp(state.fetch_requests().inspect(|_| {
+                num_partitions += 1;
+            }));
             #[allow(clippy::cast_possible_truncation)] // partition count won't exceed u32
-            let num_partitions = reqs.len() as u32;
-            (num_partitions, None, client.fetch_messages_kp(reqs.iter()))
+            let num_partitions = num_partitions as u32;
+            (num_partitions, None, result)
         }
     }
 
@@ -337,7 +337,7 @@ impl Consumer {
         &mut self,
         num_partitions_queried: u32,
         retry_partition: Option<TopicPartition>,
-        resps: Vec<fetch_kp::OwnedFetchResponse>,
+        mut resps: Vec<fetch_kp::OwnedFetchResponse>,
     ) -> Result<MessageSets> {
         let single_partition_consumer = self.single_partition_consumer();
         let mut empty = true;
@@ -345,23 +345,24 @@ impl Consumer {
             HashMap::default();
         let mut retry_updates = Vec::new();
 
-        for resp in &resps {
-            for t in &resp.topics {
+        for resp in &mut resps {
+            for t in &mut resp.topics {
                 let topic_ref = self
                     .state
                     .assignments
                     .topic_ref(&t.topic)
                     .ok_or_else(Error::codec)?;
 
-                for p in &t.partitions {
+                for p in &mut t.partitions {
+                    let partition = p.partition;
                     let tp = TopicPartition {
                         topic_ref,
-                        partition: p.partition,
+                        partition,
                     };
                     let current = self.state.fetch_offsets.get(&tp).ok_or_else(Error::codec)?;
 
                     let Some(data) =
-                        self.stage_partition_data(&t.topic, &tp, p, &mut fetch_updates)?
+                        Self::stage_partition_data(&t.topic, &tp, p, current, &mut fetch_updates)?
                     else {
                         continue;
                     };
@@ -374,7 +375,8 @@ impl Consumer {
                                 max_bytes: current.max_bytes,
                             });
                     if let Some(last_msg) = data.messages.last() {
-                        fetch_state.offset = last_msg.offset + 1;
+                        fetch_state.offset =
+                            Self::next_message_offset(last_msg.offset).ok_or_else(Error::codec)?;
                         empty = false;
 
                         if fetch_state.max_bytes != self.client.fetch_max_bytes_per_partition() {
@@ -382,7 +384,7 @@ impl Consumer {
                             fetch_state.max_bytes = self.client.fetch_max_bytes_per_partition();
                             debug!(
                                 "reset max_bytes for {}:{} from {} to {}",
-                                &t.topic, p.partition, prev_max_bytes, fetch_state.max_bytes
+                                &t.topic, partition, prev_max_bytes, fetch_state.max_bytes
                             );
                         }
                     } else {
@@ -390,7 +392,7 @@ impl Consumer {
                             "no data received for {}:{} (max_bytes: {} / fetch_offset: {} / \
                                 highwatermark_offset: {})",
                             &t.topic,
-                            p.partition,
+                            partition,
                             fetch_state.max_bytes,
                             fetch_state.offset,
                             data.highwatermark_offset
@@ -404,16 +406,16 @@ impl Consumer {
                                     .min(self.config.retry_max_bytes_limit);
                                 debug!(
                                     "increased max_bytes for {}:{} from {} to {}",
-                                    &t.topic, p.partition, prev_max_bytes, fetch_state.max_bytes
+                                    &t.topic, partition, prev_max_bytes, fetch_state.max_bytes
                                 );
                             } else if num_partitions_queried == 1 {
                                 return Err(Error::Kafka(KafkaCode::MessageSizeTooLarge));
                             }
                             if !single_partition_consumer {
-                                debug!("rescheduled for retry: {}:{}", &t.topic, p.partition);
+                                debug!("rescheduled for retry: {}:{}", &t.topic, partition);
                                 retry_updates.push(TopicPartition {
                                     topic_ref,
-                                    partition: p.partition,
+                                    partition,
                                 });
                             }
                         }
@@ -438,42 +440,60 @@ impl Consumer {
     }
 
     fn stage_partition_data<'a>(
-        &self,
         topic: &str,
         tp: &TopicPartition,
-        partition: &'a fetch_kp::OwnedPartition,
+        partition: &'a mut fetch_kp::OwnedPartition,
+        current: &state::FetchState,
         fetch_updates: &mut HashMap<TopicPartition, state::FetchState, state::PartitionHasher>,
-    ) -> Result<Option<&'a fetch_kp::OwnedData>> {
-        match partition.data() {
-            Ok(data) => Ok(Some(data)),
+    ) -> Result<Option<&'a mut fetch_kp::OwnedData>> {
+        match partition.data.as_mut() {
+            Ok(data) => {
+                if data
+                    .messages
+                    .iter()
+                    .any(|message| Self::next_message_offset(message.offset).is_none())
+                {
+                    return Err(Error::codec());
+                }
+                // Kafka may return the complete batch containing the requested offset.
+                // Validate even discarded records before trimming the batch prefix.
+                data.messages
+                    .retain(|message| message.offset >= current.offset);
+                Ok(Some(data))
+            }
             Err(error) => {
                 if let Error::TopicPartitionError {
                     error_code: KafkaCode::OffsetOutOfRange,
                     ..
                 } = error.as_ref()
                 {
-                    if let Some(current) = self.state.fetch_offsets.get(tp) {
-                        let fetch_state = fetch_updates
-                            .entry(TopicPartition {
-                                topic_ref: tp.topic_ref,
-                                partition: tp.partition,
-                            })
-                            .or_insert_with(|| state::FetchState {
-                                offset: current.offset,
-                                max_bytes: current.max_bytes,
-                            });
-                        debug!(
-                            "OffsetOutOfRange for {}:{}, resetting to highwatermark {}",
-                            topic, partition.partition, partition.highwatermark
-                        );
-                        fetch_state.offset = partition.highwatermark;
-                    }
+                    let fetch_state = fetch_updates
+                        .entry(TopicPartition {
+                            topic_ref: tp.topic_ref,
+                            partition: tp.partition,
+                        })
+                        .or_insert_with(|| state::FetchState {
+                            offset: current.offset,
+                            max_bytes: current.max_bytes,
+                        });
+                    debug!(
+                        "OffsetOutOfRange for {}:{}, resetting to highwatermark {}",
+                        topic, partition.partition, partition.highwatermark
+                    );
+                    fetch_state.offset = partition.highwatermark;
                     Ok(None)
                 } else {
                     Err(Error::from(Arc::clone(error)))
                 }
             }
         }
+    }
+
+    fn next_message_offset(offset: i64) -> Option<i64> {
+        if offset < 0 {
+            return None;
+        }
+        offset.checked_add(1)
     }
 
     /// Retrieves the offset of the last "consumed" message in the
@@ -497,12 +517,18 @@ impl Consumer {
     ///
     /// # Errors
     ///
-    /// Returns an error if the topic is not being consumed.
+    /// Returns an error if the topic is not being consumed or the message offset
+    /// is negative or cannot be advanced to a representable next offset.
     pub fn consume_message(&mut self, topic: &str, partition: i32, offset: i64) -> Result<()> {
         let topic_ref = self
             .state
             .topic_ref(topic)
             .ok_or(Error::Kafka(KafkaCode::UnknownTopicOrPartition))?;
+        Self::next_message_offset(offset).ok_or_else(|| {
+            Error::Config(
+                "consumed message offset must be non-negative and less than i64::MAX".into(),
+            )
+        })?;
 
         let tp = TopicPartition {
             topic_ref,
@@ -541,6 +567,19 @@ impl Consumer {
         }
     }
 
+    /// Marks the last message in a borrowed message set as consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same topic and offset errors as `consume_message`.
+    pub fn consume_messageset_ref(&mut self, msgs: &MessageSetRef<'_>) -> Result<()> {
+        if let Some(last) = msgs.messages.last() {
+            self.consume_message(msgs.topic, msgs.partition, last.offset)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Persists the so-far "marked as consumed" messages (on behalf
     /// of this consumer's group for the underlying topic - if any.)
     ///
@@ -551,6 +590,20 @@ impl Consumer {
     pub fn commit_consumed(&mut self) -> Result<()> {
         if self.config.group.is_empty() {
             return Err(Error::unset_group_id());
+        }
+        // Check the entire dirty set before handing an iterator to the client.
+        // Rejected offsets leave all dirty flags set and send no request.
+        for offset in self
+            .state
+            .consumed_offsets
+            .values()
+            .filter(|offset| offset.dirty)
+        {
+            Self::next_message_offset(offset.offset).ok_or_else(|| {
+                Error::Config(
+                    "consumed message offset must be non-negative and less than i64::MAX".into(),
+                )
+            })?;
         }
         debug!(
             "commit_consumed: committing dirty-only consumer offsets (group: {} / offsets: {:?}",
@@ -566,7 +619,7 @@ impl Consumer {
                 .filter(|&(_, o)| o.dirty)
                 .map(|(tp, o)| {
                     let topic = state.topic_name(tp.topic_ref);
-                    CommitOffset::new(topic, tp.partition, o.offset + 1)
+                    CommitOffset::new(topic, tp.partition, o.offset.saturating_add(1))
                 }),
         )?;
         for co in state.consumed_offsets.values_mut() {
@@ -614,6 +667,14 @@ impl MessageSets {
     #[must_use]
     pub fn iter(&self) -> MessageSetsIter<'_> {
         MessageSetsIter::new(&self.responses)
+    }
+
+    /// Borrows message sets without copying topic names or message vectors.
+    ///
+    /// Use `MessageSetRef::to_owned` when a set must outlive this response.
+    #[must_use]
+    pub fn iter_ref(&self) -> MessageSetsRefIter<'_> {
+        MessageSetsRefIter::new(&self.responses)
     }
 }
 
@@ -675,13 +736,72 @@ impl<'a> IntoIterator for &'a MessageSet {
 
 /// An iterator over the consumed topic partition message sets.
 pub struct MessageSetsIter<'a> {
+    inner: MessageSetsRefIter<'a>,
+}
+
+impl<'a> MessageSetsIter<'a> {
+    fn new(responses: &'a [fetch_kp::OwnedFetchResponse]) -> Self {
+        Self {
+            inner: MessageSetsRefIter::new(responses),
+        }
+    }
+}
+
+impl Iterator for MessageSetsIter<'_> {
+    type Item = MessageSet;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|set| set.to_owned())
+    }
+}
+
+/// A message set borrowed from the response that contains it.
+#[derive(Debug, Clone, Copy)]
+pub struct MessageSetRef<'a> {
+    topic: &'a str,
+    partition: i32,
+    messages: &'a [Message],
+}
+
+impl<'a> MessageSetRef<'a> {
+    /// Returns the topic name without allocating.
+    #[must_use]
+    pub fn topic(&self) -> &'a str {
+        self.topic
+    }
+
+    /// Returns the partition ID.
+    #[must_use]
+    pub fn partition(&self) -> i32 {
+        self.partition
+    }
+
+    /// Returns the messages borrowed from the original response.
+    #[must_use]
+    pub fn messages(&self) -> &'a [Message] {
+        self.messages
+    }
+
+    /// Copies the set into the existing owned representation.
+    #[must_use]
+    pub fn to_owned(&self) -> MessageSet {
+        MessageSet {
+            topic: self.topic.to_owned(),
+            partition: self.partition,
+            messages: self.messages.to_vec(),
+        }
+    }
+}
+
+/// Iterates over borrowed message sets, skipping errors and empty partitions.
+pub struct MessageSetsRefIter<'a> {
     responses: slice::Iter<'a, fetch_kp::OwnedFetchResponse>,
     topics: Option<slice::Iter<'a, fetch_kp::OwnedTopic>>,
     curr_topic: Option<&'a str>,
     partitions: Option<slice::Iter<'a, fetch_kp::OwnedPartition>>,
 }
 
-impl<'a> MessageSetsIter<'a> {
+impl<'a> MessageSetsRefIter<'a> {
     fn new(responses: &'a [fetch_kp::OwnedFetchResponse]) -> Self {
         Self {
             responses: responses.iter(),
@@ -692,8 +812,8 @@ impl<'a> MessageSetsIter<'a> {
     }
 }
 
-impl Iterator for MessageSetsIter<'_> {
-    type Item = MessageSet;
+impl<'a> Iterator for MessageSetsRefIter<'a> {
+    type Item = MessageSetRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -702,11 +822,10 @@ impl Iterator for MessageSetsIter<'_> {
                 if let Ok(data) = p.data()
                     && !data.messages.is_empty()
                 {
-                    let topic = self.curr_topic.unwrap_or("").to_owned();
-                    return Some(MessageSet {
-                        topic,
+                    return Some(MessageSetRef {
+                        topic: self.curr_topic.unwrap_or(""),
                         partition: p.partition,
-                        messages: data.messages.clone(),
+                        messages: &data.messages,
                     });
                 }
                 continue;
@@ -941,6 +1060,62 @@ mod pause_resume_tests {
     }
 
     #[test]
+    fn borrowed_iteration_preserves_owned_values_without_copying_storage() {
+        let mut response = fetch_response(vec![
+            partition_data(0, 30, &[10, 11]),
+            partition_data(1, 30, &[]),
+            partition_error(2, 30, KafkaCode::NotLeaderForPartition),
+        ]);
+        response.topics.push(fetch_kp::OwnedTopic {
+            topic: "u".to_owned(),
+            partitions: vec![partition_data(5, 50, &[42])],
+        });
+        let sets = MessageSets::from_fetch_responses(vec![response]);
+        let views: Vec<_> = sets.iter_ref().collect();
+        let owned: Vec<_> = sets.iter().collect();
+        assert_eq!(views.len(), 2);
+        assert_eq!(owned.len(), views.len());
+        for (view, owned) in views.iter().zip(&owned) {
+            assert_eq!(view.topic(), owned.topic());
+            assert_eq!(view.partition(), owned.partition());
+            let offsets =
+                |messages: &[Message]| messages.iter().map(|m| m.offset).collect::<Vec<_>>();
+            assert_eq!(offsets(view.messages()), offsets(owned.messages()));
+        }
+        let source = &sets.responses[0].topics[0];
+        assert_eq!(views[0].topic().as_ptr(), source.topic.as_ptr());
+        assert_eq!(
+            views[0].messages().as_ptr(),
+            source.partitions[0].data().unwrap().messages.as_ptr()
+        );
+        let retained = views[0].to_owned();
+        drop(views);
+        drop(sets);
+        assert_eq!(retained.topic(), "t");
+        assert_eq!(
+            retained
+                .messages()
+                .iter()
+                .map(|m| m.offset)
+                .collect::<Vec<_>>(),
+            [10, 11]
+        );
+    }
+
+    #[test]
+    fn borrowed_message_set_can_mark_consumed_without_materializing_an_owned_set() {
+        let mut consumer = make_consumer();
+        let sets = MessageSets::from_fetch_responses(vec![fetch_response(vec![partition_data(
+            0,
+            30,
+            &[10, 11],
+        )])]);
+        let view = sets.iter_ref().next().unwrap();
+        consumer.consume_messageset_ref(&view).unwrap();
+        assert_eq!(consumer.last_consumed_message("t", 0), Some(11));
+    }
+
+    #[test]
     fn later_partition_error_does_not_skip_undelivered_messages() {
         let mut consumer = make_consumer();
         let before = fetch_progress(&consumer);
@@ -1169,5 +1344,623 @@ mod pause_resume_tests {
                 .offset,
             13
         );
+    }
+
+    #[test]
+    fn seek_inside_a_batch_discards_only_its_prefix() {
+        let mut consumer = make_consumer();
+        consumer.seek("t", 0, 3).unwrap();
+        let response = fetch_response(vec![partition_data(0, 6, &[0, 1, 2, 3, 4, 5])]);
+        let sets = consumer
+            .process_fetch_responses(1, None, vec![response])
+            .unwrap();
+        let owned = sets.iter().next().unwrap();
+        let borrowed = sets.iter_ref().next().unwrap();
+        assert_eq!(
+            owned
+                .messages()
+                .iter()
+                .map(|message| message.offset)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert_eq!(
+            borrowed
+                .messages()
+                .iter()
+                .map(|message| message.offset)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 0))
+                .unwrap()
+                .offset,
+            6
+        );
+    }
+
+    #[test]
+    fn fully_filtered_batch_keeps_position_and_completes_a_successful_retry() {
+        let mut consumer = make_consumer();
+        let retry = topic_partition(&consumer, 0);
+        consumer.state.retry_partitions.push_back(retry);
+        let before = fetch_progress(&consumer);
+        let response = fetch_response(vec![partition_data(0, 3, &[0, 1, 2])]);
+        let token = Some(topic_partition(&consumer, 0));
+        let sets = consumer
+            .process_fetch_responses(1, token, vec![response])
+            .unwrap();
+        assert!(sets.is_empty());
+        assert_eq!(fetch_progress(&consumer), before);
+        assert!(consumer.state.retry_partitions.is_empty());
+    }
+
+    #[test]
+    fn invalid_offsets_are_rejected_before_filtering_batch_prefixes() {
+        for invalid in [-1, i64::MIN, i64::MAX] {
+            let mut consumer = make_consumer();
+            let before = fetch_progress(&consumer);
+            let response = fetch_response(vec![partition_data(0, 30, &[invalid, 11])]);
+            assert!(matches!(
+                consumer.process_fetch_responses(1, None, vec![response]),
+                Err(Error::Protocol(crate::error::ProtocolError::Codec))
+            ));
+            assert_eq!(fetch_progress(&consumer), before);
+            assert!(consumer.state.retry_partitions.is_empty());
+        }
+    }
+
+    #[test]
+    fn later_invalid_offset_does_not_publish_earlier_partition_progress() {
+        for invalid in [-1, i64::MAX] {
+            let mut consumer = make_consumer();
+            let retry = topic_partition(&consumer, 0);
+            consumer.state.retry_partitions.push_back(retry);
+            let before = fetch_progress(&consumer);
+            let response = fetch_response(vec![
+                partition_data(0, 30, &[10, 11]),
+                partition_data(1, 30, &[11, invalid]),
+            ]);
+            let retry = Some(topic_partition(&consumer, 0));
+            assert!(matches!(
+                consumer.process_fetch_responses(2, retry, vec![response]),
+                Err(Error::Protocol(crate::error::ProtocolError::Codec))
+            ));
+            assert_eq!(fetch_progress(&consumer), before);
+            assert_eq!(consumer.state.retry_partitions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn last_representable_message_advances_to_the_maximum_fetch_offset() {
+        let mut consumer = make_consumer();
+        let response = fetch_response(vec![partition_data(0, i64::MAX, &[i64::MAX - 1])]);
+        let sets = consumer
+            .process_fetch_responses(1, None, vec![response])
+            .unwrap();
+        assert_eq!(
+            sets.iter_ref().next().unwrap().messages()[0].offset,
+            i64::MAX - 1
+        );
+        assert_eq!(
+            consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&consumer, 0))
+                .unwrap()
+                .offset,
+            i64::MAX
+        );
+    }
+
+    #[test]
+    fn invalid_consumed_offsets_do_not_create_or_replace_dirty_progress() {
+        let mut consumer = make_consumer();
+        for invalid in [-1, -2, i64::MIN, i64::MAX] {
+            assert!(matches!(
+                consumer.consume_message("t", 0, invalid),
+                Err(Error::Config(_))
+            ));
+            assert!(consumer.state.consumed_offsets.is_empty());
+        }
+        consumer.consume_message("t", 0, 0).unwrap();
+        for invalid in [-1, i64::MAX] {
+            assert!(matches!(
+                consumer.consume_message("t", 0, invalid),
+                Err(Error::Config(_))
+            ));
+            assert_eq!(consumer.last_consumed_message("t", 0), Some(0));
+        }
+        consumer.consume_message("t", 0, i64::MAX - 1).unwrap();
+        assert_eq!(consumer.last_consumed_message("t", 0), Some(i64::MAX - 1));
+        assert_eq!(Consumer::next_message_offset(i64::MAX - 1), Some(i64::MAX));
+    }
+
+    #[test]
+    fn invalid_dirty_offsets_reject_the_whole_commit_before_any_io() {
+        use std::net::TcpListener;
+        for invalid in [-1, i64::MIN, i64::MAX] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut consumer = make_consumer();
+            consumer.client = KafkaClient::new(vec![listener.local_addr().unwrap().to_string()]);
+            consumer.config.group = "test-group".into();
+            consumer.consume_message("t", 0, 10).unwrap();
+            let partition = topic_partition(&consumer, 1);
+            consumer.state.consumed_offsets.insert(
+                partition,
+                state::ConsumedOffset {
+                    offset: invalid,
+                    dirty: true,
+                },
+            );
+            assert!(matches!(consumer.commit_consumed(), Err(Error::Config(_))));
+            assert!(
+                consumer
+                    .state
+                    .consumed_offsets
+                    .values()
+                    .all(|offset| offset.dirty)
+            );
+            assert_eq!(consumer.last_consumed_message("t", 0), Some(10));
+            assert_eq!(consumer.last_consumed_message("t", 1), Some(invalid));
+            assert!(
+                listener
+                    .accept()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod offset_wire_tests {
+    use super::*;
+    use bytes::{Bytes, BytesMut};
+    use kafka_protocol::messages::{
+        ApiKey, ApiVersionsRequest, ApiVersionsResponse, BrokerId, FetchRequest, FetchResponse,
+        FindCoordinatorRequest, FindCoordinatorResponse, ListOffsetsRequest, ListOffsetsResponse,
+        MetadataRequest, MetadataResponse, OffsetCommitRequest, OffsetCommitResponse,
+        OffsetFetchRequest, OffsetFetchResponse, RequestHeader, ResponseHeader, TopicName,
+    };
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, StrBytes};
+    use kafka_protocol::records::{
+        Compression, Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType,
+    };
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::thread::JoinHandle;
+    use std::time::Duration;
+
+    enum Action {
+        Fetch(Vec<i64>, i64),
+        Commit(i16),
+        MalformedCommit(bool),
+    }
+
+    #[derive(Debug, Default)]
+    struct ObservedOffsets {
+        fetched: Vec<i64>,
+        committed: Vec<i64>,
+    }
+
+    fn mock_consumer(
+        committed: Option<i64>,
+        actions: Vec<Action>,
+    ) -> (Result<Consumer>, JoinHandle<ObservedOffsets>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut observed = ObservedOffsets::default();
+            if !serve_startup(&mut stream, address, committed) {
+                return observed;
+            }
+            for action in actions {
+                match action {
+                    Action::Fetch(offsets, highwatermark) => {
+                        let (header, request) =
+                            read_request::<FetchRequest>(&mut stream, ApiKey::Fetch);
+                        observed
+                            .fetched
+                            .push(request.topics[0].partitions[0].fetch_offset);
+                        write_response(
+                            &mut stream,
+                            &header,
+                            &fetch_response(offsets, highwatermark),
+                        );
+                    }
+                    Action::Commit(error) => {
+                        let (header, request) =
+                            read_request::<OffsetCommitRequest>(&mut stream, ApiKey::OffsetCommit);
+                        observed
+                            .committed
+                            .push(request.topics[0].partitions[0].committed_offset);
+                        write_response(&mut stream, &header, &commit_response(error));
+                    }
+                    Action::MalformedCommit(sparse) => {
+                        let (header, request) =
+                            read_request::<OffsetCommitRequest>(&mut stream, ApiKey::OffsetCommit);
+                        observed
+                            .committed
+                            .push(request.topics[0].partitions[0].committed_offset);
+                        let response = if sparse {
+                            OffsetCommitResponse::default().with_topics(vec![kafka_protocol::messages::offset_commit_response::OffsetCommitResponseTopic::default().with_name(topic_name())])
+                        } else {
+                            OffsetCommitResponse::default()
+                        };
+                        write_response(&mut stream, &header, &response);
+                        let mut marker = [0];
+                        match stream.read(&mut marker) {
+                            Ok(0) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                            other => panic!("unexpected automatic commit replay: {other:?}"),
+                        }
+                        let (replacement, _) = listener.accept().unwrap();
+                        stream = replacement;
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                    }
+                }
+            }
+            observed
+        });
+        let builder = Consumer::from_hosts(vec![address.to_string()])
+            .with_topic_partitions("t".into(), &[0])
+            .with_fallback_offset(FetchOffset::Earliest)
+            .with_fetch_max_wait_time(Duration::from_millis(100));
+        let builder = if committed.is_some() {
+            builder.with_group("test-group".into())
+        } else {
+            builder
+        };
+        (builder.create(), server)
+    }
+
+    fn serve_startup(stream: &mut TcpStream, address: SocketAddr, committed: Option<i64>) -> bool {
+        let (header, _) = read_request::<ApiVersionsRequest>(stream, ApiKey::ApiVersions);
+        write_response(stream, &header, &ApiVersionsResponse::default());
+        let (header, _) = read_request::<MetadataRequest>(stream, ApiKey::Metadata);
+        write_response(stream, &header, &metadata_response(address));
+        if let Some(offset) = committed {
+            let (header, _) =
+                read_request::<FindCoordinatorRequest>(stream, ApiKey::FindCoordinator);
+            let response = FindCoordinatorResponse::default()
+                .with_node_id(BrokerId::from(1))
+                .with_host(StrBytes::from_string(address.ip().to_string()))
+                .with_port(i32::from(address.port()));
+            write_response(stream, &header, &response);
+            let (header, _) = read_request::<OffsetFetchRequest>(stream, ApiKey::OffsetFetch);
+            write_response(stream, &header, &offset_fetch_response(offset));
+            if offset < -1 {
+                return false;
+            }
+        }
+        let requests = if committed.is_some_and(|offset| offset >= 0) {
+            2
+        } else {
+            1
+        };
+        for _ in 0..requests {
+            let (header, request) = read_request::<ListOffsetsRequest>(stream, ApiKey::ListOffsets);
+            let latest = committed.unwrap_or(6).max(6);
+            let offset = if request.topics[0].partitions[0].timestamp == -2 {
+                0
+            } else {
+                latest
+            };
+            write_response(stream, &header, &list_offset_response(offset));
+        }
+        true
+    }
+
+    fn read_request<T: Decodable + HeaderVersion>(
+        stream: &mut TcpStream,
+        key: ApiKey,
+    ) -> (RequestHeader, T) {
+        let mut size = [0; 4];
+        stream.read_exact(&mut size).unwrap();
+        let mut frame = vec![0; usize::try_from(i32::from_be_bytes(size)).unwrap()];
+        stream.read_exact(&mut frame).unwrap();
+        let version = i16::from_be_bytes(frame[2..4].try_into().unwrap());
+        let mut frame = Bytes::from(frame);
+        let header = RequestHeader::decode(&mut frame, T::header_version(version)).unwrap();
+        assert_eq!(header.request_api_key, key as i16);
+        let request = T::decode(&mut frame, version).unwrap();
+        (header, request)
+    }
+
+    fn write_response<T: Encodable + HeaderVersion>(
+        stream: &mut TcpStream,
+        request: &RequestHeader,
+        response: &T,
+    ) {
+        let version = request.request_api_version;
+        let mut payload = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(request.correlation_id)
+            .encode(&mut payload, T::header_version(version))
+            .unwrap();
+        response.encode(&mut payload, version).unwrap();
+        stream
+            .write_all(&i32::try_from(payload.len()).unwrap().to_be_bytes())
+            .unwrap();
+        stream.write_all(&payload).unwrap();
+    }
+
+    fn topic_name() -> TopicName {
+        TopicName::from(StrBytes::from_static_str("t"))
+    }
+
+    fn metadata_response(address: SocketAddr) -> MetadataResponse {
+        use kafka_protocol::messages::metadata_response::{
+            MetadataResponseBroker, MetadataResponsePartition, MetadataResponseTopic,
+        };
+        MetadataResponse::default()
+            .with_brokers(vec![
+                MetadataResponseBroker::default()
+                    .with_node_id(BrokerId::from(1))
+                    .with_host(StrBytes::from_string(address.ip().to_string()))
+                    .with_port(i32::from(address.port())),
+            ])
+            .with_topics(vec![
+                MetadataResponseTopic::default()
+                    .with_name(Some(topic_name()))
+                    .with_partitions(vec![
+                        MetadataResponsePartition::default()
+                            .with_partition_index(0)
+                            .with_leader_id(BrokerId::from(1))
+                            .with_replica_nodes(vec![BrokerId::from(1)])
+                            .with_isr_nodes(vec![BrokerId::from(1)]),
+                    ]),
+            ])
+    }
+
+    fn offset_fetch_response(offset: i64) -> OffsetFetchResponse {
+        use kafka_protocol::messages::offset_fetch_response::{
+            OffsetFetchResponsePartition, OffsetFetchResponseTopic,
+        };
+        OffsetFetchResponse::default().with_topics(vec![
+            OffsetFetchResponseTopic::default()
+                .with_name(topic_name())
+                .with_partitions(vec![
+                    OffsetFetchResponsePartition::default()
+                        .with_partition_index(0)
+                        .with_committed_offset(offset),
+                ]),
+        ])
+    }
+
+    fn list_offset_response(offset: i64) -> ListOffsetsResponse {
+        use kafka_protocol::messages::list_offsets_response::{
+            ListOffsetsPartitionResponse, ListOffsetsTopicResponse,
+        };
+        ListOffsetsResponse::default().with_topics(vec![
+            ListOffsetsTopicResponse::default()
+                .with_name(topic_name())
+                .with_partitions(vec![
+                    ListOffsetsPartitionResponse::default()
+                        .with_partition_index(0)
+                        .with_offset(offset),
+                ]),
+        ])
+    }
+
+    fn commit_response(error: i16) -> OffsetCommitResponse {
+        use kafka_protocol::messages::offset_commit_response::{
+            OffsetCommitResponsePartition, OffsetCommitResponseTopic,
+        };
+        OffsetCommitResponse::default().with_topics(vec![
+            OffsetCommitResponseTopic::default()
+                .with_name(topic_name())
+                .with_partitions(vec![
+                    OffsetCommitResponsePartition::default()
+                        .with_partition_index(0)
+                        .with_error_code(error),
+                ]),
+        ])
+    }
+
+    fn fetch_response(offsets: Vec<i64>, highwatermark: i64) -> FetchResponse {
+        use kafka_protocol::messages::fetch_response::{FetchableTopicResponse, PartitionData};
+        let records = if offsets.is_empty() {
+            None
+        } else {
+            let records: Vec<_> = offsets
+                .into_iter()
+                .enumerate()
+                .map(|(index, offset)| Record {
+                    transactional: false,
+                    control: false,
+                    delete_horizon: false,
+                    partition_leader_epoch: -1,
+                    producer_id: -1,
+                    producer_epoch: -1,
+                    timestamp_type: TimestampType::Creation,
+                    offset,
+                    sequence: i32::try_from(index).unwrap(),
+                    timestamp: 0,
+                    key: None,
+                    value: Some(Bytes::from_static(b"value")),
+                    headers: indexmap::IndexMap::default(),
+                })
+                .collect();
+            let mut data = BytesMut::new();
+            RecordBatchEncoder::encode(
+                &mut data,
+                &records,
+                &RecordEncodeOptions {
+                    version: 2,
+                    compression: Compression::None,
+                },
+            )
+            .unwrap();
+            Some(data.freeze())
+        };
+        FetchResponse::default().with_responses(vec![
+            FetchableTopicResponse::default()
+                .with_topic(topic_name())
+                .with_partitions(vec![
+                    PartitionData::default()
+                        .with_partition_index(0)
+                        .with_high_watermark(highwatermark)
+                        .with_last_stable_offset(highwatermark)
+                        .with_log_start_offset(0)
+                        .with_records(records),
+                ]),
+        ])
+    }
+
+    #[test]
+    fn tcp_poll_filters_a_whole_batch_and_next_request_uses_its_end() {
+        let (consumer, server) = mock_consumer(
+            None,
+            vec![
+                Action::Fetch(vec![0, 1, 2, 3, 4, 5], 6),
+                Action::Fetch(Vec::new(), 6),
+            ],
+        );
+        let mut consumer = consumer.unwrap();
+        consumer.seek("t", 0, 3).unwrap();
+        let sets = consumer.poll().unwrap();
+        assert_eq!(
+            sets.iter_ref()
+                .next()
+                .unwrap()
+                .messages()
+                .iter()
+                .map(|message| message.offset)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert!(consumer.poll().unwrap().is_empty());
+        assert_eq!(server.join().unwrap().fetched, vec![3, 6]);
+    }
+
+    #[test]
+    fn tcp_invalid_record_offsets_are_rejected_even_in_a_batch_prefix() {
+        for invalid in [-1, i64::MIN, i64::MAX] {
+            let (consumer, server) =
+                mock_consumer(None, vec![Action::Fetch(vec![invalid, 11], 30)]);
+            let mut consumer = consumer.unwrap();
+            consumer.seek("t", 0, 10).unwrap();
+            assert!(matches!(
+                consumer.poll(),
+                Err(Error::Protocol(crate::error::ProtocolError::Codec))
+            ));
+            let tp = TopicPartition {
+                topic_ref: consumer.state.topic_ref("t").unwrap(),
+                partition: 0,
+            };
+            assert_eq!(consumer.state.fetch_offsets[&tp].offset, 10);
+            assert_eq!(server.join().unwrap().fetched, vec![10]);
+        }
+    }
+
+    #[test]
+    fn tcp_maximum_commit_is_sent_without_overflow_and_errors_keep_dirty_flags() {
+        let (consumer, server) = mock_consumer(
+            Some(-1),
+            vec![
+                Action::Commit(KafkaCode::TopicAuthorizationFailed as i16),
+                Action::Commit(0),
+            ],
+        );
+        let mut consumer = consumer.unwrap();
+        consumer.consume_message("t", 0, i64::MAX - 1).unwrap();
+        assert!(consumer.commit_consumed().is_err());
+        assert!(
+            consumer
+                .state
+                .consumed_offsets
+                .values()
+                .all(|offset| offset.dirty)
+        );
+        consumer.commit_consumed().unwrap();
+        assert!(
+            consumer
+                .state
+                .consumed_offsets
+                .values()
+                .all(|offset| !offset.dirty)
+        );
+        assert_eq!(server.join().unwrap().committed, vec![i64::MAX, i64::MAX]);
+    }
+
+    #[test]
+    fn tcp_committed_offset_domain_preserves_unset_zero_and_maximum() {
+        for (offset, consumed) in [(-1, None), (0, Some(-1)), (i64::MAX, Some(i64::MAX - 1))] {
+            let (consumer, server) = mock_consumer(Some(offset), Vec::new());
+            let consumer = consumer.unwrap();
+            assert_eq!(consumer.last_consumed_message("t", 0), consumed);
+            assert!(
+                consumer
+                    .state
+                    .consumed_offsets
+                    .values()
+                    .all(|offset| !offset.dirty)
+            );
+            server.join().unwrap();
+        }
+        for offset in [-2, i64::MIN] {
+            let (consumer, server) = mock_consumer(Some(offset), Vec::new());
+            let Err(error) = consumer else {
+                panic!("invalid committed offset must be rejected");
+            };
+            assert!(is_codec_error(&error));
+            server.join().unwrap();
+        }
+    }
+
+    fn is_codec_error(error: &Error) -> bool {
+        match error {
+            Error::Protocol(crate::error::ProtocolError::Codec) => true,
+            Error::BrokerRequestError { source, .. } => is_codec_error(source),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn tcp_malformed_success_ack_keeps_dirty_until_an_explicit_successful_commit() {
+        for sparse in [false, true] {
+            let (consumer, server) = mock_consumer(
+                Some(-1),
+                vec![Action::MalformedCommit(sparse), Action::Commit(0)],
+            );
+            let mut consumer = consumer.unwrap();
+            consumer.consume_message("t", 0, 10).unwrap();
+            assert!(consumer.commit_consumed().is_err());
+            assert!(
+                consumer
+                    .state
+                    .consumed_offsets
+                    .values()
+                    .all(|offset| offset.dirty)
+            );
+            assert_eq!(consumer.last_consumed_message("t", 0), Some(10));
+            consumer.commit_consumed().unwrap();
+            assert!(
+                consumer
+                    .state
+                    .consumed_offsets
+                    .values()
+                    .all(|offset| !offset.dirty)
+            );
+            assert_eq!(server.join().unwrap().committed, vec![11, 11]);
+        }
     }
 }

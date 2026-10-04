@@ -243,7 +243,7 @@ fn load_consumed_offsets(
     )?;
     for (topic, pos) in topic_offsets {
         for po in pos {
-            if po.offset != -1 {
+            if let Some(offset) = consumed_offset_from_committed(po.offset)? {
                 offs.insert(
                     TopicPartition {
                         topic_ref: assignments.topic_ref(&topic).expect("non-assigned topic"),
@@ -252,7 +252,7 @@ fn load_consumed_offsets(
                     // the committed offset is the next message to be fetched, so
                     // the last consumed message is that - 1
                     ConsumedOffset {
-                        offset: po.offset - 1,
+                        offset,
                         dirty: false,
                     },
                 );
@@ -263,6 +263,16 @@ fn load_consumed_offsets(
     debug!("load_consumed_offsets: constructed consumed: {:#?}", offs);
 
     Ok(offs)
+}
+
+fn consumed_offset_from_committed(committed: i64) -> Result<Option<i64>> {
+    if committed == -1 {
+        return Ok(None);
+    }
+    if committed < 0 {
+        return Err(Error::codec());
+    }
+    Ok(Some(committed.checked_sub(1).ok_or_else(Error::codec)?))
 }
 
 /// Fetches the "next fetch" offsets/states based on the specified
@@ -436,7 +446,29 @@ impl fmt::Debug for TopicPartitionsDebug<'_> {
 
 #[cfg(test)]
 mod offset_tests {
-    use super::next_fetch_offset;
+    use super::{consumed_offset_from_committed, next_fetch_offset};
+    use crate::error::{Error, ProtocolError};
+
+    #[test]
+    fn committed_offsets_preserve_unset_zero_and_maximum_boundaries() {
+        assert_eq!(consumed_offset_from_committed(-1).unwrap(), None);
+        assert_eq!(consumed_offset_from_committed(0).unwrap(), Some(-1));
+        assert_eq!(consumed_offset_from_committed(1).unwrap(), Some(0));
+        assert_eq!(
+            consumed_offset_from_committed(i64::MAX).unwrap(),
+            Some(i64::MAX - 1)
+        );
+    }
+
+    #[test]
+    fn malformed_committed_offsets_return_codec_errors() {
+        for offset in [-2, i64::MIN] {
+            assert!(matches!(
+                consumed_offset_from_committed(offset),
+                Err(Error::Protocol(ProtocolError::Codec))
+            ));
+        }
+    }
 
     #[test]
     fn committed_offset_at_earliest_is_valid() {
