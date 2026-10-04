@@ -224,8 +224,9 @@ complete write clears the batch without claiming broker confirmation.
 Async typed requests retain pending correlation IDs across send/receive, reject mismatched IDs or extra response
 bytes, and retire failed or cancelled connections before their next use. Raw `send` and `read_exact` preserve their
 individual IO semantics; callers own protocol boundaries across separate raw operations. Raw `request_response`
-protects the complete frame exchange and returns the payload for caller decoding. Low-level Produce failures after
-a sending attempt do not fail over to another broker automatically.
+protects the complete frame exchange and returns the payload for caller decoding. Async bootstrap failover continues
+after connection setup errors, but after sending begins only explicitly read-only APIs may try another bootstrap host;
+mutating and unknown raw typed requests return uncertain delivery errors without automatic replay.
 
 Sync typed requests also validate pending correlation IDs, use the actual request version for decoding, and
 reject trailing payload bytes. Invalid responses close the connection. Group v1 responses use generated layouts

@@ -26,7 +26,7 @@ use kafka_protocol::messages::{ApiKey, ApiVersionsRequest, RequestHeader};
 use kafka_protocol::protocol::StrBytes;
 
 use crate::connection::{AsyncConnection, AsyncConnectionPool};
-use crate::wire::{get_kp_response, send_kp_request};
+use crate::wire::{encode_kp_request, get_kp_response};
 
 /// An async Kafka client for bootstrap and connection management.
 ///
@@ -146,12 +146,12 @@ impl AsyncKafkaClient {
 
     /// Ensures the client has at least one active connection.
     ///
-    /// If the client was created with bootstrap hosts and the internal pool is
-    /// currently empty, this will attempt to connect to the bootstrap hosts in
-    /// order until one succeeds. It is a no-op when `bootstrap_hosts` is empty
-    /// or when the pool already contains connections.
+    /// If the client was created with bootstrap hosts and the internal pool has
+    /// no reusable connection, this attempts to reconnect to its bootstrap hosts.
+    /// It is a no-op when `bootstrap_hosts` is empty
+    /// or when the pool already has a reusable connection.
     pub async fn ensure_connected(&mut self) -> Result<()> {
-        if !self.bootstrap_hosts.is_empty() && self.pool.hosts().is_empty() {
+        if !self.bootstrap_hosts.is_empty() && !self.pool.has_reusable_connection() {
             let security = self.security.clone();
             let connected =
                 connect_any_bootstrap(&mut self.pool, &self.bootstrap_hosts, security.as_ref())
@@ -231,42 +231,69 @@ impl AsyncKafkaClient {
         Req: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
         Resp: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
     {
-        let hosts = self.request_hosts();
+        let fallback_hosts = if self.bootstrap_hosts.is_empty() {
+            Some(
+                self.connected_hosts()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        let host_count = fallback_hosts
+            .as_ref()
+            .map_or(self.bootstrap_hosts.len(), Vec::len);
         let mut last_err: Option<Error> = None;
+        let retry_after_send = protocol_request_is_read_only(header.request_api_key);
 
-        for host in hosts {
+        for host_index in 0..host_count {
+            let host = fallback_hosts.as_ref().map_or_else(
+                || self.bootstrap_hosts[host_index].as_str(),
+                |hosts| hosts[host_index].as_str(),
+            );
             let effective_api_version = match version_mode {
                 RequestVersionMode::Exact => api_version,
                 RequestVersionMode::Negotiated => {
                     self.api_versions
-                        .negotiate(&host, header.request_api_key, api_version)
+                        .negotiate(host, header.request_api_key, api_version)
                 }
             };
-            let conn = match self.get_connection(&host).await {
+            let mut header = header.clone();
+            header.request_api_version = effective_api_version;
+            let frame = match encode_kp_request(&header, request, effective_api_version) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    // This broker has not been contacted, so another host may
+                    // advertise a request version that can encode this body.
+                    last_err = Some(error.with_broker_context(host, operation));
+                    continue;
+                }
+            };
+            let conn = match self.pool.get(host).await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    last_err = Some(e.with_broker_context(&host, operation));
+                    last_err = Some(e.with_broker_context(host, operation));
                     continue;
                 }
             };
 
-            let mut header = header.clone();
-            header.request_api_version = effective_api_version;
-
-            match send_kp_request(conn, &header, request, effective_api_version).await {
+            let sent = conn.send_request(&frame, header.correlation_id).await;
+            drop(frame);
+            match sent {
                 Ok(()) => match get_kp_response::<Resp>(conn, effective_api_version).await {
-                    Ok(resp) => return Ok((host, resp)),
+                    Ok(resp) => return Ok((host.to_owned(), resp)),
                     Err(e) => {
-                        let error = e.with_broker_context(&host, operation);
-                        if header.request_api_key == ApiKey::Produce as i16 {
+                        let error = e.with_broker_context(host, operation);
+                        if !retry_after_send {
                             return Err(error);
                         }
                         last_err = Some(error);
                     }
                 },
                 Err(e) => {
-                    let error = e.with_broker_context(&host, operation);
-                    if header.request_api_key == ApiKey::Produce as i16 {
+                    let error = e.with_broker_context(host, operation);
+                    if !retry_after_send {
                         return Err(error);
                     }
                     last_err = Some(error);
@@ -283,6 +310,11 @@ impl AsyncKafkaClient {
     /// the stable high-level async producer and consumer methods. Callers are
     /// responsible for choosing a valid `api_key`, `api_version`, and generated
     /// request/response type pair.
+    ///
+    /// Connection setup failures may select another bootstrap broker. After
+    /// sending starts, only recognized read-only APIs may fail over. Mutation
+    /// and unclassified API errors are returned without replay; their delivery
+    /// outcome may be uncertain. Local encoding errors occur before connection setup.
     ///
     /// # Errors
     ///
@@ -518,17 +550,40 @@ impl AsyncKafkaClient {
         )
         .await
     }
+}
 
-    fn request_hosts(&self) -> Vec<String> {
-        if self.bootstrap_hosts.is_empty() {
-            self.connected_hosts()
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
-        } else {
-            self.bootstrap_hosts.clone()
-        }
-    }
+// API-key-only classification is deliberately conservative for body-dependent
+// or stateful operations, including Metadata auto-creation, Fetch replica/session
+// requests, ShareFetch, heartbeats, and telemetry registration.
+fn protocol_request_is_read_only(api_key: i16) -> bool {
+    matches!(
+        ApiKey::try_from(api_key),
+        Ok(ApiKey::ApiVersions
+            | ApiKey::FindCoordinator
+            | ApiKey::ListOffsets
+            | ApiKey::OffsetFetch
+            | ApiKey::FetchSnapshot
+            | ApiKey::DescribeCluster
+            | ApiKey::DescribeAcls
+            | ApiKey::DescribeConfigs
+            | ApiKey::DescribeDelegationToken
+            | ApiKey::DescribeLogDirs
+            | ApiKey::DescribeQuorum
+            | ApiKey::ListPartitionReassignments
+            | ApiKey::OffsetForLeaderEpoch
+            | ApiKey::DescribeClientQuotas
+            | ApiKey::DescribeUserScramCredentials
+            | ApiKey::DescribeProducers
+            | ApiKey::ListTransactions
+            | ApiKey::DescribeTransactions
+            | ApiKey::DescribeTopicPartitions
+            | ApiKey::DescribeGroups
+            | ApiKey::ListGroups
+            | ApiKey::ConsumerGroupDescribe
+            | ApiKey::ShareGroupDescribe
+            | ApiKey::DescribeShareGroupOffsets
+            | ApiKey::ListConfigResources)
+    )
 }
 
 async fn connect_any_bootstrap(
@@ -571,17 +626,407 @@ fn duration_to_millis_i32(timeout: Duration) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Buf;
+    use bytes::{Buf, Bytes, BytesMut};
+    use kafka_protocol::messages::api_versions_response::ApiVersion;
+    use kafka_protocol::messages::create_topics_response::CreatableTopicResult;
+    use kafka_protocol::messages::delete_topics_response::DeletableTopicResult;
     use kafka_protocol::messages::{
-        ApiKey, ApiVersionsRequest, ApiVersionsResponse, CreateTopicsRequest, ProduceRequest,
-        ProduceResponse,
+        ApiKey, ApiVersionsRequest, ApiVersionsResponse, CreateTopicsRequest, CreateTopicsResponse,
+        DeleteTopicsRequest, DeleteTopicsResponse, ProduceRequest, ProduceResponse,
+        RenewDelegationTokenRequest, RenewDelegationTokenResponse, ResponseHeader,
     };
-    use kafka_protocol::protocol::{Decodable, HeaderVersion};
+    use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
     use rustfs_kafka::error::{ConnectionError, Error};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
+
+    #[test]
+    fn sending_attempt_failover_is_limited_to_explicit_read_only_keys() {
+        for key in [
+            ApiKey::ApiVersions,
+            ApiKey::FindCoordinator,
+            ApiKey::OffsetFetch,
+            ApiKey::DescribeCluster,
+        ] {
+            assert!(protocol_request_is_read_only(key as i16));
+        }
+        for key in [
+            ApiKey::Produce,
+            ApiKey::CreateTopics,
+            ApiKey::DeleteTopics,
+            ApiKey::RenewDelegationToken,
+            ApiKey::AlterConfigs,
+            ApiKey::OffsetCommit,
+            ApiKey::ConsumerGroupHeartbeat,
+            ApiKey::ShareGroupHeartbeat,
+            ApiKey::ShareFetch,
+            ApiKey::ShareAcknowledge,
+            ApiKey::GetTelemetrySubscriptions,
+            ApiKey::PushTelemetry,
+            ApiKey::Metadata,
+            ApiKey::Fetch,
+        ] {
+            assert!(!protocol_request_is_read_only(key as i16));
+        }
+        assert!(!protocol_request_is_read_only(i16::MAX));
+    }
+
+    #[derive(Clone, Copy)]
+    enum MutationCase {
+        Create,
+        Delete,
+        RawRenew,
+        RawUnknown,
+    }
+
+    #[derive(Clone, Copy)]
+    enum ReplyFault {
+        Eof,
+        Correlation,
+    }
+
+    async fn failover_client(hosts: Vec<String>) -> AsyncKafkaClient {
+        // Bypass parallel bootstrap setup so any backup socket comes from the
+        // operation under test, not an independent constructor connection.
+        let mut client = AsyncKafkaClient::with_client_id(vec![], "async-failover-test".to_owned())
+            .await
+            .unwrap();
+        client.bootstrap_hosts = hosts;
+        client
+    }
+
+    async fn read_probe_request<R: Decodable + HeaderVersion>(
+        socket: &mut TcpStream,
+        api_key: i16,
+        version: i16,
+    ) -> (RequestHeader, R) {
+        let size = socket.read_i32().await.unwrap();
+        let mut frame = vec![0; usize::try_from(size).unwrap()];
+        socket.read_exact(&mut frame).await.unwrap();
+        let mut bytes = Bytes::from(frame);
+        let header = RequestHeader::decode(&mut bytes, R::header_version(version)).unwrap();
+        assert_eq!(header.request_api_key, api_key);
+        assert_eq!(header.request_api_version, version);
+        assert_eq!(
+            header.client_id.as_ref().unwrap().as_str(),
+            "async-failover-test"
+        );
+        let request = R::decode(&mut bytes, version).unwrap();
+        assert!(bytes.is_empty());
+        (header, request)
+    }
+
+    async fn write_probe_response<R: Encodable + HeaderVersion>(
+        socket: &mut TcpStream,
+        header: &RequestHeader,
+        response: &R,
+        fault: Option<ReplyFault>,
+    ) {
+        if matches!(fault, Some(ReplyFault::Eof)) {
+            return;
+        }
+        let mut frame = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(
+                header.correlation_id + i32::from(matches!(fault, Some(ReplyFault::Correlation))),
+            )
+            .encode(&mut frame, R::header_version(header.request_api_version))
+            .unwrap();
+        response
+            .encode(&mut frame, header.request_api_version)
+            .unwrap();
+        socket
+            .write_i32(i32::try_from(frame.len()).unwrap())
+            .await
+            .unwrap();
+        socket.write_all(&frame).await.unwrap();
+    }
+
+    fn create_probe_response() -> CreateTopicsResponse {
+        CreateTopicsResponse::default().with_topics(vec![
+            CreatableTopicResult::default().with_name(StrBytes::from_static_str("topic-a").into()),
+        ])
+    }
+
+    fn delete_probe_response() -> DeleteTopicsResponse {
+        DeleteTopicsResponse::default().with_responses(vec![
+            DeletableTopicResult::default()
+                .with_name(Some(StrBytes::from_static_str("topic-a").into())),
+        ])
+    }
+
+    async fn invoke_mutation(client: &mut AsyncKafkaClient, case: MutationCase) -> Result<()> {
+        match case {
+            MutationCase::Create => client
+                .create_topics(&[TopicConfig::new("topic-a")], Duration::from_secs(1))
+                .await
+                .map(|_| ()),
+            MutationCase::Delete => client
+                .delete_topics(&["topic-a"], Duration::from_secs(1))
+                .await
+                .map(|_| ()),
+            MutationCase::RawRenew => {
+                let request = RenewDelegationTokenRequest::default()
+                    .with_hmac(Bytes::from_static(b"mock-token"))
+                    .with_renew_period_ms(1_234);
+                client
+                    .send_raw_protocol_request::<_, RenewDelegationTokenResponse>(
+                        ApiKey::RenewDelegationToken as i16,
+                        1,
+                        &request,
+                    )
+                    .await
+                    .map(|_| ())
+            }
+            MutationCase::RawUnknown => {
+                let (_, request) = build_create_topics_protocol_request(
+                    1,
+                    "async-failover-test",
+                    &[TopicConfig::new("topic-a")],
+                    1_000,
+                );
+                client
+                    .send_raw_protocol_request::<_, CreateTopicsResponse>(i16::MAX, 2, &request)
+                    .await
+                    .map(|_| ())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_and_raw_mutations_return_the_primary_failure_without_replay() {
+        for case in [
+            MutationCase::Create,
+            MutationCase::Delete,
+            MutationCase::RawRenew,
+            MutationCase::RawUnknown,
+        ] {
+            for fault in [ReplyFault::Eof, ReplyFault::Correlation] {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let primary = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let backup = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let primary_host = primary.local_addr().unwrap().to_string();
+                    let backup_host = backup.local_addr().unwrap().to_string();
+                    let server = tokio::spawn(async move {
+                        let (mut socket, _) = primary.accept().await.unwrap();
+                        match case {
+                            MutationCase::Create | MutationCase::RawUnknown => {
+                                let key = if matches!(case, MutationCase::RawUnknown) { i16::MAX } else { ApiKey::CreateTopics as i16 };
+                                let (header, request) = read_probe_request::<CreateTopicsRequest>(&mut socket, key, 2).await;
+                                assert_eq!(request.topics.len(), 1);
+                                assert_eq!(request.topics[0].name.as_str(), "topic-a");
+                                write_probe_response(&mut socket, &header, &create_probe_response(), Some(fault)).await;
+                            }
+                            MutationCase::Delete => {
+                                let (header, request) = read_probe_request::<DeleteTopicsRequest>(&mut socket, ApiKey::DeleteTopics as i16, 2).await;
+                                assert_eq!(request.topic_names.len(), 1);
+                                assert_eq!(request.topic_names[0].as_str(), "topic-a");
+                                write_probe_response(&mut socket, &header, &delete_probe_response(), Some(fault)).await;
+                            }
+                            MutationCase::RawRenew => {
+                                let (header, request) = read_probe_request::<RenewDelegationTokenRequest>(&mut socket, ApiKey::RenewDelegationToken as i16, 1).await;
+                                assert_eq!(request.hmac.as_ref(), b"mock-token");
+                                assert_eq!(request.renew_period_ms, 1_234);
+                                write_probe_response(&mut socket, &header, &RenewDelegationTokenResponse::default(), Some(fault)).await;
+                            }
+                        }
+                    });
+                    let mut client = failover_client(vec![primary_host.clone(), backup_host]).await;
+                    let error = invoke_mutation(&mut client, case).await.unwrap_err();
+                    match error {
+                        Error::BrokerRequestError { broker, source, .. } => {
+                            assert_eq!(broker, primary_host);
+                            match fault {
+                                ReplyFault::Eof => assert!(matches!(*source, Error::Connection(ConnectionError::Io(ref error)) if error.kind() == std::io::ErrorKind::UnexpectedEof)),
+                                ReplyFault::Correlation => assert!(matches!(*source, Error::Protocol(ProtocolError::Codec))),
+                            }
+                        }
+                        error => panic!("unexpected mutation error: {error:?}"),
+                    }
+                    server.await.unwrap();
+                    assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(backup.poll_accept(cx).is_pending())).await);
+                }).await.expect("mutation must return its first uncertain-delivery failure");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_mutation_response_followed_by_eof_succeeds_without_backup_replay() {
+        for delete in [false, true] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let primary = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let backup = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let primary_host = primary.local_addr().unwrap().to_string();
+                let backup_host = backup.local_addr().unwrap().to_string();
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = primary.accept().await.unwrap();
+                    if delete {
+                        let (header, _) = read_probe_request::<DeleteTopicsRequest>(
+                            &mut socket,
+                            ApiKey::DeleteTopics as i16,
+                            2,
+                        )
+                        .await;
+                        write_probe_response(&mut socket, &header, &delete_probe_response(), None)
+                            .await;
+                    } else {
+                        let (header, _) = read_probe_request::<CreateTopicsRequest>(
+                            &mut socket,
+                            ApiKey::CreateTopics as i16,
+                            2,
+                        )
+                        .await;
+                        write_probe_response(&mut socket, &header, &create_probe_response(), None)
+                            .await;
+                    }
+                    // A valid complete response remains successful when FIN follows it.
+                });
+                let mut client = failover_client(vec![primary_host, backup_host]).await;
+                if delete {
+                    let response = client
+                        .delete_topics(&["topic-a"], Duration::from_secs(1))
+                        .await
+                        .unwrap();
+                    assert_eq!(response.results.len(), 1);
+                    assert_eq!(response.results[0].error_code, 0);
+                } else {
+                    let response = client
+                        .create_topics(&[TopicConfig::new("topic-a")], Duration::from_secs(1))
+                        .await
+                        .unwrap();
+                    assert_eq!(response.results.len(), 1);
+                    assert_eq!(response.results[0].error_code, 0);
+                }
+                server.await.unwrap();
+                assert!(
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(
+                        backup.poll_accept(cx).is_pending()
+                    ))
+                    .await
+                );
+            })
+            .await
+            .expect("valid mutation response must be returned before following EOF");
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_failover_updates_only_the_responding_broker_version_cache() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let primary = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backup = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let primary_host = primary.local_addr().unwrap().to_string();
+            let backup_host = backup.local_addr().unwrap().to_string();
+            let first = tokio::spawn(async move {
+                let (mut socket, _) = primary.accept().await.unwrap();
+                read_probe_request::<ApiVersionsRequest>(
+                    &mut socket,
+                    ApiKey::ApiVersions as i16,
+                    0,
+                )
+                .await;
+            });
+            let second = tokio::spawn(async move {
+                let (mut socket, _) = backup.accept().await.unwrap();
+                let (header, _) = read_probe_request::<ApiVersionsRequest>(
+                    &mut socket,
+                    ApiKey::ApiVersions as i16,
+                    0,
+                )
+                .await;
+                assert_eq!(header.correlation_id, 1);
+                let response = ApiVersionsResponse::default().with_api_keys(vec![
+                    ApiVersion::default()
+                        .with_api_key(ApiKey::CreateTopics as i16)
+                        .with_min_version(4)
+                        .with_max_version(7),
+                ]);
+                write_probe_response(&mut socket, &header, &response, None).await;
+            });
+            let mut client = failover_client(vec![primary_host.clone(), backup_host.clone()]).await;
+            let original = client.resolved_api_version(&primary_host, ApiKey::CreateTopics as i16);
+            let response = client.fetch_api_versions().await.unwrap();
+            assert_eq!(response.api_keys.len(), 1);
+            assert_eq!(
+                client.resolved_api_version(&backup_host, ApiKey::CreateTopics as i16),
+                4
+            );
+            assert_eq!(
+                client.resolved_api_version(&primary_host, ApiKey::CreateTopics as i16),
+                original
+            );
+            first.await.unwrap();
+            second.await.unwrap();
+        })
+        .await
+        .expect("recognized read-only API may try another broker after EOF");
+    }
+
+    #[tokio::test]
+    async fn mutation_connection_setup_failure_can_select_another_bootstrap() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let unavailable = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let unavailable_host = unavailable.local_addr().unwrap().to_string();
+            let backup = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let backup_host = backup.local_addr().unwrap().to_string();
+            drop(unavailable);
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = backup.accept().await.unwrap();
+                let (header, request) = read_probe_request::<CreateTopicsRequest>(
+                    &mut socket,
+                    ApiKey::CreateTopics as i16,
+                    2,
+                )
+                .await;
+                assert_eq!(request.topics.len(), 1);
+                write_probe_response(&mut socket, &header, &create_probe_response(), None).await;
+            });
+            let mut client = failover_client(vec![unavailable_host, backup_host]).await;
+            assert_eq!(
+                client
+                    .create_topics(&[TopicConfig::new("topic-a")], Duration::from_secs(1))
+                    .await
+                    .unwrap()
+                    .results
+                    .len(),
+                1
+            );
+            server.await.unwrap();
+        })
+        .await
+        .expect("pre-send connection failure permits mutation bootstrap failover");
+    }
+
+    #[tokio::test]
+    async fn invalid_mutation_is_rejected_before_any_broker_connection() {
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = failover_client(vec![
+            first.local_addr().unwrap().to_string(),
+            second.local_addr().unwrap().to_string(),
+        ])
+        .await;
+        let result = client
+            .create_topics(
+                &[TopicConfig::new("x".repeat(32_768))],
+                Duration::from_secs(1),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::BrokerRequestError { source, .. }) if matches!(*source, Error::Protocol(ProtocolError::Codec)))
+        );
+        assert!(client.connected_hosts().is_empty());
+        for listener in [&first, &second] {
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    listener.poll_accept(cx).is_pending()
+                ))
+                .await
+            );
+        }
+    }
 
     #[tokio::test]
     async fn raw_produce_is_not_replayed_on_another_broker_after_response_eof() {

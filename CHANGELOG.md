@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Async request hot paths iterate the configured bootstrap hosts without cloning the host vector. `ensure_connected` checks the pool for any reusable connection with a short-circuit predicate.
 - Documented verified Fetch cursors and transaction control filtering, complete Produce acknowledgements, batch/transaction local guards, asynchronous preflight memory tradeoffs, and production frame encoding CPU measurement boundaries.
 - Produce encoding fallibly reserves known contiguous record runs before pushing SDK records. Added fixed real-builder/full-frame fixtures with SDK decode verification and an ignored release CPU measurement that preserves all warmup/sample data for an isolated serial ABBA comparison; no end-to-end throughput or allocation-count guarantee is implied.
 - Batch producers cache each partition payload total and use it when retiring unique successful confirmations, avoiding repeated record scans. Checked record/byte counters and post-partitioner header validation reject local errors before buffer mutation; empty acknowledgement wrappers remain malformed while confirmed records retire normally.
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Async typed-protocol failover after a send is limited to an explicit read-only API list. Mutations and unknown raw request keys return the first uncertain error without replay; failures before connection/request sending may try another bootstrap host.
 - Sync consumers reject negative seek cursors and consume requests for unassigned partitions. OffsetOutOfRange responses with a negative or unknown high watermark return the broker error without publishing the sentinel or completing pending retries.
 - Async Produce encodes all complete broker frames before Produce IO and retains lightweight acknowledgement identities instead of record bodies. Completed writes release their frames before waiting for ACKs; malformed schemas and negative successful offsets take codec-error priority. Preflight can retain unsent broker frames concurrently and does not introduce automatic replay.
 - Transactional producers validate headers again after custom partitioners run and before metadata or enrollment IO, preserving active transactions and sequence state on local rejection. Successful sequence updates move the target key into its map instead of cloning it.

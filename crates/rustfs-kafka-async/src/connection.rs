@@ -821,6 +821,11 @@ impl AsyncConnectionPool {
         self.connections.insert(host, connection);
     }
 
+    /// Returns whether a connection can begin a request without reconnecting.
+    pub(crate) fn has_reusable_connection(&self) -> bool {
+        self.connections.values().any(AsyncConnection::is_reusable)
+    }
+
     /// Returns the list of connected hosts.
     #[must_use]
     pub fn hosts(&self) -> Vec<&str> {
@@ -1013,6 +1018,7 @@ mod tests {
             }
         }
         assert!(pool.hosts().is_empty());
+        assert!(!pool.has_reusable_connection());
         for correlation_id in [2, 3] {
             let conn = checked(pool.get(&host)).await.unwrap();
             checked(send_api_versions(conn, correlation_id))
@@ -1026,6 +1032,7 @@ mod tests {
                 0,
             );
             assert_eq!(pool.hosts(), [host.as_str()]);
+            assert!(pool.has_reusable_connection());
         }
         checked(server).await.unwrap();
     }
@@ -1443,12 +1450,14 @@ mod tests {
     fn pool_new_creates_empty_pool() {
         let pool = AsyncConnectionPool::new();
         assert!(pool.hosts().is_empty());
+        assert!(!pool.has_reusable_connection());
     }
 
     #[test]
     fn pool_default_matches_new() {
         let pool = AsyncConnectionPool::default();
         assert!(pool.hosts().is_empty());
+        assert!(!pool.has_reusable_connection());
     }
 
     #[tokio::test]

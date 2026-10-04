@@ -86,7 +86,8 @@ async fn main() -> rustfs_kafka::Result<()> {
   poll can query again. Routing snapshots are checked before publication; coordinator transport failures and exhausted
   coordinator errors allow rediscovery, while leader failures trigger metadata refresh without clearing group state.
 - Typed responses validate correlation IDs and full payload consumption. Connections interrupted by cancellation
-  or transport failure are discarded on their next checkout, without automatically replaying Produce.
+  or transport failure are discarded on their next checkout. After sending begins, bootstrap failover is limited to
+  explicitly read-only APIs; mutations and unknown raw typed requests are returned without automatic replay.
 - Raw `send`/`read_exact` protect individual IO operations; callers own protocol boundaries between separate calls.
 - Native Fetch hides COMMIT/ABORT control markers, retains transactional business records in read-uncommitted mode,
   and advances through verified empty or compacted batches. The batch cursor is independent of the high watermark.
