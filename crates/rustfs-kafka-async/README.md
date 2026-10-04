@@ -74,6 +74,12 @@ async fn main() -> rustfs_kafka::Result<()> {
   tails before offset publication. Poll grouping borrows cached host/topic names and avoids an intermediate vector.
 - Offset initialization retries coordinator migration/loading errors within the configured limit and invalidates
   the coordinator cache after the final failed attempt, preserving offsets and pending commits.
+- High-level Fetch validates all requested partitions and message offsets, filters older batch prefixes, and stores
+  each topic key once per progress map. Use `MessageSets::iter_ref` for borrowed message views.
+- OffsetFetch/Commit success responses require complete unique partition acknowledgements. Malformed responses
+  preserve progress and pending commits; only an explicit `-1` committed offset selects the fallback.
+- Duplicate header keys are rejected before locking, routing, or IO because the current codec cannot preserve their
+  ordered values. Unique headers keep their values and order.
 - Typed responses validate correlation IDs and full payload consumption. Connections interrupted by cancellation
   or transport failure are discarded on their next checkout, without automatically replaying Produce.
 - Raw `send`/`read_exact` protect individual IO operations; callers own protocol boundaries between separate calls.

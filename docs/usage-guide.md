@@ -149,6 +149,17 @@ coordinator errors (`NotCoordinatorForGroup`, `GroupCoordinatorNotAvailable`, `G
 the coordinator cache, retry within the configured limit, and retain offsets and uncommitted progress. An exhausted
 attempt also invalidates the cache so a later poll can discover the coordinator again.
 
+Kafka can return a complete record batch containing records before the requested position. High-level sync and
+async consumers filter that prefix before delivery, so seeking or restoring a committed position inside a batch
+does not redeliver older records. Every record is validated before filtering: negative or maximum `i64` message
+offsets are codec errors, while `i64::MAX - 1` can advance to the valid next position `i64::MAX`. Failed polls retain
+existing fetch progress and pending commits. Async progress maps store each topic key once across its partitions.
+
+Use `message_sets.iter_ref()` to process borrowed sets without allocating topic strings or cloning message vectors.
+Each view exposes `topic()`, `partition()`, and `messages()`. Sync callers can mark a view with
+`consumer.consume_messageset_ref(&view)`. `view.to_owned()` produces the existing owned `MessageSet` when it must
+outlive the response; `iter()` and `IntoIterator` retain their owned behavior.
+
 `StickyPartitioner` keeps its batch state per topic and chooses another available partition if the previous one
 loses its leader. Explicit record partitions remain unchanged. Calling `with_partitioner` on either sync producer
 builder preserves previously selected TLS, client ID, and acknowledgement settings. The regular producer also
@@ -209,6 +220,24 @@ decision. Explicitly read-only queries retain failover. Frame encoding happens b
 Sync response buffers use checked size conversion and fallible reservation; failed allocation or exact reads
 close the connection and clear pending response context. Consumer responses containing unknown cached topics or
 partitions return codec errors while retaining fetch progress and pending retries.
+
+Successful OffsetFetch and OffsetCommit replies must acknowledge every requested topic/partition exactly once.
+Missing, duplicated, or extra acknowledgements return codec errors without fallback or clearing pending commits;
+malformed commit acknowledgements are not automatically replayed. OffsetFetch `-1` explicitly means unset; values
+below `-1` are invalid. Calling `consume_message` with a negative offset or `i64::MAX` returns a configuration error
+before changing consumed state. Local invalid pending commit values are also rejected before IO.
+
+Full metadata refresh fetches and validates the replacement before publishing it. A network or malformed snapshot
+leaves existing metadata and coordinator caches available; successful replacement clears caches tied to reset broker
+slots. Incremental refresh preserves those caches. FindCoordinator can update a broker's endpoint without changing
+its slot, so existing references follow the reported host/port. Invalid broker descriptors or partition IDs fail
+before publishing any metadata.
+
+Ordinary `Producer` builders reject idempotence or transaction IDs at `create`; use `TransactionalProducer` for the
+implemented transaction flow. Kafka supports ordered duplicate header keys, but the current record codec uses a map
+and cannot preserve them. Producers now return a configuration error before routing or sending such records.
+`Headers::validate_unique` and `producer::validate_unique_headers` expose the same check. Unique keys, empty values,
+and key case remain unchanged; local rejection retains active transaction state and buffered delivery obligations.
 
 ### Transactional Producer
 
@@ -311,6 +340,19 @@ cargo bench -p rustfs-kafka --bench protocol_serialization
 
 These fixed-input benchmarks measure generated Produce frame encoding and multi-batch Fetch decoding. They
 provide codec timings and throughput, not private adapter allocation costs or end-to-end broker throughput.
+
+Run the ignored consumer progress CPU measurement separately, with no concurrent builds or broker tests:
+
+```bash
+cargo test -p rustfs-kafka-async --release --lib consumer::consumer_progress_bench::native_consumer_progress_cpu_bench -- --ignored --exact --nocapture --test-threads=1
+```
+
+This measures the production Fetch identity/offset validation, prefix filtering, staging, and progress publication
+for two layouts of 1000 topic/partition pairs with populated progress maps. Setup, decoding, network IO, commit,
+map reset, and result verification are outside timing. The default is 256 warmup calls and nine samples of 1024
+calls; every sample verifies all published offsets. Compare revisions in separate Cargo target directories, verify
+the source and executable for each revision, and retain all A1-B1-B2-A2 samples. A baseline drift above 15 percent
+precludes a performance conclusion. This measurement does not establish allocation counts or broker throughput.
 
 Compare sequential acknowledged sends with native batching against an existing plaintext topic:
 

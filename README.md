@@ -96,6 +96,13 @@ only the codecs you need, for example `features = ["security", "gzip"]`.
   ACKs become failed confirmations, preserving those records in buffered producers.
 - Admin mutations return errors after a sending attempt without automatic replay; explicitly read-only APIs retain
   broker failover. Response buffer reservations fail with errors and retire incomplete connections.
+- High-level consumers filter records before the requested offset, including recovery inside a record batch, and
+  reject invalid offsets or incomplete partition responses before publishing progress.
+- `MessageSets::iter_ref` borrows topic names and message slices; the existing owned iterator remains available.
+- Metadata replacement preserves the previous snapshot on failure, clears dependent coordinator caches on success,
+  and uses newly discovered coordinator endpoints. Offset Fetch/Commit responses require complete acknowledgements.
+- Ordinary producers reject unsupported idempotence/transaction options at creation. Record encoding rejects duplicate
+  header keys before routing or IO because the current codec cannot preserve their ordered values.
 
 `TransactionalProducer` uses a separate transaction coordinator and sends transaction IDs, producer identities,
 epochs, and sequences in transactional batches. Commit and abort preserve sequence state. A transaction RPC failure
