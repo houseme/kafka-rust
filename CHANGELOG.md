@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- The sync secure test runner waits for both standard fixture topics before starting metadata checks.
 - Async typed-protocol failover after a send is limited to an explicit read-only API list. Mutations and unknown raw request keys return the first uncertain error without replay; failures before connection/request sending may try another bootstrap host.
 - Sync consumers reject negative seek cursors and consume requests for unassigned partitions. OffsetOutOfRange responses with a negative or unknown high watermark return the broker error without publishing the sentinel or completing pending retries.
 - Async Produce encodes all complete broker frames before Produce IO and retains lightweight acknowledgement identities instead of record bodies. Completed writes release their frames before waiting for ACKs; malformed schemas and negative successful offsets take codec-error priority. Preflight can retain unsent broker frames concurrently and does not introduce automatic replay.
