@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-07
+
 ### Added
 
 - Producer and batch builder options plus producer client accessors remain available after selecting a custom partitioner.
