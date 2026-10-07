@@ -17,6 +17,7 @@ use crate::tls::{RustlsConnector, TlsConfig, TlsStream};
 #[derive(Clone)]
 pub struct SecurityConfig {
     pub(crate) tls_config: TlsConfig,
+    pub(crate) tls_enabled: bool,
     pub(crate) sasl_config: Option<SaslConfig>,
 }
 
@@ -73,6 +74,7 @@ impl SecurityConfig {
     pub fn new() -> Self {
         SecurityConfig {
             tls_config: TlsConfig::new(),
+            tls_enabled: true,
             sasl_config: None,
         }
     }
@@ -82,8 +84,25 @@ impl SecurityConfig {
     pub fn from_tls_config(tls_config: TlsConfig) -> SecurityConfig {
         SecurityConfig {
             tls_config,
+            tls_enabled: true,
             sasl_config: None,
         }
+    }
+
+    /// Selects whether broker connections use TLS.
+    ///
+    /// TLS is enabled by default. Disabling it sends Kafka traffic, including
+    /// SASL credentials and event data, in plaintext.
+    #[must_use]
+    pub fn with_tls_enabled(mut self, enabled: bool) -> SecurityConfig {
+        self.tls_enabled = enabled;
+        self
+    }
+
+    /// Returns whether broker connections use TLS.
+    #[must_use]
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_enabled
     }
 
     /// Initiates a client-side TLS session with/without performing hostname verification.
@@ -147,8 +166,8 @@ impl fmt::Debug for SecurityConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SecurityConfig {{ verify_hostname: {} }}",
-            self.tls_config.verify_hostname
+            "SecurityConfig {{ tls_enabled: {}, verify_hostname: {} }}",
+            self.tls_enabled, self.tls_config.verify_hostname
         )
     }
 }
@@ -453,7 +472,10 @@ impl KafkaConnection {
     ) -> Result<KafkaConnection> {
         let tcp_stream = Self::new_tcp_stream(host)?;
 
-        let mut stream = match security.map(SecurityConfig::tls_config) {
+        let mut stream = match security
+            .filter(|config| config.tls_enabled())
+            .map(SecurityConfig::tls_config)
+        {
             Some(config) => {
                 let domain = match host.rfind(':') {
                     None => host,

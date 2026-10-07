@@ -116,7 +116,7 @@ impl AsyncConnection {
             .map_err(to_io_connection_error)?;
         configure_tcp_stream(&tcp_stream).map_err(to_io_connection_error)?;
 
-        let mut stream = if let Some(security) = security {
+        let mut stream = if let Some(security) = security.filter(|config| config.tls_enabled()) {
             let domain = host.split(':').next().unwrap_or(host).to_owned();
             let tls_config = build_tls_config(security.tls_config()).await?;
             let connector = TlsConnector::from(tls_config);
@@ -851,10 +851,12 @@ mod tests {
     use std::time::Duration;
 
     use bytes::{Buf, BytesMut};
-    use kafka_protocol::messages::{ApiVersionsRequest, ApiVersionsResponse, ResponseHeader};
+    use kafka_protocol::messages::{
+        ApiKey, ApiVersionsRequest, ApiVersionsResponse, ResponseHeader,
+    };
     use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion};
     use rustfs_kafka::error::ConnectionError;
-    use tokio::io::ReadBuf;
+    use tokio::io::{AsyncReadExt, ReadBuf};
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
 
@@ -1467,6 +1469,56 @@ mod tests {
             result,
             Err(Error::Connection(ConnectionError::Io(_)))
         ));
+    }
+
+    #[tokio::test]
+    async fn connect_uses_plain_tcp_when_tls_is_disabled() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move { listener.accept().await.unwrap() });
+
+        let connection =
+            AsyncConnection::connect(&host, Some(&SecurityConfig::new().with_tls_enabled(false)))
+                .await
+                .unwrap();
+
+        assert!(matches!(connection.stream, AsyncKafkaStream::Plain(_)));
+        drop(connection);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sasl_handshake_uses_plain_tcp_when_tls_is_disabled() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request_prefix = [0; 6];
+            stream.read_exact(&mut request_prefix).await.unwrap();
+            request_prefix
+        });
+
+        let security = SecurityConfig::new()
+            .with_tls_enabled(false)
+            .with_sasl(SaslConfig::plain("user".to_owned(), "password".to_owned()));
+        assert!(
+            AsyncConnection::connect(&host, Some(&security))
+                .await
+                .is_err()
+        );
+
+        let request_prefix = server.await.unwrap();
+        assert_eq!(
+            i16::from_be_bytes([request_prefix[4], request_prefix[5]]),
+            ApiKey::SaslHandshake as i16
+        );
+    }
+
+    #[test]
+    fn security_config_keeps_tls_enabled_by_default() {
+        assert!(SecurityConfig::new().tls_enabled());
+        assert!(SecurityConfig::from_tls_config(TlsConfig::new()).tls_enabled());
+        assert!(!SecurityConfig::new().with_tls_enabled(false).tls_enabled());
     }
 
     #[tokio::test]
