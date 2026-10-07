@@ -36,7 +36,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 kafka-protocol = { workspace = true, features = ["broker"] }
-socket2.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [features]

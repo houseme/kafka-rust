@@ -44,6 +44,8 @@ enum ScramAlgorithm {
 enum AsyncKafkaStream {
     Plain(TcpStream),
     Tls(Box<TlsStream<TcpStream>>),
+    #[cfg(test)]
+    TestDuplex(tokio::io::DuplexStream),
 }
 
 /// Certificate verifier that accepts any server certificate (for testing).
@@ -258,6 +260,14 @@ async fn stream_send(stream: &mut AsyncKafkaStream, data: &[u8]) -> Result<()> {
                 .map_err(to_io_connection_error)?;
             stream.flush().await.map_err(to_io_connection_error)?;
         }
+        #[cfg(test)]
+        AsyncKafkaStream::TestDuplex(stream) => {
+            stream
+                .write_all(data)
+                .await
+                .map_err(to_io_connection_error)?;
+            stream.flush().await.map_err(to_io_connection_error)?;
+        }
     }
     Ok(())
 }
@@ -266,6 +276,8 @@ async fn stream_read_exact(stream: &mut AsyncKafkaStream, n: usize) -> Result<By
     match stream {
         AsyncKafkaStream::Plain(stream) => read_exact_bytes(stream, n).await,
         AsyncKafkaStream::Tls(stream) => read_exact_bytes(stream, n).await,
+        #[cfg(test)]
+        AsyncKafkaStream::TestDuplex(stream) => read_exact_bytes(stream, n).await,
     }
 }
 
@@ -307,6 +319,13 @@ async fn stream_read_frame(stream: &mut AsyncKafkaStream) -> Result<Bytes> {
                 .map_err(to_io_connection_error)?;
         }
         AsyncKafkaStream::Tls(stream) => {
+            stream
+                .read_exact(&mut size)
+                .await
+                .map_err(to_io_connection_error)?;
+        }
+        #[cfg(test)]
+        AsyncKafkaStream::TestDuplex(stream) => {
             stream
                 .read_exact(&mut size)
                 .await
@@ -1078,28 +1097,21 @@ mod tests {
     async fn cancelled_partial_raw_send_is_reconnected() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let host = listener.local_addr().unwrap().to_string();
+        let (client, mut server_stream) = tokio::io::duplex(1024);
         let partial_write = Arc::new(Notify::new());
         let received = Arc::clone(&partial_write);
         let resume = Arc::new(Notify::new());
         let resume_drain = Arc::clone(&resume);
-        let server_ready = Arc::new(Notify::new());
-        let ready = Arc::clone(&server_ready);
-        let read_prefix = Arc::new(Notify::new());
-        let wait_for_prefix = Arc::clone(&read_prefix);
         let server = tokio::spawn(async move {
-            let (mut socket, _) = checked(listener.accept()).await.unwrap();
-            socket2::SockRef::from(&socket)
-                .set_recv_buffer_size(1024)
-                .unwrap();
-            ready.notify_one();
-            wait_for_prefix.notified().await;
             let mut bytes = [0; 1024];
-            checked(socket.read_exact(&mut bytes)).await.unwrap();
+            checked(server_stream.read_exact(&mut bytes)).await.unwrap();
             assert_eq!(bytes, [0x5a; 1024]);
             received.notify_one();
             resume_drain.notified().await;
             // Drain the partial write after the client replaces the connection.
-            checked(socket.read_to_end(&mut Vec::new())).await.unwrap();
+            checked(server_stream.read_to_end(&mut Vec::new()))
+                .await
+                .unwrap();
             let (mut socket, _) = checked(listener.accept()).await.unwrap();
             let header = read_api_versions_request(&mut socket).await;
             assert_eq!(header.correlation_id, 2);
@@ -1108,25 +1120,25 @@ mod tests {
                 .unwrap();
         });
         let mut pool = AsyncConnectionPool::new();
-        let conn = checked(pool.get(&host)).await.unwrap();
-        if let AsyncKafkaStream::Plain(stream) = &conn.stream {
-            socket2::SockRef::from(stream)
-                .set_send_buffer_size(1024)
-                .unwrap();
-        } else {
-            unreachable!("test connection uses plaintext TCP");
-        }
-        checked(server_ready.notified()).await;
+        pool.insert(
+            host.clone(),
+            AsyncConnection {
+                stream: AsyncKafkaStream::TestDuplex(client),
+                host: host.clone(),
+                healthy: true,
+                pending_correlation_id: None,
+            },
+        );
+        let conn = pool.connections.get_mut(&host).unwrap();
         let bytes = vec![0x5a; 16 * 1024 * 1024];
         let mut send = Box::pin(conn.send(&bytes));
         let first_poll = checked(poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx)))).await;
         assert!(
             first_poll.is_pending(),
-            "large send completed while the server was paused: {first_poll:?}"
+            "large send completed despite the bounded duplex buffer: {first_poll:?}"
         );
-        read_prefix.notify_one();
         checked(partial_write.notified()).await;
-        // Do not poll the pending send again after the server opens its read window.
+        // The send is already pending; drop it without allowing another poll.
         drop(send);
         assert!(pool.hosts().is_empty());
         resume.notify_one();
