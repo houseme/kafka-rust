@@ -1084,12 +1084,15 @@ mod tests {
         let resume_drain = Arc::clone(&resume);
         let server_ready = Arc::new(Notify::new());
         let ready = Arc::clone(&server_ready);
+        let read_prefix = Arc::new(Notify::new());
+        let wait_for_prefix = Arc::clone(&read_prefix);
         let server = tokio::spawn(async move {
             let (mut socket, _) = checked(listener.accept()).await.unwrap();
             socket2::SockRef::from(&socket)
                 .set_recv_buffer_size(1024)
                 .unwrap();
             ready.notify_one();
+            wait_for_prefix.notified().await;
             let mut bytes = [0; 1024];
             checked(socket.read_exact(&mut bytes)).await.unwrap();
             assert_eq!(bytes, [0x5a; 1024]);
@@ -1115,13 +1118,16 @@ mod tests {
         }
         checked(server_ready.notified()).await;
         let bytes = vec![0x5a; 16 * 1024 * 1024];
-        checked(async {
-            tokio::select! {
-                biased;
-                result = conn.send(&bytes) => panic!("send completed before cancellation: {result:?}"),
-                () = partial_write.notified() => {}
-            }
-        }).await;
+        let mut send = Box::pin(conn.send(&bytes));
+        let first_poll = checked(poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx)))).await;
+        assert!(
+            first_poll.is_pending(),
+            "large send completed while the server was paused: {first_poll:?}"
+        );
+        read_prefix.notify_one();
+        checked(partial_write.notified()).await;
+        // Do not poll the pending send again after the server opens its read window.
+        drop(send);
         assert!(pool.hosts().is_empty());
         resume.notify_one();
         let conn = checked(pool.get(&host)).await.unwrap();
