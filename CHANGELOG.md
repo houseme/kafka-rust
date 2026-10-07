@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- SecurityConfig now selects TLS explicitly while preserving TLS as the default, allowing SASL authentication over plaintext TCP when requested.
 - Batch producers reuse the topic/partition entry for checked payload accounting and classify malformed/complete acknowledgements in one target traversal, avoiding duplicate map searches while retaining partial-success behavior.
 - Batch enqueue reuses an existing topic/partition entry for payload accounting, and acknowledgement matching computes malformed and complete status in one traversal. Transactional sends resolve each custom key/value `AsBytes` view once.
 - Async request hot paths iterate the configured bootstrap hosts without cloning the host vector. `ensure_connected` checks the pool for any reusable connection with a short-circuit predicate.
