@@ -1082,8 +1082,14 @@ mod tests {
         let received = Arc::clone(&partial_write);
         let resume = Arc::new(Notify::new());
         let resume_drain = Arc::clone(&resume);
+        let server_ready = Arc::new(Notify::new());
+        let ready = Arc::clone(&server_ready);
         let server = tokio::spawn(async move {
             let (mut socket, _) = checked(listener.accept()).await.unwrap();
+            socket2::SockRef::from(&socket)
+                .set_recv_buffer_size(1024)
+                .unwrap();
+            ready.notify_one();
             let mut bytes = [0; 1024];
             checked(socket.read_exact(&mut bytes)).await.unwrap();
             assert_eq!(bytes, [0x5a; 1024]);
@@ -1100,8 +1106,15 @@ mod tests {
         });
         let mut pool = AsyncConnectionPool::new();
         let conn = checked(pool.get(&host)).await.unwrap();
-        // Exceed platform-specific loopback buffers so cancellation stays mid-write.
-        let bytes = vec![0x5a; 64 * 1024 * 1024];
+        if let AsyncKafkaStream::Plain(stream) = &conn.stream {
+            socket2::SockRef::from(stream)
+                .set_send_buffer_size(1024)
+                .unwrap();
+        } else {
+            unreachable!("test connection uses plaintext TCP");
+        }
+        checked(server_ready.notified()).await;
+        let bytes = vec![0x5a; 16 * 1024 * 1024];
         checked(async {
             tokio::select! {
                 biased;
