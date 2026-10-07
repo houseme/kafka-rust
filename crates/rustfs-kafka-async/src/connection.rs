@@ -1100,9 +1100,11 @@ mod tests {
         });
         let mut pool = AsyncConnectionPool::new();
         let conn = checked(pool.get(&host)).await.unwrap();
-        let bytes = vec![0x5a; 16 * 1024 * 1024];
+        // Exceed platform-specific loopback buffers so cancellation stays mid-write.
+        let bytes = vec![0x5a; 64 * 1024 * 1024];
         checked(async {
             tokio::select! {
+                biased;
                 result = conn.send(&bytes) => panic!("send completed before cancellation: {result:?}"),
                 () = partial_write.notified() => {}
             }
