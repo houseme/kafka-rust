@@ -182,8 +182,7 @@ impl AsyncKafkaClient {
         Convert: FnOnce(Resp) -> Out,
     {
         let correlation_id = self.next_correlation_id();
-        let client_id = self.client_id.clone();
-        let (header, request) = build_request(correlation_id, &client_id);
+        let (header, request) = build_request(correlation_id, &self.client_id);
         let response = self
             .send_prebuilt_protocol_request(
                 operation,
@@ -214,6 +213,7 @@ impl AsyncKafkaClient {
             version_mode,
             header,
             request,
+            false,
         )
         .await
         .map(|(_, response)| response)
@@ -226,7 +226,8 @@ impl AsyncKafkaClient {
         version_mode: RequestVersionMode,
         header: &RequestHeader,
         request: &Req,
-    ) -> Result<(String, Resp)>
+        capture_host: bool,
+    ) -> Result<(Option<String>, Resp)>
     where
         Req: kafka_protocol::protocol::Encodable + kafka_protocol::protocol::HeaderVersion,
         Resp: kafka_protocol::protocol::Decodable + kafka_protocol::protocol::HeaderVersion,
@@ -282,7 +283,7 @@ impl AsyncKafkaClient {
             drop(frame);
             match sent {
                 Ok(()) => match get_kp_response::<Resp>(conn, effective_api_version).await {
-                    Ok(resp) => return Ok((host.to_owned(), resp)),
+                    Ok(resp) => return Ok((capture_host.then(|| host.to_owned()), resp)),
                     Err(e) => {
                         let error = e.with_broker_context(host, operation);
                         if !retry_after_send {
@@ -371,8 +372,10 @@ impl AsyncKafkaClient {
                 RequestVersionMode::Exact,
                 &header,
                 &request,
+                true,
             )
             .await?;
+        let host = host.ok_or(Error::Protocol(ProtocolError::Codec))?;
         let response = convert_api_versions_response(response);
         self.api_versions
             .insert_api_versions(host, &response.api_keys);

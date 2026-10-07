@@ -125,12 +125,10 @@ impl<P: Partitioner> BatchProducer<P> {
             .buffer_bytes
             .checked_add(record_bytes)
             .ok_or_else(|| Error::Config("batch payload bytes exceed addressable size".into()))?;
-        let existing_batch = self
-            .buffer
-            .get_mut(msg.topic)
-            .and_then(|partitions| partitions.get_mut(&partition));
-        let partition_bytes = existing_batch
-            .as_ref()
+        let topic_partitions = self.buffer.get_mut(msg.topic);
+        let partition_bytes = topic_partitions
+            .as_deref()
+            .and_then(|partitions| partitions.get(&partition))
             .map_or(0, |batch| batch.payload_bytes)
             .checked_add(record_bytes)
             .ok_or_else(|| {
@@ -143,7 +141,8 @@ impl<P: Partitioner> BatchProducer<P> {
             headers: msg.headers.to_vec(),
         };
 
-        if let Some(batch) = existing_batch {
+        if let Some(partitions) = topic_partitions {
+            let batch = partitions.entry(partition).or_default();
             batch.records.push(batch_record);
             batch.payload_bytes = partition_bytes;
         } else {

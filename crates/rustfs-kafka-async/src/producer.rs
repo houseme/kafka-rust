@@ -45,6 +45,7 @@ struct NativeProducerState {
 #[derive(Default)]
 struct TopicRoute {
     partitions: HashMap<i32, i32>, // partition -> leader_id
+    partition_errors: HashMap<i32, KafkaCode>,
     available_partitions: Vec<i32>,
 }
 
@@ -650,7 +651,7 @@ async fn resolve_partition_and_leader<'s>(
 ) -> Result<(i32, &'s str)> {
     let (partition, leader_id) = 'resolved: {
         for _ in 0..2 {
-            if let Some(route) = try_resolve_from_cache(state, topic, requested_partition) {
+            if let Some(route) = try_resolve_from_cache(state, topic, requested_partition)? {
                 break 'resolved route;
             }
 
@@ -671,26 +672,40 @@ fn try_resolve_from_cache(
     state: &mut NativeProducerState,
     topic: &str,
     requested_partition: i32,
-) -> Option<(i32, i32)> {
+) -> Result<Option<(i32, i32)>> {
     let NativeProducerState {
         brokers,
         topics,
         round_robin,
     } = state;
-    let route = topics.get(topic)?;
+    let Some(route) = topics.get_mut(topic) else {
+        return Ok(None);
+    };
     let partition = if requested_partition >= 0 {
+        if let Some(error) = route.partition_errors.remove(&requested_partition) {
+            // Return the error once, then let the next explicit call refresh
+            // metadata instead of retaining a transient partition fault.
+            return Err(Error::Kafka(error));
+        }
         requested_partition
     } else {
-        pick_round_robin_partition(round_robin, topic, &route.available_partitions)?
+        let Some(partition) =
+            pick_round_robin_partition(round_robin, topic, &route.available_partitions)
+        else {
+            return Ok(None);
+        };
+        partition
     };
 
-    let leader_id = *route.partitions.get(&partition)?;
+    let Some(leader_id) = route.partitions.get(&partition).copied() else {
+        return Ok(None);
+    };
     if leader_id < 0 {
-        return None;
+        return Ok(None);
     }
-    brokers
+    Ok(brokers
         .contains_key(&leader_id)
-        .then_some((partition, leader_id))
+        .then_some((partition, leader_id)))
 }
 
 fn pick_round_robin_partition(
@@ -730,38 +745,91 @@ async fn refresh_topic_metadata(
     send_kp_request(conn, &header, &request, API_VERSION_METADATA).await?;
     let response = get_kp_response::<MetadataResponse>(conn, API_VERSION_METADATA).await?;
 
-    for broker in response.brokers {
-        state.brokers.insert(
-            i32::from(broker.node_id),
-            format!("{}:{}", broker.host, broker.port),
-        );
+    let (brokers, route) = checked_topic_metadata(response, topic)?;
+    // No fallible protocol work or await remains once either cache changes.
+    state.brokers.extend(brokers);
+    state.topics.insert(topic.to_owned(), route);
+    Ok(())
+}
+
+fn checked_topic_metadata(
+    response: MetadataResponse,
+    topic: &str,
+) -> Result<(HashMap<i32, String>, TopicRoute)> {
+    let mut topics = response.topics.into_iter();
+    let topic_meta = topics.next().ok_or(Error::Protocol(ProtocolError::Codec))?;
+    if topics.next().is_some() || topic_meta.name.as_ref().map(|name| name.as_str()) != Some(topic)
+    {
+        return Err(Error::Protocol(ProtocolError::Codec));
+    }
+    if topic_meta.error_code != 0 {
+        return Err(Error::Kafka(
+            map_kafka_code(topic_meta.error_code).unwrap_or(KafkaCode::Unknown),
+        ));
     }
 
-    for topic_meta in response.topics {
-        let Some(name) = topic_meta.name else {
-            continue;
-        };
-        if name.as_str() != topic {
+    let mut brokers = HashMap::with_capacity(response.brokers.len());
+    for broker in response.brokers {
+        let id = i32::from(broker.node_id);
+        if id < 0 || broker.host.is_empty() || !(1..=65_535).contains(&broker.port) {
+            return Err(Error::Protocol(ProtocolError::Codec));
+        }
+        if brokers
+            .insert(id, format!("{}:{}", broker.host, broker.port))
+            .is_some()
+        {
+            return Err(Error::Protocol(ProtocolError::Codec));
+        }
+    }
+
+    validate_metadata_partition_ids(&topic_meta.partitions)?;
+    let mut route = TopicRoute::default();
+    for part in topic_meta.partitions {
+        let partition = part.partition_index;
+        if part.error_code != 0 {
+            route.partition_errors.insert(
+                partition,
+                map_kafka_code(part.error_code).unwrap_or(KafkaCode::Unknown),
+            );
             continue;
         }
-
-        let mut route = TopicRoute::default();
-        for part in topic_meta.partitions {
-            let partition = part.partition_index;
-            let leader = i32::from(part.leader_id);
-            route.partitions.insert(partition, leader);
-            if leader >= 0 {
-                route.available_partitions.push(partition);
-            }
+        let leader = i32::from(part.leader_id);
+        if leader < -1 {
+            return Err(Error::Protocol(ProtocolError::Codec));
         }
+        // Metadata can describe unavailable partitions during an election.
+        // Retain healthy routes without sending to errored or unknown leaders.
+        if part.error_code != 0 || leader == -1 || !brokers.contains_key(&leader) {
+            continue;
+        }
+        route.partitions.insert(partition, leader);
+        route.available_partitions.push(partition);
+    }
+    route.available_partitions.sort_unstable();
+    Ok((brokers, route))
+}
 
-        route.available_partitions.sort_unstable();
-        route.available_partitions.dedup();
-        state.topics.insert(topic.to_owned(), route);
+fn validate_metadata_partition_ids(
+    partitions: &[kafka_protocol::messages::metadata_response::MetadataResponsePartition],
+) -> Result<()> {
+    if partitions.iter().enumerate().all(|(index, partition)| {
+        usize::try_from(partition.partition_index).is_ok_and(|id| id == index)
+    }) {
         return Ok(());
     }
-
-    Err(Error::Kafka(KafkaCode::UnknownTopicOrPartition))
+    let mut seen = vec![false; partitions.len()];
+    for partition in partitions {
+        let index = usize::try_from(partition.partition_index)
+            .map_err(|_| Error::Protocol(ProtocolError::Codec))?;
+        let entry = seen
+            .get_mut(index)
+            .ok_or(Error::Protocol(ProtocolError::Codec))?;
+        if *entry {
+            return Err(Error::Protocol(ProtocolError::Codec));
+        }
+        *entry = true;
+    }
+    Ok(())
 }
 
 fn pick_request_host(client: &AsyncKafkaClient) -> Option<String> {
@@ -927,6 +995,7 @@ mod tests {
                 "topic-a".to_owned(),
                 TopicRoute {
                     partitions: HashMap::from([(0, 0), (1, 0)]),
+                    partition_errors: HashMap::new(),
                     available_partitions: vec![0, 1],
                 },
             )]),
@@ -934,10 +1003,36 @@ mod tests {
         };
         for (requested, expected) in [(1, 1), (-1, 0), (-1, 1), (-1, 0)] {
             assert_eq!(
-                try_resolve_from_cache(&mut state, "topic-a", requested),
+                try_resolve_from_cache(&mut state, "topic-a", requested).unwrap(),
                 Some((expected, 0))
             );
         }
+    }
+
+    #[test]
+    fn explicit_partition_metadata_error_is_returned_once_before_refresh() {
+        let mut state = NativeProducerState {
+            brokers: HashMap::from([(0, "broker:9092".to_owned())]),
+            topics: HashMap::from([(
+                "topic-a".to_owned(),
+                TopicRoute {
+                    partitions: HashMap::from([(0, 0)]),
+                    partition_errors: HashMap::from([(1, KafkaCode::ReplicaNotAvailable)]),
+                    available_partitions: vec![0],
+                },
+            )]),
+            ..NativeProducerState::default()
+        };
+
+        assert!(matches!(
+            try_resolve_from_cache(&mut state, "topic-a", 1),
+            Err(Error::Kafka(KafkaCode::ReplicaNotAvailable))
+        ));
+        assert!(!state.topics["topic-a"].partition_errors.contains_key(&1));
+        assert_eq!(
+            try_resolve_from_cache(&mut state, "topic-a", 1).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -951,6 +1046,374 @@ mod tests {
             pick_round_robin_partition(&mut round_robin, "topic-a", &[0, 1]),
             Some(0)
         );
+    }
+
+    fn metadata_response(addr: SocketAddr, leaders: &[i32]) -> MetadataResponse {
+        MetadataResponse::default()
+            .with_brokers(vec![
+                MetadataResponseBroker::default()
+                    .with_node_id(0.into())
+                    .with_host(StrBytes::from_string(addr.ip().to_string()))
+                    .with_port(i32::from(addr.port())),
+            ])
+            .with_topics(vec![
+                MetadataResponseTopic::default()
+                    .with_name(Some(StrBytes::from_static_str("topic-a").into()))
+                    .with_partitions(
+                        leaders
+                            .iter()
+                            .enumerate()
+                            .map(|(index, &leader)| {
+                                MetadataResponsePartition::default()
+                                    .with_partition_index(i32::try_from(index).unwrap())
+                                    .with_leader_id(leader.into())
+                            })
+                            .collect(),
+                    ),
+            ])
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum MetadataFault {
+        TopicError,
+        TopicErrorWithCorruptDescriptor,
+        MissingTopic,
+        DuplicateTopic,
+        MissingName,
+        ExtraTopic,
+        WrongTopic,
+        DuplicateBroker,
+        NegativeBrokerId,
+        EmptyHost,
+        ZeroPort,
+        OversizedPort,
+        DuplicatePartition,
+        NegativePartition,
+        SparsePartition,
+        InvalidLeader,
+    }
+
+    fn malformed_metadata(addr: SocketAddr, fault: MetadataFault) -> MetadataResponse {
+        let mut response = metadata_response(addr, &[0, 0]);
+        match fault {
+            MetadataFault::TopicError | MetadataFault::TopicErrorWithCorruptDescriptor => {
+                response.topics[0].error_code = 29;
+                response.topics[0].partitions.clear();
+                if matches!(fault, MetadataFault::TopicErrorWithCorruptDescriptor) {
+                    response.brokers[0].port = 0;
+                }
+            }
+            MetadataFault::MissingTopic => response.topics.clear(),
+            MetadataFault::DuplicateTopic => response.topics.push(response.topics[0].clone()),
+            MetadataFault::MissingName => response.topics[0].name = None,
+            MetadataFault::ExtraTopic => {
+                let mut extra = response.topics[0].clone();
+                extra.name = Some(StrBytes::from_static_str("unrequested").into());
+                response.topics.push(extra);
+            }
+            MetadataFault::WrongTopic => {
+                response.topics[0].name = Some(StrBytes::from_static_str("wrong-topic").into());
+            }
+            MetadataFault::DuplicateBroker => response.brokers.push(response.brokers[0].clone()),
+            MetadataFault::NegativeBrokerId => response.brokers[0].node_id = (-1).into(),
+            MetadataFault::EmptyHost => response.brokers[0].host = StrBytes::from_static_str(""),
+            MetadataFault::ZeroPort => response.brokers[0].port = 0,
+            MetadataFault::OversizedPort => response.brokers[0].port = 65_536,
+            MetadataFault::DuplicatePartition => {
+                response.topics[0].partitions[1].partition_index = 0
+            }
+            MetadataFault::NegativePartition => {
+                response.topics[0].partitions[1].partition_index = -1
+            }
+            MetadataFault::SparsePartition => response.topics[0].partitions[1].partition_index = 2,
+            MetadataFault::InvalidLeader => {
+                response.topics[0].partitions[1].leader_id = (-2).into()
+            }
+        }
+        response
+    }
+
+    fn warm_metadata_state() -> NativeProducerState {
+        NativeProducerState {
+            brokers: HashMap::from([
+                (0, "old-broker.invalid:9092".to_owned()),
+                (99, "other-broker.invalid:9092".to_owned()),
+            ]),
+            topics: HashMap::from([
+                (
+                    "topic-a".to_owned(),
+                    TopicRoute {
+                        partitions: HashMap::from([(0, 0), (1, 0)]),
+                        partition_errors: HashMap::new(),
+                        available_partitions: vec![0, 1],
+                    },
+                ),
+                (
+                    "topic-b".to_owned(),
+                    TopicRoute {
+                        partitions: HashMap::from([(0, 99)]),
+                        partition_errors: HashMap::new(),
+                        available_partitions: vec![0],
+                    },
+                ),
+            ]),
+            round_robin: HashMap::from([("topic-a".to_owned(), 7), ("topic-b".to_owned(), 4)]),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_metadata_preserves_warm_routes_and_next_valid_refresh_recovers() {
+        for fault in [
+            MetadataFault::TopicError,
+            MetadataFault::TopicErrorWithCorruptDescriptor,
+            MetadataFault::MissingTopic,
+            MetadataFault::DuplicateTopic,
+            MetadataFault::MissingName,
+            MetadataFault::ExtraTopic,
+            MetadataFault::WrongTopic,
+            MetadataFault::DuplicateBroker,
+            MetadataFault::NegativeBrokerId,
+            MetadataFault::EmptyHost,
+            MetadataFault::ZeroPort,
+            MetadataFault::OversizedPort,
+            MetadataFault::DuplicatePartition,
+            MetadataFault::NegativePartition,
+            MetadataFault::SparsePartition,
+            MetadataFault::InvalidLeader,
+        ] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let correlation = read_metadata_request(&mut socket).await;
+                    write_response(
+                        &mut socket,
+                        correlation,
+                        &malformed_metadata(addr, fault),
+                        API_VERSION_METADATA,
+                    )
+                    .await;
+                    let correlation = read_metadata_request(&mut socket).await;
+                    write_response(
+                        &mut socket,
+                        correlation,
+                        &metadata_response(addr, &[0, 0]),
+                        API_VERSION_METADATA,
+                    )
+                    .await;
+                });
+                let mut client = AsyncKafkaClient::with_client_id(
+                    vec![addr.to_string()],
+                    "producer-test".to_owned(),
+                )
+                .await
+                .unwrap();
+                let mut state = warm_metadata_state();
+                let expected = warm_metadata_state();
+                let error = refresh_topic_metadata(&mut client, &mut state, "topic-a", 1)
+                    .await
+                    .unwrap_err();
+                if matches!(
+                    fault,
+                    MetadataFault::TopicError | MetadataFault::TopicErrorWithCorruptDescriptor
+                ) {
+                    assert!(
+                        matches!(error, Error::Kafka(KafkaCode::TopicAuthorizationFailed)),
+                        "{fault:?}: {error}"
+                    );
+                } else {
+                    assert!(
+                        matches!(error, Error::Protocol(ProtocolError::Codec)),
+                        "{fault:?}: {error}"
+                    );
+                }
+                assert_eq!(state.brokers, expected.brokers, "{fault:?}");
+                assert_eq!(state.topics.len(), expected.topics.len());
+                for (name, route) in &expected.topics {
+                    assert_eq!(
+                        state.topics[name].partitions, route.partitions,
+                        "{fault:?}: {name}"
+                    );
+                    assert_eq!(
+                        state.topics[name].available_partitions, route.available_partitions,
+                        "{fault:?}: {name}"
+                    );
+                }
+                assert_eq!(state.round_robin, expected.round_robin);
+                refresh_topic_metadata(&mut client, &mut state, "topic-a", 2)
+                    .await
+                    .unwrap();
+                assert_eq!(state.brokers[&0], addr.to_string());
+                assert_eq!(state.brokers[&99], expected.brokers[&99]);
+                assert_eq!(
+                    state.topics["topic-a"].partitions,
+                    HashMap::from([(0, 0), (1, 0)])
+                );
+                assert_eq!(
+                    state.topics["topic-b"].partitions,
+                    expected.topics["topic-b"].partitions
+                );
+                assert_eq!(state.round_robin, expected.round_robin);
+                server.await.unwrap();
+            })
+            .await
+            .expect("invalid metadata must preserve the previous routing snapshot");
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_topic_error_returns_once_before_produce_and_next_call_recovers() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_response(
+                    &mut socket,
+                    correlation,
+                    &malformed_metadata(addr, MetadataFault::TopicError),
+                    API_VERSION_METADATA,
+                )
+                .await;
+                let correlation = read_metadata_request(&mut socket).await;
+                write_response(
+                    &mut socket,
+                    correlation,
+                    &metadata_response(addr, &[0, 0]),
+                    API_VERSION_METADATA,
+                )
+                .await;
+                for partition in [0, 1] {
+                    let correlation = read_produce_request(&mut socket, partition, 1).await;
+                    write_produce_response(&mut socket, correlation, partition, 0).await;
+                }
+            });
+            let producer = test_producer(addr, RequiredAcks::One).await;
+            assert!(matches!(
+                producer.send(&test_record()).await,
+                Err(Error::Kafka(KafkaCode::TopicAuthorizationFailed))
+            ));
+            producer.send(&test_record()).await.unwrap();
+            producer.send(&test_record()).await.unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .expect("topic authorization errors must not be replaced or implicitly retried");
+    }
+
+    #[tokio::test]
+    async fn metadata_with_only_unavailable_leaders_is_valid_and_keeps_round_robin_state() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let correlation = read_metadata_request(&mut socket).await;
+                write_response(
+                    &mut socket,
+                    correlation,
+                    &metadata_response(addr, &[-1, -1]),
+                    API_VERSION_METADATA,
+                )
+                .await;
+                let correlation = read_metadata_request(&mut socket).await;
+                write_response(
+                    &mut socket,
+                    correlation,
+                    &metadata_response(addr, &[0, 0]),
+                    API_VERSION_METADATA,
+                )
+                .await;
+            });
+            let mut client = AsyncKafkaClient::with_client_id(
+                vec![addr.to_string()],
+                "producer-test".to_owned(),
+            )
+            .await
+            .unwrap();
+            let mut state = warm_metadata_state();
+            let original_round_robin = state.round_robin.clone();
+            refresh_topic_metadata(&mut client, &mut state, "topic-a", 1)
+                .await
+                .unwrap();
+            assert!(state.topics["topic-a"].partitions.is_empty());
+            assert!(state.topics["topic-a"].available_partitions.is_empty());
+            assert_eq!(
+                try_resolve_from_cache(&mut state, "topic-a", 0).unwrap(),
+                None
+            );
+            assert_eq!(
+                try_resolve_from_cache(&mut state, "topic-a", -1).unwrap(),
+                None
+            );
+            assert_eq!(state.round_robin, original_round_robin);
+            refresh_topic_metadata(&mut client, &mut state, "topic-a", 2)
+                .await
+                .unwrap();
+            assert_eq!(state.round_robin, original_round_robin);
+            assert_eq!(
+                try_resolve_from_cache(&mut state, "topic-a", -1).unwrap(),
+                Some((1, 0))
+            );
+            assert_eq!(state.round_robin["topic-a"], 8);
+            assert_eq!(state.round_robin["topic-b"], 4);
+            server.await.unwrap();
+        })
+        .await
+        .expect("leader -1 must remain a valid unavailable state rather than a codec error");
+    }
+
+    #[tokio::test]
+    async fn partial_metadata_routes_only_healthy_partitions_and_preserves_cache_reuse() {
+        for required_acks in [RequiredAcks::One, RequiredAcks::None] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let acks = required_acks as i16;
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let correlation = read_metadata_request(&mut socket).await;
+                    let mut response = metadata_response(addr, &[-1, 0, 99, 0]);
+                    response.topics[0].partitions[1].error_code = 9;
+                    // Out-of-order complete identities remain valid. Broker 99
+                    // is not in this candidate, so its partition is unavailable.
+                    response.topics[0].partitions.swap(0, 3);
+                    write_response(&mut socket, correlation, &response, API_VERSION_METADATA).await;
+                    for _ in 0..2 {
+                        let correlation = read_produce_request(&mut socket, 3, acks).await;
+                        if acks != 0 {
+                            write_produce_response(&mut socket, correlation, 3, 0).await;
+                        }
+                    }
+                });
+                let producer = test_producer(addr, required_acks).await;
+                producer.send(&test_record()).await.unwrap();
+                producer.send(&test_record()).await.unwrap();
+                let AsyncProducerMode::Native(native) = &producer.mode;
+                let mut state = native.state.lock().await;
+                assert_eq!(state.topics["topic-a"].partitions, HashMap::from([(3, 0)]));
+                assert_eq!(state.topics["topic-a"].available_partitions, [3]);
+                assert_eq!(
+                    state.topics["topic-a"].partition_errors[&1],
+                    KafkaCode::ReplicaNotAvailable
+                );
+                assert!(matches!(
+                    try_resolve_from_cache(&mut state, "topic-a", 1),
+                    Err(Error::Kafka(KafkaCode::ReplicaNotAvailable))
+                ));
+                assert_eq!(
+                    try_resolve_from_cache(&mut state, "topic-a", 1).unwrap(),
+                    None
+                );
+                assert_eq!(state.round_robin["topic-a"], 2);
+                drop(state);
+                server.await.unwrap();
+            })
+            .await
+            .expect("partial metadata must preserve healthy routes and acknowledgements");
+        }
     }
 
     #[tokio::test]

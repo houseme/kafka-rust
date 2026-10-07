@@ -395,6 +395,7 @@ impl Consumer {
         let mut fetch_updates: HashMap<TopicPartition, state::FetchState, state::PartitionHasher> =
             HashMap::default();
         let mut retry_updates = Vec::new();
+        let mut clean_consumed_resets = Vec::new();
         for (response, progress) in &mut responses {
             for (topic_index, topic) in response.topics.iter_mut().enumerate() {
                 let topic_ref = self
@@ -408,6 +409,7 @@ impl Consumer {
                         partition: partition.partition,
                     };
                     let current = self.state.fetch_offsets.get(&tp).ok_or_else(Error::codec)?;
+                    self.stage_clean_consumed_reset(&tp, partition, &mut clean_consumed_resets);
                     let partition_id = partition.partition;
                     let Some(data) = Self::stage_partition_data(
                         &topic.topic,
@@ -458,6 +460,7 @@ impl Consumer {
         }
         // All broker/partition validation and local retry decisions succeeded.
         // Publish fetch cursors only; business messages remain explicitly consumed.
+        self.publish_clean_consumed_resets(clean_consumed_resets);
         let completed_retry = retry_partition.filter(|tp| fetch_updates.contains_key(tp));
         self.state.fetch_offsets.extend(fetch_updates);
         if let Some(tp) = completed_retry {
@@ -471,6 +474,58 @@ impl Consumer {
                 .collect(),
             empty,
         })
+    }
+
+    fn stage_clean_consumed_reset(
+        &self,
+        tp: &TopicPartition,
+        partition: &fetch_kp::OwnedPartition,
+        resets: &mut Vec<(TopicPartition, i64)>,
+    ) {
+        if partition.highwatermark < 0
+            || !matches!(
+                partition.data.as_ref(),
+                Err(error)
+                    if matches!(
+                        error.as_ref(),
+                        Error::TopicPartitionError {
+                            error_code: KafkaCode::OffsetOutOfRange,
+                            ..
+                        }
+                    )
+            )
+            || !self.state.consumed_offsets.get(tp).is_some_and(|consumed| {
+                !consumed.dirty
+                    && Self::next_message_offset(consumed.offset)
+                        .is_some_and(|next| next > partition.highwatermark)
+            })
+        {
+            return;
+        }
+        resets.push((
+            TopicPartition {
+                topic_ref: tp.topic_ref,
+                partition: tp.partition,
+            },
+            partition.highwatermark,
+        ));
+    }
+
+    fn publish_clean_consumed_resets(&mut self, resets: Vec<(TopicPartition, i64)>) {
+        for (tp, highwatermark) in resets {
+            if self
+                .state
+                .consumed_offsets
+                .get(&tp)
+                .is_some_and(|consumed| {
+                    !consumed.dirty
+                        && Self::next_message_offset(consumed.offset)
+                            .is_some_and(|next| next > highwatermark)
+                })
+            {
+                self.state.consumed_offsets.remove(&tp);
+            }
+        }
     }
 
     fn validate_and_trim_fetch_responses(
@@ -1605,6 +1660,130 @@ mod pause_resume_tests {
                 .unwrap()
                 .offset,
             13
+        );
+    }
+
+    #[test]
+    fn nonnegative_oor_rewind_discards_only_clean_committed_markers_beyond_the_new_cursor() {
+        for (highwatermark, consumed, should_reset) in [
+            (0, 49, true),
+            (7, 49, true),
+            (i64::MAX, i64::MAX - 1, false),
+        ] {
+            let mut consumer = make_consumer();
+            let tp = topic_partition(&consumer, 0);
+            consumer.state.consumed_offsets.insert(
+                tp,
+                state::ConsumedOffset {
+                    offset: consumed,
+                    dirty: false,
+                },
+            );
+            let response = fetch_response(vec![
+                partition_error(0, highwatermark, KafkaCode::OffsetOutOfRange),
+                partition_data(1, 30, &[11]),
+            ]);
+
+            consumer
+                .process_fetch_responses(2, None, vec![response])
+                .unwrap();
+
+            assert_eq!(
+                consumer
+                    .state
+                    .fetch_offsets
+                    .get(&topic_partition(&consumer, 0))
+                    .unwrap()
+                    .offset,
+                highwatermark
+            );
+            if should_reset {
+                assert_eq!(consumer.last_consumed_message("t", 0), None);
+                let next_response =
+                    fetch_response(vec![partition_data(0, highwatermark + 1, &[highwatermark])]);
+                let messages = consumer
+                    .process_fetch_responses(1, None, vec![next_response])
+                    .unwrap();
+                assert_eq!(
+                    messages.iter_ref().next().unwrap().messages()[0].offset,
+                    highwatermark
+                );
+                consumer.consume_message("t", 0, highwatermark).unwrap();
+                assert_eq!(consumer.last_consumed_message("t", 0), Some(highwatermark));
+                assert!(
+                    consumer
+                        .state
+                        .consumed_offsets
+                        .get(&topic_partition(&consumer, 0))
+                        .unwrap()
+                        .dirty
+                );
+            } else {
+                assert_eq!(consumer.last_consumed_message("t", 0), Some(consumed));
+            }
+        }
+    }
+
+    #[test]
+    fn nonnegative_oor_rewind_preserves_dirty_markers_and_failed_poll_state() {
+        let mut dirty_consumer = make_consumer();
+        dirty_consumer.state.consumed_offsets.insert(
+            topic_partition(&dirty_consumer, 0),
+            state::ConsumedOffset {
+                offset: 49,
+                dirty: true,
+            },
+        );
+        dirty_consumer
+            .process_fetch_responses(
+                2,
+                None,
+                vec![fetch_response(vec![
+                    partition_error(0, 7, KafkaCode::OffsetOutOfRange),
+                    partition_data(1, 30, &[11]),
+                ])],
+            )
+            .unwrap();
+        assert_eq!(dirty_consumer.last_consumed_message("t", 0), Some(49));
+        assert!(
+            dirty_consumer
+                .state
+                .consumed_offsets
+                .get(&topic_partition(&dirty_consumer, 0))
+                .unwrap()
+                .dirty
+        );
+
+        let mut failed_consumer = make_consumer();
+        let tp = topic_partition(&failed_consumer, 0);
+        failed_consumer.state.consumed_offsets.insert(
+            tp,
+            state::ConsumedOffset {
+                offset: 49,
+                dirty: false,
+            },
+        );
+        assert!(
+            failed_consumer
+                .process_fetch_responses(
+                    2,
+                    None,
+                    vec![fetch_response(vec![
+                        partition_error(0, 7, KafkaCode::OffsetOutOfRange),
+                        partition_error(1, 30, KafkaCode::NotLeaderForPartition),
+                    ])],
+                )
+                .is_err()
+        );
+        assert_eq!(failed_consumer.last_consumed_message("t", 0), Some(49));
+        assert_eq!(
+            failed_consumer
+                .state
+                .fetch_offsets
+                .get(&topic_partition(&failed_consumer, 0))
+                .unwrap()
+                .offset,
+            10
         );
     }
 
