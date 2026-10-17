@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- Async producers encode current Unix millisecond CreateTime timestamps instead of zero, preventing newly produced records from appearing expired to Kafka retention. Each send call samples one timestamp for all its records.
+
 ## [1.4.0] - 2026-10-07
 
 ### Added
