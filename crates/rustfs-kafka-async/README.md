@@ -58,6 +58,7 @@ async fn main() -> rustfs_kafka::Result<()> {
 
 ## Notes
 
+- Async producers use current Unix milliseconds as `CreateTime`, sampled once per `send` or `send_all` call. Topic-level `LogAppendTime` overrides these timestamps at the broker. The sync crate's `producer_timestamp` feature does not control async timestamps.
 - This crate is intentionally lightweight and reuses protocol data structures from `rustfs-kafka`.
 - Native async producer path supports metadata-backed auto partition resolution.
 - `AsyncProducer::send_all` batches a slice of records into one Produce request per broker, preserving per-partition

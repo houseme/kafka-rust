@@ -14,7 +14,7 @@ use rustfs_kafka::error::{ConnectionError, Error, KafkaCode, ProtocolError, Resu
 use rustfs_kafka::producer::{AsBytes, Record};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -87,6 +87,7 @@ enum AsyncProducerMode {
 /// An async Kafka producer.
 ///
 /// This producer always uses native async I/O via tokio sockets.
+/// Each send call uses the current Unix milliseconds as its records' CreateTime.
 pub struct AsyncProducer {
     mode: AsyncProducerMode,
 }
@@ -382,6 +383,12 @@ impl NativeProducer {
             record.headers.validate_unique()?;
         }
 
+        let elapsed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::Config("system clock is before the Unix epoch".into()))?;
+        let timestamp = i64::try_from(elapsed.as_millis()).map_err(|_| {
+            Error::Config("Unix timestamp exceeds Kafka's i64 milliseconds range".into())
+        })?;
         let correlation_id = self.correlation.fetch_add(1, Ordering::Relaxed);
         let mut client = self.client.lock().await;
         let mut state = self.state.lock().await;
@@ -410,7 +417,7 @@ impl NativeProducer {
                     index
                 }
             };
-            add_record_to_broker(&mut brokers[broker_index], partition, record)?;
+            add_record_to_broker(&mut brokers[broker_index], partition, record, timestamp)?;
         }
 
         let client_id = StrBytes::from_string(client.client_id().to_owned());
@@ -530,6 +537,7 @@ fn add_record_to_broker<'a, K: AsBytes, V: AsBytes>(
     broker: &mut BrokerRecords<'a>,
     partition: i32,
     record: &Record<'a, K, V>,
+    timestamp: i64,
 ) -> Result<()> {
     let topic_index = match broker.topic_indices.get(record.topic) {
         Some(&index) => index,
@@ -575,7 +583,7 @@ fn add_record_to_broker<'a, K: AsBytes, V: AsBytes>(
         // Keep base_sequence=-1 while maintaining the encoder's offset/sequence
         // relationship so all records in this partition form a single batch.
         sequence: offset.wrapping_sub(1),
-        timestamp: 0,
+        timestamp,
         key: (!key.is_empty()).then(|| Bytes::copy_from_slice(key)),
         value: (!value.is_empty()).then(|| Bytes::copy_from_slice(value)),
         headers: record
@@ -1518,6 +1526,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_and_send_all_encode_current_create_time() {
+        for compression in [
+            Compression::NONE,
+            #[cfg(feature = "gzip")]
+            Compression::GZIP,
+            #[cfg(feature = "snappy")]
+            Compression::SNAPPY,
+            #[cfg(feature = "lz4")]
+            Compression::LZ4,
+            #[cfg(feature = "zstd")]
+            Compression::ZSTD,
+        ] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let correlation = read_metadata_request(&mut socket).await;
+                    write_metadata_response(&mut socket, correlation, &[addr], 0).await;
+                    let mut calls = Vec::new();
+                    for _ in 0..2 {
+                        let (correlation, request) = read_batch_request(&mut socket, 1).await;
+                        let mut records = Vec::new();
+                        for topic in &request.topic_data {
+                            for partition in &topic.partition_data {
+                                let mut encoded = partition.records.clone().unwrap();
+                                let decoded = RecordBatchDecoder::decode(&mut encoded).unwrap();
+                                assert_eq!(decoded.compression, to_kp_compression(compression));
+                                records.extend(decoded.records);
+                            }
+                        }
+                        calls.push(records);
+                        write_batch_response(&mut socket, correlation, &request, 0).await;
+                    }
+                    calls
+                });
+                let producer = AsyncProducer::builder(vec![addr.to_string()])
+                    .with_client_id("producer-test".to_owned())
+                    .with_ack_timeout(Duration::from_millis(1_234))
+                    .with_compression(compression)
+                    .build()
+                    .await
+                    .unwrap();
+                let unix_millis = || {
+                    i64::try_from(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis(),
+                    )
+                    .unwrap()
+                };
+                let before = unix_millis();
+                producer
+                    .send(&test_record().with_partition(0))
+                    .await
+                    .unwrap();
+                producer
+                    .send_all(&[
+                        batch_record("topic-a", 0, "first"),
+                        batch_record("topic-a", 1, "second"),
+                        batch_record("topic-a", 0, "third"),
+                    ])
+                    .await
+                    .unwrap();
+                let after = unix_millis();
+                let calls = server.await.unwrap();
+                assert_eq!(calls[0].len(), 1);
+                assert_eq!(calls[1].len(), 3);
+                for records in calls {
+                    let timestamp = records[0].timestamp;
+                    assert!(
+                        (before..=after).contains(&timestamp),
+                        "expected Unix milliseconds between {before} and {after}, got {timestamp}"
+                    );
+                    for record in records {
+                        assert_eq!(record.timestamp_type, TimestampType::Creation);
+                        assert_eq!(record.timestamp, timestamp);
+                    }
+                }
+            })
+            .await
+            .expect("timestamped single and batched sends must complete");
+        }
+    }
+
+    #[tokio::test]
     async fn send_all_groups_topics_and_partitions_into_one_request_per_broker() {
         for required_acks in [RequiredAcks::None, RequiredAcks::One, RequiredAcks::All] {
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -1862,7 +1957,7 @@ mod tests {
             topics: Vec::new(),
             topic_indices: HashMap::new(),
         };
-        add_record_to_broker(&mut broker, 0, &large_record).unwrap();
+        add_record_to_broker(&mut broker, 0, &large_record, 0).unwrap();
         let (large_header, mut large_request) = build_produce_request(
             2,
             &StrBytes::from_static_str("producer-test"),
@@ -2704,7 +2799,7 @@ mod tests {
             test_record(),
             Record::from_key_value("topic-a", "", ""),
         ] {
-            add_record_to_broker(&mut broker, 0, &record)?;
+            add_record_to_broker(&mut broker, 0, &record, 0)?;
         }
         build_produce_request(
             1,
