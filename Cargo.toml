@@ -37,21 +37,21 @@ kafka-protocol = { version = "0.18.0", default-features = false, features = ["cl
 indexmap = "2.14.2"
 thiserror = "2.0.21"
 tracing = "0.1.44"
-uuid = "1.27.0"
+uuid = "1.29.0"
 
 # Optional dependencies (made optional in consuming crates via dep: syntax)
-rustls = { version = "0.23.45", default-features = false, features = ["logging", "std", "tls12"] }
-webpki-roots = "1.0.9"
+rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
+webpki-roots = "1.0.11"
 
 # Optional: metrics
 metrics = "0.24.6"
 base64 = "0.23.1"
 hmac = "0.13.0"
-sha2 = "0.11.0"
+sha2 = "0.11.1"
 pbkdf2 = "0.13.0"
 
 # Async runtime
-tokio = "1.53.2"
+tokio = "1.54.1"
 tokio-rustls = "0.26.6"
 
 # Dev dependencies
@@ -60,7 +60,7 @@ getopts = "0.2.24"
 tracing-subscriber = "0.3"
 rand = "0.10.3"
 anyhow = "1.0.104"
-proptest = "1.11.0"
+proptest = "1.12.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 temp-env = "0.3.6"
 
