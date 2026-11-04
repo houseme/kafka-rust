@@ -9,7 +9,7 @@ repository.
 - `crates/rustfs-kafka-async`: async wrappers based on tokio.
 - `docs/`: project usage and API guides.
 - `crates/rustfs-kafka/tests`: Docker-based integration test harness.
-- Current release target: `1.4.0`.
+- Current release target: `1.4.1`.
 
 ## Primary Capabilities
 
