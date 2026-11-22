@@ -13,7 +13,6 @@ documentation = "https://docs.rs/rustfs-kafka/"
 edition = "2024"
 keywords = ["kafka", "queue"]
 license = "Apache-2.0"
-readme = "README.md"
 repository = "https://github.com/houseme/kafka-rust"
 description = "Rust client for Apache Kafka"
 
@@ -27,7 +26,6 @@ redundant_clone = "warn"
 
 [workspace.dependencies]
 rustfs-kafka = { path = "crates/rustfs-kafka", version = "1.4.1", default-features = false }
-rustfs-kafka-async = { path = "crates/rustfs-kafka-async", version = "1.4.1" }
 # Core dependencies
 socket2 = "0.6.5"
 fnv = "1.0.7"
@@ -63,6 +61,3 @@ anyhow = "1.0.104"
 proptest = "1.12.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 temp-env = "0.3.6"
-
-[workspace.metadata.cargo-shear]
-ignored = ["rustfs-kafka-async"]
