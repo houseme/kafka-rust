@@ -32,12 +32,12 @@ rustfs-kafka-async = { path = "crates/rustfs-kafka-async", version = "1.4.1" }
 socket2 = "0.6.5"
 fnv = "1.0.7"
 twox-hash = { version = "2.1.5", default-features = false, features = ["xxhash32", "std"] }
-bytes = "1.12.1"
+bytes = "1.12.2"
 kafka-protocol = { version = "0.18.0", default-features = false, features = ["client"] }
 indexmap = "2.14.2"
 thiserror = "2.0.21"
 tracing = "0.1.44"
-uuid = "1.29.2"
+uuid = "1.29.3"
 
 # Optional dependencies (made optional in consuming crates via dep: syntax)
 rustls = { version = "0.23.46", default-features = false, features = ["logging", "std", "tls12"] }
@@ -55,10 +55,10 @@ tokio = "1.54.1"
 tokio-rustls = "0.26.6"
 
 # Dev dependencies
-ctor = "1.0.13"
+ctor = "1.0.14"
 getopts = "0.2.24"
 tracing-subscriber = "0.3"
-rand = "0.10.3"
+rand = "0.10.4"
 anyhow = "1.0.104"
 proptest = "1.12.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
