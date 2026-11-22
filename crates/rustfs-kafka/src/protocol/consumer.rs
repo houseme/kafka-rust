@@ -182,7 +182,7 @@ pub fn convert_offset_fetch_response(
                     .map(|p| PartitionOffsetFetchResponse {
                         partition: p.partition_index,
                         offset: p.committed_offset,
-                        metadata: p.metadata.map(|m| m.to_string()).unwrap_or_default(),
+                        metadata: p.metadata.map_or_default(|m| m.to_string()),
                         error: p.error_code,
                     })
                     .collect(),

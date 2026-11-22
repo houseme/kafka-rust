@@ -303,7 +303,7 @@ mod tests {
                     ("topic-b", 0) => &[b"other-topic"],
                     other => panic!("unexpected topic/partition: {other:?}"),
                 };
-                let records = partition.records.unwrap();
+                let mut records = partition.records.unwrap();
                 let batch_info = kafka_protocol::records::RecordBatchDecoder::decode_batch_info(
                     &mut records.clone(),
                 )
@@ -319,8 +319,7 @@ mod tests {
                 let last_offset_delta = i32::from_be_bytes(records[23..27].try_into().unwrap());
                 assert_eq!(last_offset_delta + 1, batch_info[0].record_count);
                 let decoded =
-                    kafka_protocol::records::RecordBatchDecoder::decode_all(&mut records.clone())
-                        .unwrap();
+                    kafka_protocol::records::RecordBatchDecoder::decode_all(&mut records).unwrap();
                 assert_eq!(decoded.len(), 1);
                 for (index, record) in decoded[0].records.iter().enumerate() {
                     assert_eq!(record.offset, i64::try_from(index).unwrap());

@@ -81,7 +81,7 @@ pub fn convert_delete_topics_response(response: DeleteTopicsResponse) -> DeleteT
             .responses
             .into_iter()
             .map(|topic| DeleteTopicResult {
-                name: topic.name.map(|name| name.to_string()).unwrap_or_default(),
+                name: topic.name.map_or_default(|name| name.to_string()),
                 error_code: topic.error_code,
             })
             .collect(),

@@ -49,7 +49,7 @@ pub fn convert_metadata_response(
             .into_iter()
             .map(|t| TopicMetadata {
                 error: t.error_code,
-                topic: t.name.map(|n| n.to_string()).unwrap_or_default(),
+                topic: t.name.map_or_default(|n| n.to_string()),
                 partitions: t
                     .partitions
                     .into_iter()
